@@ -510,8 +510,8 @@ src/algochains_mcp/
 | **V5** | ✅ Shipped | Portfolio optimizer — risk parity, Kelly, mean-variance, max Sharpe, min variance |
 | **V6** | ✅ Shipped | Push notifications — Slack, Discord, Telegram, email, Firebase Cloud Messaging |
 | **V7** | ✅ Shipped | BYOK Key Orchestrator + Proprietary Dataset Builder |
-| **V8** | 🔧 Next | Strategy builder SDK, social trading, community signals |
-| **V9** | 📋 Planned | Risk dashboard, compliance module, multi-tenant white-label |
+| **V8** | 🔧 Next | **Strategy Builder SDK** — natural language → StrategySpec → backtest → deploy pipeline (8 tools). **Social Trading** — copy-trading with proportional scaling, leader ranking, multi-broker mirroring (6 tools). **Community Signals** — pub/sub signal bus with verified trades, consensus engine, accuracy scoring (5 tools). [Blueprint →](docs/V8_STRATEGY_BUILDER_SOCIAL_TRADING_BLUEPRINT.md) |
+| **V9** | 📋 Planned | **Risk Dashboard** — VaR (parametric, historical, Monte Carlo), expected shortfall, Barra-style factor decomposition, 7 pre-built stress scenarios, real-time drawdown/margin/Greeks monitoring (10 tools). **Compliance Module** — SEC/FINRA pre-trade checks, wash trade detection, kill switch, immutable audit trail, best execution reporting (8 tools). **Multi-Tenant White-Label** — tenant-isolated infrastructure with RLS, sub-account management, branded experiences, Stripe billing, broker routing (7 tools). [Blueprint →](docs/V9_RISK_DASHBOARD_COMPLIANCE_WHITELABEL_BLUEPRINT.md) |
 
 <br />
 
