@@ -41,6 +41,14 @@ from .errors import (
 from .marketplace.bridge import MarketplaceBridge
 from .marketplace.validator import StrategyValidator
 from .middleware import get_rate_limiter, get_tool_logger
+from .streaming.manager import StreamManager, StreamTopic
+from .portfolio.optimizer import AllocationMethod, BotMetrics, PortfolioOptimizer
+from .notifications.push import (
+    Notification, NotificationChannel, NotificationDispatcher,
+    NotificationEvent, NotificationPriority,
+)
+from .data_providers.registry import DataProviderRegistry
+from .data_providers.base import Interval
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("algochains_mcp.server")
@@ -51,6 +59,10 @@ _config: ServerConfig | None = None
 _registry: BrokerRegistry | None = None
 _validator: StrategyValidator | None = None
 _bridge: MarketplaceBridge | None = None
+_stream_manager: StreamManager | None = None
+_portfolio_optimizer: PortfolioOptimizer | None = None
+_notifier: NotificationDispatcher | None = None
+_data_registry: DataProviderRegistry | None = None
 
 
 def _get_registry() -> BrokerRegistry:
@@ -77,6 +89,34 @@ def _get_bridge() -> MarketplaceBridge:
     if _bridge is None:
         _bridge = MarketplaceBridge(_config.marketplace)
     return _bridge
+
+
+def _get_stream_manager() -> StreamManager:
+    global _stream_manager
+    if _stream_manager is None:
+        _stream_manager = StreamManager()
+    return _stream_manager
+
+
+def _get_portfolio_optimizer() -> PortfolioOptimizer:
+    global _portfolio_optimizer
+    if _portfolio_optimizer is None:
+        _portfolio_optimizer = PortfolioOptimizer()
+    return _portfolio_optimizer
+
+
+def _get_notifier() -> NotificationDispatcher:
+    global _notifier
+    if _notifier is None:
+        _notifier = NotificationDispatcher()
+    return _notifier
+
+
+def _get_data_registry() -> DataProviderRegistry:
+    global _data_registry
+    if _data_registry is None:
+        _data_registry = DataProviderRegistry()
+    return _data_registry
 
 
 def _text(data: Any) -> list[TextContent]:
@@ -327,6 +367,224 @@ TOOLS = [
     Tool(
         name="server_diagnostics",
         description="Get AlgoChains MCP server diagnostics: tool call statistics, error rates, recent call history, and broker connection status.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    # ── V4: Streaming ─────────────────────────────────────────
+    Tool(
+        name="stream_subscribe",
+        description="Subscribe to a real-time data stream: pnl, fills, positions, quotes, trades, risk_alerts, order_updates.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "enum": ["pnl", "fills", "positions", "quotes", "trades", "risk_alerts", "order_updates"]},
+                "symbols": {"type": "array", "items": {"type": "string"}, "description": "Optional symbol filter"},
+                "brokers": {"type": "array", "items": {"type": "string"}, "description": "Optional broker filter"},
+            },
+            "required": ["topic"],
+        },
+    ),
+    Tool(
+        name="stream_snapshot",
+        description="Get the latest events from a stream topic (pnl, fills, positions, etc.).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "enum": ["pnl", "fills", "positions", "quotes", "trades", "risk_alerts", "order_updates"]},
+                "limit": {"type": "integer", "default": 20},
+            },
+            "required": ["topic"],
+        },
+    ),
+    Tool(
+        name="get_realtime_pnl",
+        description="Get real-time P&L snapshot across all connected brokers with live equity, unrealized P&L, and daily change.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="stream_stats",
+        description="Get streaming system statistics: buffer sizes, active subscriptions, callback counts.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    # ── V5: Portfolio Optimizer ────────────────────────────────
+    Tool(
+        name="optimize_portfolio",
+        description="Optimize capital allocation across multiple bot subscriptions using risk parity, mean-variance, Kelly criterion, or max Sharpe methods.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "bots": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {"type": "string"},
+                            "name": {"type": "string"},
+                            "oos_sharpe": {"type": "number"},
+                            "annual_return": {"type": "number", "description": "Decimal (0.25 = 25%)"},
+                            "annual_volatility": {"type": "number", "description": "Decimal (0.15 = 15%)"},
+                            "max_drawdown": {"type": "number", "description": "Decimal (0.12 = 12%)"},
+                            "win_rate": {"type": "number", "description": "Decimal (0.55 = 55%)"},
+                            "avg_trade_pnl": {"type": "number"},
+                        },
+                        "required": ["slug", "name", "oos_sharpe", "annual_return", "annual_volatility", "max_drawdown", "win_rate"],
+                    },
+                },
+                "total_capital": {"type": "number", "description": "Total capital to allocate ($)"},
+                "method": {"type": "string", "enum": ["equal_weight", "risk_parity", "mean_variance", "kelly", "max_sharpe", "min_variance"], "default": "risk_parity"},
+                "max_drawdown_limit": {"type": "number", "default": 0.20, "description": "Max acceptable portfolio drawdown (decimal)"},
+            },
+            "required": ["bots", "total_capital"],
+        },
+    ),
+    Tool(
+        name="compare_allocations",
+        description="Compare multiple allocation methods side-by-side for the same set of bots to find the best strategy.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "bots": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {"type": "string"},
+                            "name": {"type": "string"},
+                            "oos_sharpe": {"type": "number"},
+                            "annual_return": {"type": "number"},
+                            "annual_volatility": {"type": "number"},
+                            "max_drawdown": {"type": "number"},
+                            "win_rate": {"type": "number"},
+                            "avg_trade_pnl": {"type": "number"},
+                        },
+                        "required": ["slug", "name", "oos_sharpe", "annual_return", "annual_volatility", "max_drawdown", "win_rate"],
+                    },
+                },
+                "total_capital": {"type": "number"},
+            },
+            "required": ["bots", "total_capital"],
+        },
+    ),
+    # ── V6: Notifications ─────────────────────────────────────
+    Tool(
+        name="configure_notifications",
+        description="Configure notification channels: slack, email, discord, telegram, mobile push (FCM/APNS).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "channel": {"type": "string", "enum": ["slack", "email", "discord", "telegram", "fcm", "apns"]},
+                "webhook_url": {"type": "string", "description": "Webhook URL (for Slack/Discord)"},
+                "api_key": {"type": "string", "description": "API key (for email/FCM)"},
+                "bot_token": {"type": "string", "description": "Bot token (for Telegram)"},
+                "chat_id": {"type": "string", "description": "Chat ID (for Telegram)"},
+            },
+            "required": ["channel"],
+        },
+    ),
+    Tool(
+        name="send_notification",
+        description="Send a notification across configured channels. Supports order fills, P&L alerts, drawdown warnings, and custom messages.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "event": {"type": "string", "enum": ["order_fill", "daily_pnl", "drawdown_alert", "bot_status", "margin_warning", "risk_alert", "rebalance_needed", "custom"]},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"], "default": "medium"},
+                "channels": {"type": "array", "items": {"type": "string"}, "description": "Override default channels"},
+            },
+            "required": ["title", "body"],
+        },
+    ),
+    Tool(
+        name="get_notification_history",
+        description="Get notification history with optional event type filter.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 20},
+                "event": {"type": "string", "description": "Filter by event type"},
+            },
+        },
+    ),
+    Tool(
+        name="notification_stats",
+        description="Get notification system statistics: configured channels, send counts by event and priority.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    # ── Data Providers (Optional) ─────────────────────────────
+    Tool(
+        name="list_data_providers",
+        description="List all available and configured data providers (Polygon, Yahoo Finance, Alpha Vantage, Finnhub, Twelve Data, etc.).",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="get_market_data",
+        description="Fetch OHLCV bars from any configured data provider. Falls back through providers if first one fails.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Ticker symbol (e.g. AAPL, EUR/USD, BTC-USD)"},
+                "interval": {"type": "string", "enum": ["1min", "5min", "15min", "30min", "1hour", "4hour", "1day", "1week", "1month"], "default": "1day"},
+                "limit": {"type": "integer", "default": 100},
+                "provider": {"type": "string", "description": "Specific provider (polygon, yahoo, alphavantage, finnhub, twelvedata). If omitted, uses best available."},
+                "start": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+                "end": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+            },
+            "required": ["symbol"],
+        },
+    ),
+    Tool(
+        name="get_realtime_quote",
+        description="Get a real-time quote from any configured data provider.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "provider": {"type": "string", "description": "Specific provider. If omitted, uses best available."},
+            },
+            "required": ["symbol"],
+        },
+    ),
+    Tool(
+        name="get_news",
+        description="Get financial news for a symbol from configured data providers (Polygon, Finnhub).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "limit": {"type": "integer", "default": 10},
+                "provider": {"type": "string"},
+            },
+            "required": ["symbol"],
+        },
+    ),
+    Tool(
+        name="get_fundamentals",
+        description="Get fundamental data (P/E, EPS, market cap, revenue, etc.) for a stock from configured data providers.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "provider": {"type": "string"},
+            },
+            "required": ["symbol"],
+        },
+    ),
+    Tool(
+        name="search_symbols",
+        description="Search for ticker symbols across configured data providers.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query (e.g. 'Apple', 'bitcoin', 'EUR')"},
+                "provider": {"type": "string"},
+            },
+            "required": ["query"],
+        },
+    ),
+    Tool(
+        name="data_provider_health",
+        description="Run health checks on all configured data providers.",
         inputSchema={"type": "object", "properties": {}},
     ),
 ]
@@ -601,6 +859,233 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             "connected_brokers": registry.list_available(),
         })
 
+    # ── V4: Streaming ────────────────────────────────────────
+    elif name == "stream_subscribe":
+        from .streaming.manager import Subscription
+        mgr = _get_stream_manager()
+        topic = StreamTopic(arguments["topic"])
+        sub = Subscription(
+            topic=topic,
+            symbols=arguments.get("symbols", []),
+            brokers=arguments.get("brokers", []),
+        )
+        sub_id = mgr.subscribe(sub)
+        return _text({"subscription_id": sub_id, "topic": topic.value, "status": "active"})
+
+    elif name == "stream_snapshot":
+        mgr = _get_stream_manager()
+        topic = StreamTopic(arguments["topic"])
+        events = mgr.get_latest(topic, limit=arguments.get("limit", 20))
+        return _text({"topic": topic.value, "count": len(events), "events": events})
+
+    elif name == "get_realtime_pnl":
+        mgr = _get_stream_manager()
+        pnl = mgr.get_pnl_snapshot()
+        positions = mgr.get_position_snapshot()
+        # Also try to fetch live data from brokers
+        live_pnl = {}
+        for bname in registry.list_available():
+            conn = registry.get(bname)
+            try:
+                acct = await conn.get_account()
+                pos = await conn.get_positions()
+                live_pnl[bname] = {
+                    "equity": acct.equity,
+                    "cash": acct.cash,
+                    "unrealized_pnl": sum(p.unrealized_pnl for p in pos),
+                    "positions": len(pos),
+                }
+            except Exception as e:
+                live_pnl[bname] = {"error": str(e)}
+        return _text({
+            "live": live_pnl,
+            "stream_snapshot": pnl,
+            "position_snapshot": positions,
+        })
+
+    elif name == "stream_stats":
+        mgr = _get_stream_manager()
+        return _text(mgr.stats())
+
+    # ── V5: Portfolio Optimizer ──────────────────────────────
+    elif name == "optimize_portfolio":
+        optimizer = _get_portfolio_optimizer()
+        bots = [
+            BotMetrics(
+                slug=b["slug"], name=b["name"],
+                oos_sharpe=b["oos_sharpe"],
+                annual_return=b["annual_return"],
+                annual_volatility=b["annual_volatility"],
+                max_drawdown=b["max_drawdown"],
+                win_rate=b["win_rate"],
+                avg_trade_pnl=b.get("avg_trade_pnl", 0),
+                correlation_to_spy=b.get("correlation_to_spy", 0),
+                tier=b.get("tier", "silver"),
+            )
+            for b in arguments["bots"]
+        ]
+        method = AllocationMethod(arguments.get("method", "risk_parity"))
+        result = optimizer.optimize(
+            bots=bots,
+            total_capital=arguments["total_capital"],
+            method=method,
+            max_drawdown_limit=arguments.get("max_drawdown_limit", 0.20),
+        )
+        return _text(result.to_dict())
+
+    elif name == "compare_allocations":
+        optimizer = _get_portfolio_optimizer()
+        bots = [
+            BotMetrics(
+                slug=b["slug"], name=b["name"],
+                oos_sharpe=b["oos_sharpe"],
+                annual_return=b["annual_return"],
+                annual_volatility=b["annual_volatility"],
+                max_drawdown=b["max_drawdown"],
+                win_rate=b["win_rate"],
+                avg_trade_pnl=b.get("avg_trade_pnl", 0),
+            )
+            for b in arguments["bots"]
+        ]
+        capital = arguments["total_capital"]
+        comparisons = {}
+        for method in AllocationMethod:
+            result = optimizer.optimize(bots, capital, method)
+            comparisons[method.value] = {
+                "portfolio_sharpe": round(result.portfolio_sharpe, 3),
+                "return_pct": round(result.portfolio_return * 100, 2),
+                "volatility_pct": round(result.portfolio_volatility * 100, 2),
+                "max_drawdown_pct": round(result.portfolio_max_drawdown * 100, 2),
+                "diversification": round(result.diversification_score, 1),
+                "allocations": {a.slug: round(a.weight * 100, 1) for a in result.allocations},
+            }
+        # Rank by Sharpe
+        ranked = sorted(comparisons.items(), key=lambda x: x[1]["portfolio_sharpe"], reverse=True)
+        return _text({
+            "best_method": ranked[0][0] if ranked else "none",
+            "comparisons": comparisons,
+            "ranking": [r[0] for r in ranked],
+        })
+
+    # ── V6: Notifications ────────────────────────────────────
+    elif name == "configure_notifications":
+        notifier = _get_notifier()
+        ch = arguments["channel"]
+        if ch == "slack":
+            notifier.configure_slack(arguments.get("webhook_url", ""))
+        elif ch == "email":
+            notifier.configure_email(arguments.get("api_key", ""))
+        elif ch == "discord":
+            notifier.configure_discord(arguments.get("webhook_url", ""))
+        elif ch == "telegram":
+            notifier.configure_telegram(arguments.get("bot_token", ""), arguments.get("chat_id", ""))
+        elif ch in ("fcm", "apns"):
+            notifier.configure_mobile_push(
+                fcm_key=arguments.get("api_key", "") if ch == "fcm" else "",
+                apns_cert=arguments.get("api_key", "") if ch == "apns" else "",
+            )
+        return _text({"channel": ch, "status": "configured", "all_channels": notifier.configured_channels()})
+
+    elif name == "send_notification":
+        notifier = _get_notifier()
+        event_str = arguments.get("event", "bot_status")
+        event = NotificationEvent(event_str) if event_str != "custom" else NotificationEvent.BOT_STATUS
+        channels = [NotificationChannel(c) for c in arguments.get("channels", [])] or [NotificationChannel.WEBSOCKET]
+        notification = Notification(
+            event=event,
+            priority=NotificationPriority(arguments.get("priority", "medium")),
+            title=arguments["title"],
+            body=arguments["body"],
+            channels=channels,
+        )
+        results = await notifier.send(notification)
+        return _text({"notification": notification.to_dict(), "delivery": results})
+
+    elif name == "get_notification_history":
+        notifier = _get_notifier()
+        event_filter = None
+        if arguments.get("event"):
+            event_filter = NotificationEvent(arguments["event"])
+        history = notifier.get_history(limit=arguments.get("limit", 20), event=event_filter)
+        return _text({"count": len(history), "history": history})
+
+    elif name == "notification_stats":
+        notifier = _get_notifier()
+        return _text(notifier.stats())
+
+    # ── Data Providers ───────────────────────────────────────
+    elif name == "list_data_providers":
+        dreg = _get_data_registry()
+        available = dreg.list_available()
+        all_providers = dreg.list_all_providers()
+        return _text({
+            "configured": available,
+            "all_providers": [p.to_dict() for p in all_providers],
+        })
+
+    elif name == "get_market_data":
+        dreg = _get_data_registry()
+        provider_name = arguments.get("provider")
+        provider = dreg.get(provider_name) if provider_name else dreg.get_default()
+        if not provider:
+            return _text({"error": "No data provider configured. Set API keys in environment variables.", "available_providers": [p.to_dict() for p in dreg.list_all_providers()]})
+        interval = Interval(arguments.get("interval", "1day"))
+        bars = await provider.get_bars(
+            symbol=arguments["symbol"],
+            interval=interval,
+            limit=arguments.get("limit", 100),
+            start=arguments.get("start"),
+            end=arguments.get("end"),
+        )
+        return _text({
+            "symbol": arguments["symbol"],
+            "interval": interval.value,
+            "provider": provider.info().name,
+            "count": len(bars),
+            "bars": [b.to_dict() for b in bars],
+        })
+
+    elif name == "get_realtime_quote":
+        dreg = _get_data_registry()
+        provider_name = arguments.get("provider")
+        provider = dreg.get(provider_name) if provider_name else dreg.get_default()
+        if not provider:
+            return _text({"error": "No data provider configured."})
+        quote = await provider.get_quote(arguments["symbol"])
+        return _text(quote.to_dict())
+
+    elif name == "get_news":
+        dreg = _get_data_registry()
+        provider_name = arguments.get("provider")
+        provider = dreg.get(provider_name) if provider_name else dreg.get_default()
+        if not provider:
+            return _text({"error": "No data provider configured."})
+        news = await provider.get_news(arguments["symbol"], limit=arguments.get("limit", 10))
+        return _text({"symbol": arguments["symbol"], "count": len(news), "articles": [n.to_dict() for n in news]})
+
+    elif name == "get_fundamentals":
+        dreg = _get_data_registry()
+        provider_name = arguments.get("provider")
+        provider = dreg.get(provider_name) if provider_name else dreg.get_default()
+        if not provider:
+            return _text({"error": "No data provider configured."})
+        fundamentals = await provider.get_fundamentals(arguments["symbol"])
+        return _text(fundamentals)
+
+    elif name == "search_symbols":
+        dreg = _get_data_registry()
+        provider_name = arguments.get("provider")
+        provider = dreg.get(provider_name) if provider_name else dreg.get_default()
+        if not provider:
+            return _text({"error": "No data provider configured."})
+        results = await provider.search_symbols(arguments["query"])
+        return _text({"query": arguments["query"], "count": len(results), "results": results})
+
+    elif name == "data_provider_health":
+        dreg = _get_data_registry()
+        health = await dreg.health_check_all()
+        return _text(health)
+
     else:
         return _text({"error": f"Unknown tool: {name}"})
 
@@ -828,7 +1313,7 @@ async def _run():
 
 
 def main():
-    logger.info("Starting AlgoChains MCP Server v3.0.0")
+    logger.info("Starting AlgoChains MCP Server v6.0.0")
     asyncio.run(_run())
 
 

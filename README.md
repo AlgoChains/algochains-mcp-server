@@ -10,9 +10,9 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
 [![Tests](https://img.shields.io/badge/tests-40%2F40-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)]()
+[![Version](https://img.shields.io/badge/version-6.0.0-blue.svg)]()
 
-[Quick Start](#quick-start) · [IDE Setup](#ide-integration) · [Architecture](#architecture) · [Deployment Modes](#deployment-modes) · [Marketplace](#marketplace) · [Authentication](#authentication) · [API Reference](#api-reference)
+[Quick Start](#quick-start) · [IDE Setup](#ide-integration) · [Architecture](#architecture) · [Streaming](#v4-streaming) · [Portfolio](#v5-portfolio-optimizer) · [Notifications](#v6-notifications) · [Data Providers](#data-providers) · [Marketplace](#marketplace) · [API Reference](#api-reference)
 
 </div>
 
@@ -23,10 +23,12 @@
 AlgoChains MCP Server is a **Model Context Protocol server** that gives any AI agent — Claude, GPT, Gemini, Cascade, Devin, Copilot, or your own — the ability to:
 
 1. **Trade on 12+ brokers** through a single normalized interface
-2. **Submit strategies** for institutional-grade MCPT validation (6 gates)
-3. **Browse and subscribe** to validated bots on the AlgoChains marketplace
-4. **Verify bot performance** with cryptographically auditable metrics
-5. **Deploy bots locally** on your machine or to AlgoChains cloud
+2. **Stream real-time P&L, fills, and positions** via WebSocket topics (V4)
+3. **Optimize multi-strategy portfolios** with risk parity, Kelly, mean-variance (V5)
+4. **Push notifications** to Slack, Discord, Telegram, email, or mobile (V6)
+5. **Pull market data** from Polygon, Yahoo, Alpha Vantage, Finnhub, Twelve Data
+6. **Submit strategies** for institutional-grade MCPT validation (6 gates)
+7. **Browse and subscribe** to 172+ validated bots on the AlgoChains marketplace
 
 This is the **connective tissue** between AI coding assistants and live financial markets.
 
@@ -690,9 +692,12 @@ For those integrating with the broader AlgoChains ecosystem:
 - [x] V1: Core broker connectors + MCPT validation
 - [x] V2: Marketplace bridge + diagnostics + prompts
 - [x] V3: Auth (Supabase SSO), deployment modes, metrics verification, IDE configs
-- [ ] V4: WebSocket streaming (real-time P&L), portfolio analytics
-- [ ] V5: Multi-strategy portfolio optimizer, risk parity allocation
-- [ ] V6: Mobile companion app, push notifications on fills
+- [x] V4: WebSocket streaming (real-time P&L, fills, positions, risk alerts)
+- [x] V5: Multi-strategy portfolio optimizer (risk parity, Kelly, mean-variance, max Sharpe, min variance)
+- [x] V6: Push notifications (Slack, Discord, Telegram, email, FCM/APNS)
+- [x] Data Providers: Pluggable connectors (Polygon, Yahoo, Alpha Vantage, Finnhub, Twelve Data)
+- [ ] V7: Backtesting engine, strategy builder, social trading
+- [ ] V8: Risk management dashboard, compliance module, multi-tenant
 
 ---
 
