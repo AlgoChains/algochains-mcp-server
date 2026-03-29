@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "algochains-mcp-server"
-version = "6.0.0"
-description = "AlgoChains MCP Server — Universal AI-to-broker trading protocol with marketplace, MCPT validation, streaming, portfolio optimization, notifications, and pluggable data providers"
+version = "7.0.0"
+description = "AlgoChains MCP Server — Universal AI-to-broker trading protocol with BYOK key orchestration, proprietary dataset builder, marketplace, MCPT validation, streaming, portfolio optimization, notifications, and pluggable data providers"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "AlgoChains", email = "tyler@algochains.io" }]
-keywords = ["mcp", "trading", "broker", "algochains", "alpaca", "ibkr", "oanda", "quantconnect", "polygon", "finnhub", "portfolio", "streaming"]
+keywords = ["mcp", "trading", "broker", "algochains", "alpaca", "ibkr", "oanda", "quantconnect", "polygon", "finnhub", "portfolio", "streaming", "byok", "datasets", "ml"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -58,6 +58,7 @@ data-all = [
     "twelvedata>=1.2.10",
 ]
 notifications = ["firebase-admin>=6.0.0"]
+datasets = ["pandas>=2.0.0", "pyarrow>=14.0.0"]
 
 [project.scripts]
 algochains-mcp = "algochains_mcp.server:main"

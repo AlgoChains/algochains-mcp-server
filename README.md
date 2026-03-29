@@ -10,7 +10,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
 [![Tests](https://img.shields.io/badge/tests-40%2F40-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/version-6.0.0-blue.svg)]()
+[![Version](https://img.shields.io/badge/version-7.0.0-blue.svg)]()
 
 [Quick Start](#quick-start) · [IDE Setup](#ide-integration) · [Architecture](#architecture) · [Streaming](#v4-streaming) · [Portfolio](#v5-portfolio-optimizer) · [Notifications](#v6-notifications) · [Data Providers](#data-providers) · [Marketplace](#marketplace) · [API Reference](#api-reference)
 
@@ -696,8 +696,9 @@ For those integrating with the broader AlgoChains ecosystem:
 - [x] V5: Multi-strategy portfolio optimizer (risk parity, Kelly, mean-variance, max Sharpe, min variance)
 - [x] V6: Push notifications (Slack, Discord, Telegram, email, FCM/APNS)
 - [x] Data Providers: Pluggable connectors (Polygon, Yahoo, Alpha Vantage, Finnhub, Twelve Data)
-- [ ] V7: Backtesting engine, strategy builder, social trading
-- [ ] V8: Risk management dashboard, compliance module, multi-tenant
+- [x] V7: BYOK Key Orchestrator (autonomous key discovery, validation, gap analysis) + Proprietary Dataset Builder (ingest, enrich, ML-ready export)
+- [ ] V8: Backtesting engine, strategy builder, social trading
+- [ ] V9: Risk management dashboard, compliance module, multi-tenant
 
 ---
 

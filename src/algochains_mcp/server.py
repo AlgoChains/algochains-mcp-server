@@ -49,6 +49,8 @@ from .notifications.push import (
 )
 from .data_providers.registry import DataProviderRegistry
 from .data_providers.base import Interval
+from .byok.key_orchestrator import KeyOrchestrator
+from .datasets.builder import DatasetBuilder, DatasetRequest
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("algochains_mcp.server")
@@ -63,6 +65,8 @@ _stream_manager: StreamManager | None = None
 _portfolio_optimizer: PortfolioOptimizer | None = None
 _notifier: NotificationDispatcher | None = None
 _data_registry: DataProviderRegistry | None = None
+_key_orchestrator: KeyOrchestrator | None = None
+_dataset_builder: DatasetBuilder | None = None
 
 
 def _get_registry() -> BrokerRegistry:
@@ -117,6 +121,20 @@ def _get_data_registry() -> DataProviderRegistry:
     if _data_registry is None:
         _data_registry = DataProviderRegistry()
     return _data_registry
+
+
+def _get_key_orchestrator() -> KeyOrchestrator:
+    global _key_orchestrator
+    if _key_orchestrator is None:
+        _key_orchestrator = KeyOrchestrator()
+    return _key_orchestrator
+
+
+def _get_dataset_builder() -> DatasetBuilder:
+    global _dataset_builder
+    if _dataset_builder is None:
+        _dataset_builder = DatasetBuilder()
+    return _dataset_builder
 
 
 def _text(data: Any) -> list[TextContent]:
@@ -586,6 +604,120 @@ TOOLS = [
         name="data_provider_health",
         description="Run health checks on all configured data providers.",
         inputSchema={"type": "object", "properties": {}},
+    ),
+    # ── V7: BYOK Key Orchestrator ──────────────────────────────
+    Tool(
+        name="discover_keys",
+        description="Autonomously scan your environment for existing API keys across 10+ data providers. Checks env vars, .env files, IDE configs, shell profiles, and config directories. Say 'gather my keys' to trigger.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="validate_keys",
+        description="Deep-validate all discovered API keys with live API calls. Returns permissions, rate limits, plan tier, and health status for each key.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "providers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of provider names to validate. If empty, validates all discovered keys.",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="key_gap_analysis",
+        description="Show what data providers you're missing, what each unlocks, signup URLs, free tier availability, and a quick-win recommendation.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="provision_key",
+        description="Add a new API key for a data provider. Validates the key and optionally writes it to your .env file.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string", "description": "Provider name: polygon, alpha_vantage, finnhub, twelve_data, databento, unusual_whales, intrinio, quandl, openbb"},
+                "key_value": {"type": "string", "description": "The API key value"},
+                "write_to_env": {"type": "boolean", "default": True, "description": "Whether to write the key to .env file"},
+            },
+            "required": ["provider", "key_value"],
+        },
+    ),
+    Tool(
+        name="key_health",
+        description="Real-time health check of all configured API keys. Shows which are valid, expired, rate-limited, or invalid.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="export_config",
+        description="Export your validated key configuration in various formats: env, json, mcp_windsurf, mcp_cursor, mcp_vscode.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "format": {"type": "string", "enum": ["env", "json", "mcp_windsurf", "mcp_cursor", "mcp_vscode"], "default": "env"},
+            },
+        },
+    ),
+    # ── V7: Proprietary Dataset Builder ────────────────────────
+    Tool(
+        name="build_dataset",
+        description="Build a proprietary dataset for a symbol/timeframe using all available data providers. Normalizes, deduplicates, and optionally enriches with technical indicators, regime labels, and more.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Ticker symbol (e.g. AAPL, EURUSD, BTC)"},
+                "timeframe": {"type": "string", "enum": ["1min", "5min", "15min", "1h", "4h", "daily", "weekly"], "default": "daily"},
+                "start_date": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+                "end_date": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+                "providers": {"type": "array", "items": {"type": "string"}, "description": "Specific providers to use. If empty, uses all available."},
+                "enrichments": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["technical_indicators", "sentiment", "cross_asset_correlation", "regime_labels", "volume_profile", "calendar_features"]},
+                    "description": "Feature enrichments to apply to the dataset",
+                },
+                "format": {"type": "string", "enum": ["parquet", "csv", "json"], "default": "parquet"},
+            },
+            "required": ["symbol"],
+        },
+    ),
+    Tool(
+        name="list_datasets",
+        description="List all built proprietary datasets with metadata (rows, columns, date range, sources, size).",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="dataset_status",
+        description="Show what data you CAN build vs what you're missing based on your available API keys.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="enrich_dataset",
+        description="Add feature enrichments (technical indicators, regime labels, calendar features, volume profile) to an existing dataset.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string", "description": "ID of the dataset to enrich"},
+                "enrichments": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["technical_indicators", "sentiment", "cross_asset_correlation", "regime_labels", "volume_profile", "calendar_features"]},
+                },
+            },
+            "required": ["dataset_id", "enrichments"],
+        },
+    ),
+    Tool(
+        name="export_dataset",
+        description="Export a dataset in ML-ready format with time-based train/test split (no data leakage). Ready for scikit-learn, XGBoost, PyTorch.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "dataset_id": {"type": "string"},
+                "format": {"type": "string", "enum": ["parquet", "csv", "json"], "default": "parquet"},
+                "train_test_split": {"type": "number", "default": 0.8, "description": "Train/test ratio (0.0-1.0)"},
+                "target_column": {"type": "string", "default": "close", "description": "Target variable for ML prediction"},
+            },
+            "required": ["dataset_id"],
+        },
     ),
 ]
 
@@ -1086,6 +1218,93 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         health = await dreg.health_check_all()
         return _text(health)
 
+    # ── V7: BYOK Key Orchestrator ──────────────────────────────
+    elif name == "discover_keys":
+        orch = _get_key_orchestrator()
+        result = await orch.discover_keys()
+        return _text(result)
+
+    elif name == "validate_keys":
+        orch = _get_key_orchestrator()
+        providers = arguments.get("providers")
+        result = await orch.validate_keys(providers=providers)
+        return _text(result)
+
+    elif name == "key_gap_analysis":
+        orch = _get_key_orchestrator()
+        if not orch._discovered:
+            await orch.discover_keys()
+        result = await orch.gap_analysis()
+        return _text(result)
+
+    elif name == "provision_key":
+        orch = _get_key_orchestrator()
+        result = await orch.provision_key(
+            provider=arguments["provider"],
+            key_value=arguments["key_value"],
+            write_to_env=arguments.get("write_to_env", True),
+        )
+        return _text(result)
+
+    elif name == "key_health":
+        orch = _get_key_orchestrator()
+        result = await orch.key_health()
+        return _text(result)
+
+    elif name == "export_config":
+        orch = _get_key_orchestrator()
+        if not orch._discovered:
+            await orch.discover_keys()
+        result = await orch.export_config(format=arguments.get("format", "env"))
+        return _text(result)
+
+    # ── V7: Proprietary Dataset Builder ────────────────────────
+    elif name == "build_dataset":
+        builder = _get_dataset_builder()
+        req = DatasetRequest(
+            symbol=arguments["symbol"],
+            timeframe=arguments.get("timeframe", "daily"),
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
+            providers=arguments.get("providers"),
+            enrichments=arguments.get("enrichments", []),
+            format=arguments.get("format", "parquet"),
+        )
+        result = await builder.build_dataset(req)
+        return _text(result)
+
+    elif name == "list_datasets":
+        builder = _get_dataset_builder()
+        result = await builder.list_datasets()
+        return _text(result)
+
+    elif name == "dataset_status":
+        builder = _get_dataset_builder()
+        orch = _get_key_orchestrator()
+        if not orch._discovered:
+            await orch.discover_keys()
+        available_keys = list(orch._discovered.keys())
+        result = await builder.dataset_status(available_keys)
+        return _text(result)
+
+    elif name == "enrich_dataset":
+        builder = _get_dataset_builder()
+        result = await builder.enrich_dataset(
+            dataset_id=arguments["dataset_id"],
+            enrichments=arguments["enrichments"],
+        )
+        return _text(result)
+
+    elif name == "export_dataset":
+        builder = _get_dataset_builder()
+        result = await builder.export_dataset(
+            dataset_id=arguments["dataset_id"],
+            format=arguments.get("format", "parquet"),
+            train_test_split=arguments.get("train_test_split", 0.8),
+            target_column=arguments.get("target_column", "close"),
+        )
+        return _text(result)
+
     else:
         return _text({"error": f"Unknown tool: {name}"})
 
@@ -1313,7 +1532,7 @@ async def _run():
 
 
 def main():
-    logger.info("Starting AlgoChains MCP Server v6.0.0")
+    logger.info("Starting AlgoChains MCP Server v7.0.0")
     asyncio.run(_run())
 
 
