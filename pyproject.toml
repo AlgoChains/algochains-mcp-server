@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "algochains-mcp-server"
-version = "0.1.0"
-description = "AlgoChains MCP Server — Universal broker connectors, marketplace integration, and AI strategy hosting for the AlgoChains platform"
+version = "3.0.0"
+description = "AlgoChains MCP Server — Universal AI-to-broker trading protocol with marketplace, MCPT validation, and IDE integration"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -40,6 +40,10 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4.0",
+]
+auth = [
+    "pyjwt>=2.8.0",
+    "cryptography>=42.0.0",
 ]
 
 [project.scripts]

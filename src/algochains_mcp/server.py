@@ -828,7 +828,7 @@ async def _run():
 
 
 def main():
-    logger.info("Starting AlgoChains MCP Server v0.1.0")
+    logger.info("Starting AlgoChains MCP Server v3.0.0")
     asyncio.run(_run())
 
 
