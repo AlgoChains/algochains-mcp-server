@@ -1,0 +1,70 @@
+"""Tests for the marketplace bridge HTTP client."""
+import pytest
+import httpx
+
+from algochains_mcp.config import MarketplaceConfig
+from algochains_mcp.errors import ListingNotFoundError, MarketplaceError, RateLimitError, SubscriptionError
+from algochains_mcp.marketplace.bridge import MarketplaceBridge
+
+
+def _mock_config() -> MarketplaceConfig:
+    return MarketplaceConfig(
+        django_url="https://test.algochains.ai",
+        listing_api_key="test-key",
+        ingest_api_key="test-ingest",
+        creator_username="testuser",
+    )
+
+
+class TestBridgeInit:
+    def test_creates_with_config(self):
+        bridge = MarketplaceBridge(_mock_config())
+        assert bridge._client is None
+        assert bridge.cfg.django_url == "https://test.algochains.ai"
+
+    @pytest.mark.asyncio
+    async def test_close_when_no_client(self):
+        bridge = MarketplaceBridge(_mock_config())
+        await bridge.close()  # should not raise
+
+
+class TestCheckResponse:
+    def test_429_raises_rate_limit(self):
+        bridge = MarketplaceBridge(_mock_config())
+        resp = httpx.Response(
+            status_code=429,
+            headers={"Retry-After": "45"},
+            request=httpx.Request("GET", "https://test.algochains.ai/api/v1/listings/"),
+        )
+        with pytest.raises(RateLimitError) as exc_info:
+            bridge._check_response(resp)
+        assert exc_info.value.retry_after == 45
+
+    def test_500_raises_marketplace_error(self):
+        bridge = MarketplaceBridge(_mock_config())
+        resp = httpx.Response(
+            status_code=500,
+            text="Internal Server Error",
+            request=httpx.Request("GET", "https://test.algochains.ai/api/v1/listings/"),
+        )
+        with pytest.raises(MarketplaceError) as exc_info:
+            bridge._check_response(resp)
+        assert "500" in str(exc_info.value)
+
+    def test_200_does_not_raise(self):
+        bridge = MarketplaceBridge(_mock_config())
+        resp = httpx.Response(
+            status_code=200,
+            request=httpx.Request("GET", "https://test.algochains.ai/api/v1/listings/"),
+        )
+        bridge._check_response(resp)  # should not raise
+
+    def test_400_json_body(self):
+        bridge = MarketplaceBridge(_mock_config())
+        resp = httpx.Response(
+            status_code=400,
+            json={"detail": "Invalid slug"},
+            request=httpx.Request("POST", "https://test.algochains.ai/api/v1/listings/"),
+        )
+        with pytest.raises(MarketplaceError, match="Invalid slug"):
+            bridge._check_response(resp)

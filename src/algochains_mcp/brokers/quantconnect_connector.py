@@ -21,7 +21,6 @@ from .base import (
     BrokerConnector,
     Order,
     OrderSide,
-    OrderStatus,
     OrderType,
     Position,
     Quote,

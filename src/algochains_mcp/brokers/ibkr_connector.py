@@ -5,7 +5,6 @@ Uses ib_async when available, otherwise provides stub for config-only mode.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Optional
 
 from ..config import IBKRConfig
