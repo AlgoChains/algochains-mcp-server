@@ -1,0 +1,45 @@
+{
+  "profile_id": "us_institutional",
+  "description": "US institutional trading — full SEC/FINRA compliance with enhanced surveillance",
+  "jurisdiction": "US",
+  "regulations": ["SEC_15c3_5", "FINRA_3110", "FINRA_15_09", "FINRA_5310", "REG_SHO", "REG_NMS"],
+  "pre_trade": {
+    "position_limits": {
+      "single_name_pct": 5,
+      "sector_pct": 25,
+      "asset_class_pct": 40,
+      "gross_exposure_pct": 150
+    },
+    "order_limits": {
+      "max_notional_usd": 5000000,
+      "max_adv_pct": 3,
+      "fat_finger_sigma": 2.5,
+      "duplicate_window_sec": 3
+    },
+    "loss_limits": {
+      "max_daily_loss_pct": 1,
+      "max_daily_loss_usd": 250000,
+      "max_drawdown_pct": 3,
+      "kill_switch_enabled": true
+    },
+    "wash_trade": {
+      "detection_window_days": 30,
+      "action": "hard_block",
+      "substantially_identical": true,
+      "tax_lot_matching": "specific_id"
+    }
+  },
+  "post_trade": {
+    "surveillance_enabled": true,
+    "pattern_detection": ["layering", "spoofing", "momentum_ignition", "marking_close", "quote_stuffing", "front_running"],
+    "best_execution_reporting": "monthly",
+    "audit_trail_retention_years": 6,
+    "cat_reporting": true,
+    "tca_reporting": true
+  },
+  "restricted_list": {
+    "symbols": [],
+    "sectors": [],
+    "countries": ["IR", "KP", "SY", "CU", "VE"]
+  }
+}

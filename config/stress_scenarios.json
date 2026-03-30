@@ -1,0 +1,51 @@
+{
+  "covid_crash": {
+    "name": "COVID Crash (Mar 2020)",
+    "equity_shock": -0.34,
+    "vol_mult": 4.0,
+    "credit_spread_bp": 400,
+    "duration_days": 23
+  },
+  "gfc_2008": {
+    "name": "GFC (2008)",
+    "equity_shock": -0.57,
+    "vol_mult": 5.0,
+    "credit_spread_bp": 600,
+    "duration_days": 250
+  },
+  "dot_com": {
+    "name": "Dot-Com Bust (2000)",
+    "equity_shock": -0.49,
+    "vol_mult": 2.5,
+    "credit_spread_bp": 200,
+    "duration_days": 550
+  },
+  "flash_crash": {
+    "name": "Flash Crash (May 2010)",
+    "equity_shock": -0.09,
+    "vol_mult": 6.0,
+    "credit_spread_bp": 50,
+    "duration_days": 1
+  },
+  "rate_shock": {
+    "name": "Rate Shock +200bp",
+    "equity_shock": -0.15,
+    "vol_mult": 2.0,
+    "credit_spread_bp": 150,
+    "duration_days": 60
+  },
+  "vol_spike": {
+    "name": "VIX Spike to 80",
+    "equity_shock": -0.20,
+    "vol_mult": 4.5,
+    "credit_spread_bp": 300,
+    "duration_days": 10
+  },
+  "black_monday": {
+    "name": "Black Monday (1987)",
+    "equity_shock": -0.22,
+    "vol_mult": 8.0,
+    "credit_spread_bp": 200,
+    "duration_days": 1
+  }
+}

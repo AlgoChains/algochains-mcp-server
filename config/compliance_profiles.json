@@ -1,0 +1,49 @@
+{
+  "conservative": {
+    "description": "Low-risk profile for capital preservation",
+    "limits": {
+      "max_position_pct": 0.05,
+      "max_order_value": 100000,
+      "max_daily_loss": 5000,
+      "max_daily_orders": 100,
+      "wash_trade_window_sec": 60,
+      "restricted_symbols": []
+    }
+  },
+  "moderate": {
+    "description": "Balanced profile for active traders",
+    "limits": {
+      "max_position_pct": 0.10,
+      "max_order_value": 500000,
+      "max_daily_loss": 25000,
+      "max_daily_orders": 500,
+      "wash_trade_window_sec": 30,
+      "restricted_symbols": []
+    }
+  },
+  "aggressive": {
+    "description": "High-risk profile for professional traders",
+    "limits": {
+      "max_position_pct": 0.25,
+      "max_order_value": 2000000,
+      "max_daily_loss": 100000,
+      "max_daily_orders": 2000,
+      "wash_trade_window_sec": 10,
+      "restricted_symbols": []
+    }
+  },
+  "institutional": {
+    "description": "Institutional-grade compliance with full surveillance",
+    "limits": {
+      "max_position_pct": 0.05,
+      "max_order_value": 5000000,
+      "max_daily_loss": 250000,
+      "max_daily_orders": 10000,
+      "wash_trade_window_sec": 60,
+      "restricted_symbols": [],
+      "require_pre_trade_check": true,
+      "require_post_trade_surveillance": true,
+      "audit_all_orders": true
+    }
+  }
+}

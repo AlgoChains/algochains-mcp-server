@@ -1,0 +1,42 @@
+{
+  "profile_id": "us_retail_algo",
+  "description": "US retail algorithmic trading — SEC/FINRA compliant",
+  "jurisdiction": "US",
+  "regulations": ["SEC_15c3_5", "FINRA_3110", "FINRA_15_09", "REG_SHO"],
+  "pre_trade": {
+    "position_limits": {
+      "single_name_pct": 10,
+      "sector_pct": 30,
+      "asset_class_pct": 50,
+      "gross_exposure_pct": 200
+    },
+    "order_limits": {
+      "max_notional_usd": 50000,
+      "max_adv_pct": 5,
+      "fat_finger_sigma": 3,
+      "duplicate_window_sec": 5
+    },
+    "loss_limits": {
+      "max_daily_loss_pct": 2,
+      "max_daily_loss_usd": 5000,
+      "max_drawdown_pct": 5,
+      "kill_switch_enabled": true
+    },
+    "wash_trade": {
+      "detection_window_days": 30,
+      "action": "hard_block",
+      "substantially_identical": true
+    }
+  },
+  "post_trade": {
+    "surveillance_enabled": true,
+    "pattern_detection": ["layering", "spoofing", "momentum_ignition", "marking_close"],
+    "best_execution_reporting": "quarterly",
+    "audit_trail_retention_years": 6
+  },
+  "restricted_list": {
+    "symbols": [],
+    "sectors": [],
+    "countries": ["IR", "KP", "SY", "CU"]
+  }
+}

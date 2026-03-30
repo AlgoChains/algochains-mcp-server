@@ -1,0 +1,51 @@
+{
+  "profile_id": "eu_mifid2",
+  "description": "EU MiFID II compliant trading — RTS 6/25, MAR surveillance",
+  "jurisdiction": "EU",
+  "regulations": ["MIFID2_RTS6", "MIFID2_RTS25", "MAR", "EMIR"],
+  "pre_trade": {
+    "position_limits": {
+      "single_name_pct": 10,
+      "sector_pct": 30,
+      "asset_class_pct": 50,
+      "gross_exposure_pct": 200
+    },
+    "order_limits": {
+      "max_notional_eur": 100000,
+      "max_adv_pct": 5,
+      "fat_finger_sigma": 3,
+      "duplicate_window_sec": 5,
+      "max_order_to_trade_ratio": 4.0
+    },
+    "loss_limits": {
+      "max_daily_loss_pct": 2,
+      "max_daily_loss_eur": 10000,
+      "max_drawdown_pct": 5,
+      "kill_switch_enabled": true,
+      "kill_switch_rts6_compliant": true
+    },
+    "wash_trade": {
+      "detection_window_days": 30,
+      "action": "hard_block",
+      "substantially_identical": true
+    },
+    "clock_sync": {
+      "max_divergence_us": 1000000,
+      "high_frequency_max_divergence_us": 100,
+      "ntp_source": "required"
+    }
+  },
+  "post_trade": {
+    "surveillance_enabled": true,
+    "pattern_detection": ["layering", "spoofing", "momentum_ignition", "marking_close", "insider_trading", "market_manipulation"],
+    "best_execution_reporting": "quarterly",
+    "audit_trail_retention_years": 5,
+    "transaction_reporting": true,
+    "algo_registration_required": true
+  },
+  "restricted_list": {
+    "symbols": [],
+    "sectors": [],
+    "countries": ["IR", "KP", "SY", "CU", "BY", "RU"]
+  }
+}
