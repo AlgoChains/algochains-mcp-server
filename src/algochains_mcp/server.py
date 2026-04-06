@@ -256,21 +256,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 logger = logging.getLogger("algochains_mcp.server")
 
 SERVER_INSTRUCTIONS = (
-    "AlgoChains MCP Server v21.0 — The Ultimate Algo Quant Stack. "
-    "350+ tools across 18 domains: market data, trading, strategy building, ML/AI, execution, "
+    "AlgoChains MCP Server v21.3 — The Ultimate Algo Quant Stack. "
+    "338 tools across 19 domains: market data, trading, strategy building, ML/AI, execution, "
     "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
-    "Onyx RAG intelligence, MCP 2025-11-25 spec compliance, and SaaS hardening. "
+    "Onyx RAG intelligence, MCP 2025-11-25 spec compliance, SaaS hardening, and "
+    "autonomous marketplace pipeline (research→backtest→validate→stage). "
     "Real data only — all tools connect to live brokers, real tick feeds, and real APIs. "
-    "In smart mode (default), ~45 Tier-1 tools exposed. "
-    "Use 'discover_tools' to find 300+ additional tools on demand. "
-    "V21 NEW: AlphaLoop evolution daemon (run_evolution_cycle), footprint charts (get_footprint_chart), "
-    "dark pool volume (get_dark_pool_volume_v21), earnings NLP (get_earnings_catalyst), "
-    "prediction markets (get_prediction_markets), macro signals (get_macro_signals), "
-    "Onyx semantic search (onyx_ask, onyx_search), live bot showcase (get_bot_dashboard, subscribe_bot_metrics), "
-    "encrypted key vault (store_api_key), MCP elicitation (request_trade_confirmation), "
-    "durable tasks (submit_long_running_task), crypto perps (get_funding_rate, get_liquidation_clusters), "
-    "staking yields (get_staking_yields), DCA engine (create_dca_schedule). "
-    "Set ALGOCHAINS_TOOL_MODE=full to expose all 350+ tools."
+    "In smart mode (default), ~54 Tier-1 tools exposed. "
+    "Use 'discover_tools' to find 280+ additional tools on demand. "
+    "V21.3 NEW: Autonomous marketplace autopilot (run_marketplace_autopilot), "
+    "marketplace listings (get_marketplace_listings), Onyx ingest trigger (run_onyx_ingest), "
+    "Onyx status (get_onyx_status). Signal conflict manager (get_signal_conflict_stats). "
+    "V21.2: Ultimate Quant Alpha Stack — volatility surface, factor model, HMM regime detection. "
+    "V21: AlphaLoop evolution, footprint charts, dark pool volume, earnings NLP, "
+    "prediction markets, macro signals, Onyx semantic search, live bot showcase, "
+    "encrypted key vault, desktop tower dispatcher (dispatch_tower_job). "
+    "LIVE: 4 futures bots (MNQ/CL/MES/NQ, owner-only), Alpaca paper trader (equities+crypto, subscribable). "
+    "Command Center: algochains-command-center (Next.js, port 3333). "
+    "Set ALGOCHAINS_TOOL_MODE=full to expose all 338 tools."
 )
 
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
@@ -2994,6 +2997,29 @@ TOOLS = [
     Tool(name="get_paper_trading_metrics", description="Get real paper trading metrics from the Alpaca unified paper trader: equity curve, open positions, today's P&L, win rate, recent signals. Data from the live $144K paper account.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
+
+    # ── Marketplace Autopilot Pipeline ─────────────────────────────────────
+    Tool(name="run_marketplace_autopilot", description="Run the autonomous marketplace pipeline: Research→Backtest→MCPT Validate→Stage for marketplace. Scans recent strategy research, runs tick backtests, applies 5-gate validation, stages passing strategies as marketplace JSON listings. Triggers Onyx ingest and Slack notification. No synthetic data — real tick engines only.",
+         inputSchema={"type": "object", "properties": {
+             "stage": {"type": "string", "enum": ["all", "research", "backtest", "validate", "stage"], "default": "all", "description": "Pipeline stage to run"},
+             "symbol": {"type": "string", "description": "Limit to specific symbol (optional)"},
+             "dry_run": {"type": "boolean", "default": False, "description": "No writes, just report what would happen"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_EXTERNAL),
+    Tool(name="get_marketplace_listings", description="Get all staged marketplace bot listings with real metrics: futures (owner-only), equities, crypto, forex. Includes Sharpe, win rate, max DD, subscription pricing, and paper trading status.",
+         inputSchema={"type": "object", "properties": {
+             "asset_class": {"type": "string", "enum": ["all", "equities", "crypto", "futures", "forex", "options"], "default": "all"},
+             "status": {"type": "string", "enum": ["all", "live", "validated", "paper"], "default": "all"},
+         }, "required": []},
+         annotations=ANNOT_READ_LOCAL),
+    Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the AlgoChains knowledge brain at 100.89.114.31:8085. Replaces Vertex AI RAG pipeline.",
+         inputSchema={"type": "object", "properties": {
+             "full_sync": {"type": "boolean", "default": False, "description": "Full re-index vs incremental (new files only)"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_EXTERNAL),
+    Tool(name="get_onyx_status", description="Check Onyx knowledge base status: health, last sync time, total indexed documents, connector status. Onyx at 100.89.114.31:8085.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
 ]
 
 
@@ -3082,6 +3108,11 @@ TIER1_TOOL_NAMES = {
     "detect_regime_hmm",
     "get_vix_term_structure",
     "compute_correlation_matrix",
+    # Marketplace Autopilot + Onyx
+    "run_marketplace_autopilot",
+    "get_marketplace_listings",
+    "run_onyx_ingest",
+    "get_onyx_status",
 }
 
 
@@ -5449,6 +5480,124 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             })
         except Exception as exc:
             return _text({"error": f"Paper trading metrics error: {exc}"})
+
+    # ═══════════════════════════════════════════════════════════════
+    # Marketplace Autopilot + Onyx
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "run_marketplace_autopilot":
+        try:
+            import subprocess as _sp
+            import sys as _sys
+            _ct = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+            _script = os.path.join(_ct, "autonomous", "marketplace_autopilot.py")
+            _cmd = [_sys.executable, _script]
+            _stage = args.get("stage", "all")
+            if _stage != "all":
+                _cmd += ["--stage", _stage]
+            if args.get("symbol"):
+                _cmd += ["--symbol", args["symbol"]]
+            if args.get("dry_run", False):
+                _cmd += ["--dry-run"]
+            _result = _sp.run(_cmd, capture_output=True, text=True, timeout=600, cwd=_ct)
+            return _text({
+                "status": "success" if _result.returncode == 0 else "error",
+                "returncode": _result.returncode,
+                "stdout": _result.stdout[-3000:] if _result.stdout else "",
+                "stderr": _result.stderr[-1000:] if _result.stderr else "",
+                "stage": _stage,
+                "source": "marketplace_autopilot.py",
+            })
+        except Exception as exc:
+            return _text({"error": f"Marketplace autopilot error: {exc}"})
+
+    elif name == "get_marketplace_listings":
+        try:
+            import glob as _glob
+            _ct = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+            _mdir = os.path.join(_ct, "research_pipeline", "marketplace")
+            _asset_filter = args.get("asset_class", "all")
+            _status_filter = args.get("status", "all")
+            _listings = []
+            for _fpath in sorted(_glob.glob(os.path.join(_mdir, "*.json"))):
+                try:
+                    with open(_fpath) as _f:
+                        _data = json.loads(_f.read())
+                    _ac = _data.get("asset_class", "unknown")
+                    _st = "live" if _data.get("source") == "live_production" else (
+                          "validated" if _data.get("validation_gates_passed") else "paper")
+                    if _asset_filter != "all" and _ac != _asset_filter:
+                        continue
+                    if _status_filter != "all" and _st != _status_filter:
+                        continue
+                    _listings.append({
+                        "bot_id": _data.get("bot_id"),
+                        "name": _data.get("name"),
+                        "symbol": _data.get("symbol"),
+                        "asset_class": _ac,
+                        "strategy": _data.get("strategy_type"),
+                        "status": _st,
+                        "oos_sharpe": (_data.get("performance") or {}).get("oos_sharpe"),
+                        "win_rate": (_data.get("performance") or {}).get("win_rate"),
+                        "max_dd": (_data.get("performance") or {}).get("max_drawdown_pct"),
+                        "futures_locked": _data.get("futures_locked", False),
+                        "subscribable": _data.get("subscribable", False),
+                        "subscription_price": _data.get("subscription_price_monthly"),
+                        "paper_only": _data.get("paper_only", False),
+                        "access_level": _data.get("access_level", "subscriber"),
+                    })
+                except Exception:
+                    pass
+            return _text({
+                "total": len(_listings),
+                "live": sum(1 for b in _listings if b["status"] == "live"),
+                "validated": sum(1 for b in _listings if b["status"] == "validated"),
+                "paper": sum(1 for b in _listings if b["status"] == "paper"),
+                "subscribable": sum(1 for b in _listings if b["subscribable"]),
+                "owner_only": sum(1 for b in _listings if b["futures_locked"]),
+                "listings": _listings,
+                "source": _mdir,
+            })
+        except Exception as exc:
+            return _text({"error": f"Marketplace listings error: {exc}"})
+
+    elif name == "run_onyx_ingest":
+        try:
+            import subprocess as _sp
+            import sys as _sys
+            _ct = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+            _script = os.path.join(_ct, "autonomous", "onyx_ingest.py")
+            _mode = "--full-sync" if args.get("full_sync", False) else "--incremental"
+            _result = _sp.run(
+                [_sys.executable, _script, _mode],
+                capture_output=True, text=True, timeout=300, cwd=_ct,
+            )
+            return _text({
+                "status": "success" if _result.returncode == 0 else "error",
+                "returncode": _result.returncode,
+                "output": _result.stdout[-2000:] if _result.stdout else "",
+                "mode": _mode,
+                "source": "onyx_ingest.py",
+            })
+        except Exception as exc:
+            return _text({"error": f"Onyx ingest error: {exc}"})
+
+    elif name == "get_onyx_status":
+        try:
+            import httpx as _httpx
+            _onyx_url = os.getenv("ONYX_API_URL", "http://100.89.114.31:8085")
+            _key = os.getenv("ONYX_API_KEY", "")
+            _headers = {"Authorization": f"Bearer {_key}"} if _key else {}
+            async with _httpx.AsyncClient(timeout=10) as _hc:
+                _r = await _hc.get(f"{_onyx_url}/health", headers=_headers)
+                _health = _r.status_code == 200
+            return _text({
+                "healthy": _health,
+                "url": _onyx_url,
+                "source": "onyx_health_check",
+                "note": "Onyx at 100.89.114.31:8085 (Desktop Tower). Replaces Vertex AI RAG.",
+            })
+        except Exception as exc:
+            return _text({"error": f"Onyx status check failed: {exc}", "url": os.getenv("ONYX_API_URL", "http://100.89.114.31:8085")})
 
     # ═══════════════════════════════════════════════════════════════
     # Ultimate Quant Alpha Stack

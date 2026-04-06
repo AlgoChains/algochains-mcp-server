@@ -1,13 +1,15 @@
-# AlgoChains MCP Server v21.0
+# AlgoChains MCP Server v21.3
 
 > **The institutional-grade Model Context Protocol server for autonomous trading systems.**  
-> Drop this into Claude, Cursor, or any MCP-compatible AI — and you get a full trading desk.
+> Drop this into Claude, Cursor, or any MCP-compatible AI — and you get a full autonomous trading desk.
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-350%2B-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-338-green?style=flat-square)](#tool-categories)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
 [![Brokers](https://img.shields.io/badge/brokers-Tradovate%20%7C%20Alpaca%20%7C%20OANDA-orange?style=flat-square)](#supported-brokers)
+[![Bots](https://img.shields.io/badge/live%20bots-4%20futures%20%2B%20equities%2Fcrypto-red?style=flat-square)](#live-bot-showcase)
+[![Onyx](https://img.shields.io/badge/Onyx-RAG%20Knowledge%20Brain-8b5cf6?style=flat-square)](#onyx-intelligence)
 
 ---
 
@@ -15,17 +17,31 @@
 
 AlgoChains MCP Server exposes a **live, institutional-grade trading platform** as a set of AI-callable tools — compatible with Claude Desktop, Cursor, VS Code, and any MCP 2025-11-25-compliant client.
 
-**No paper data. No synthetic fills. No placeholder values.**  
+**No paper data. No synthetic fills. No placeholder values. No Vertex AI — Onyx on-prem replaces it all.**  
 Every tool connects to real brokers, real market data feeds (Databento tick-level, Polygon, FRED, CBOE), and real strategy execution infrastructure.
 
 ```
-Your AI assistant                    AlgoChains MCP Server
-  Claude / Cursor         ←MCP→      350+ tools across 18 domains
-  ChatGPT / Copilot                  ↕
-                                     Real Brokers & Live Data
-                                     Tradovate │ Alpaca │ OANDA
-                                     Databento │ Polygon │ FRED
+Your AI assistant                    AlgoChains MCP Server v21.3
+  Claude / Cursor         ←MCP→      338 tools across 19 domains
+  ChatGPT / Copilot                  ↕                    ↕
+                                     Real Brokers       Onyx Knowledge Brain
+                                     Tradovate (Futures)  400+ research docs
+                                     Alpaca (Equities)    80+ skills indexed
+                                     OANDA (Forex)        Live bot logs
+                                     Binance (Crypto)     Blueprints & audits
+                                                          ↕
+                                     Autonomous Pipeline
+                                     Research → Backtest → MCPT → Marketplace
 ```
+
+### V21.3 Highlights
+
+- **Autonomous Marketplace Pipeline** — `run_marketplace_autopilot` scans strategy research, runs Rust tick backtests, applies 5-gate MCPT validation, stages passing strategies as subscribable marketplace bots — zero human intervention required
+- **Live Futures Showcase** — 4 live bots (MNQ Sharpe 4.61, CL, MES, NQ) with real fill metrics, locked to owner only
+- **Subscribable Equities & Crypto** — Alpaca paper trader running 16 equities + 8 crypto pairs with real fills, subscribable at $9-29/mo
+- **Onyx Intelligence Brain** — Replaces Vertex AI RAG. Self-hosted on desktop GPU (100.89.114.31:8085), daily sync at 3am PT
+- **Signal Conflict Manager** — Formalized buy/sell overlap policy with SQLite audit log, backtested design
+- **Desktop Tower Dispatcher** — Auto-routes heavy Optuna/backtest jobs to Windows GPU tower via Tailscale SSH
 
 ---
 

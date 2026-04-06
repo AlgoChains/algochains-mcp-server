@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "algochains-mcp-server"
-version = "21.1.0"
-description = "AlgoChains MCP Server — The Ultimate Algo Quant Stack. 281+ tools: live trading (Tradovate/Alpaca/OANDA/Binance), AlphaLoop self-improving strategies, order flow intelligence (footprint/delta/dark pool), Onyx RAG search, volatility surfaces, factor models, HMM regime detection, MCP 2025-11-25 spec, private bot showcase, and real data only policy."
+version = "21.3.0"
+description = "AlgoChains MCP Server — The Ultimate Algo Quant Stack. 338 tools: live trading (Tradovate/Alpaca/OANDA/Binance), AlphaLoop self-improving strategies, order flow intelligence, Onyx RAG, volatility surfaces, factor models, HMM regime detection, autonomous marketplace pipeline, MCP 2025-11-25 spec, private futures bot showcase, real data only."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
