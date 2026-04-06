@@ -42,6 +42,10 @@ class BrokerRegistry:
             from .quantconnect_connector import QuantConnectConnector
             connectors["quantconnect"] = QuantConnectConnector(self.cfg.quantconnect)
 
+        if self.cfg.tradovate.cid:
+            from .tradovate import TradovateConnector
+            connectors["tradovate"] = TradovateConnector(self.cfg.tradovate)
+
         return connectors
 
     async def connect_all(self) -> dict[str, bool]:

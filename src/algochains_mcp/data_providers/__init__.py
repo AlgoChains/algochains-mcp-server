@@ -6,6 +6,7 @@ All providers implement the same DataProvider interface for
 consistent usage across the MCP server tools.
 
 Supported providers:
+  - Massive.com   (enterprise white-label — stocks/options/futures/forex/crypto/indices/SEC)
   - Polygon.io    (real-time + historical, stocks/options/crypto/forex)
   - Databento     (institutional-grade tick data, futures/equities)
   - Alpha Vantage (free tier, fundamentals + technicals)

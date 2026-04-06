@@ -11,12 +11,13 @@ class SocialMediaEngine:
     def __init__(self) -> None:
         self._cache: dict = {}
 
-    async def get_social_sentiment(self, symbol: str, platforms: list[str] | None = None) -> dict:
+    async def analyze(self, symbol: str, platform: str | None = None, lookback_hours: int = 24) -> dict:
         try:
             return {
                 "status": "ok",
                 "symbol": symbol,
-                "platforms": platforms or ["reddit", "twitter", "stocktwits"],
+                "platform": platform or "all",
+                "lookback_hours": lookback_hours,
                 "sentiment_score": 0.0,
                 "mention_count": 0,
                 "trending": False,
@@ -26,12 +27,25 @@ class SocialMediaEngine:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def get_trending_tickers(self, platform: str = "reddit", limit: int = 20) -> dict:
+    async def get_momentum(self, symbol: str) -> dict:
         try:
             return {
                 "status": "ok",
-                "platform": platform,
-                "tickers": [],
+                "symbol": symbol,
+                "momentum_score": 0.0,
+                "mention_velocity": 0.0,
+                "sentiment_shift": "flat",
+                "as_of": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_feed(self, symbols: list[str] | None = None, limit: int = 50) -> dict:
+        try:
+            return {
+                "status": "ok",
+                "symbols": symbols or [],
+                "posts": [],
                 "limit": limit,
                 "as_of": datetime.now(timezone.utc).isoformat(),
             }

@@ -12,13 +12,14 @@ class TaskPlanner:
     def __init__(self) -> None:
         self._plans: dict[str, dict] = {}
 
-    async def create_plan(self, goal: str, constraints: dict | None = None) -> dict:
+    async def create_plan(self, goal: str, constraints: dict | None = None, deadline: str | None = None) -> dict:
         try:
             plan_id = uuid.uuid4().hex[:12]
             plan = {
                 "id": plan_id,
                 "goal": goal,
                 "constraints": constraints or {},
+                "deadline": deadline,
                 "steps": [],
                 "status": "pending",
                 "created_at": datetime.now(timezone.utc).isoformat(),

@@ -12,16 +12,18 @@ class FIXGateway:
     def __init__(self) -> None:
         self._sessions: dict[str, dict] = {}
 
-    async def create_session(self, config: dict) -> dict:
+    async def connect(self, venue: str, sender_comp_id: str, target_comp_id: str, config: dict | None = None) -> dict:
         try:
             session_id = uuid.uuid4().hex[:12]
+            cfg = config or {}
             session = {
                 "id": session_id,
-                "sender_comp_id": config.get("sender_comp_id", "ALGOCHAINS"),
-                "target_comp_id": config.get("target_comp_id", ""),
-                "fix_version": config.get("fix_version", "4.4"),
-                "host": config.get("host", ""),
-                "port": config.get("port", 0),
+                "venue": venue,
+                "sender_comp_id": sender_comp_id,
+                "target_comp_id": target_comp_id,
+                "fix_version": cfg.get("fix_version", "4.4"),
+                "host": cfg.get("host", ""),
+                "port": cfg.get("port", 0),
                 "status": "connected",
                 "messages_sent": 0,
                 "messages_received": 0,
@@ -33,54 +35,13 @@ class FIXGateway:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def send_new_order(self, session_id: str, order: dict) -> dict:
+    async def disconnect(self, session_id: str) -> dict:
         try:
             session = self._sessions.get(session_id)
             if not session:
                 return {"status": "error", "error": f"Session {session_id} not found"}
-            session["messages_sent"] += 1
-            msg_id = uuid.uuid4().hex[:12]
-            return {
-                "status": "ok",
-                "fix_message_id": msg_id,
-                "msg_type": "D",
-                "session_id": session_id,
-                "order": order,
-                "sent_at": datetime.now(timezone.utc).isoformat(),
-            }
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-    async def send_cancel(self, session_id: str, orig_order_id: str) -> dict:
-        try:
-            session = self._sessions.get(session_id)
-            if not session:
-                return {"status": "error", "error": f"Session {session_id} not found"}
-            session["messages_sent"] += 1
-            return {
-                "status": "ok",
-                "msg_type": "F",
-                "session_id": session_id,
-                "orig_order_id": orig_order_id,
-                "sent_at": datetime.now(timezone.utc).isoformat(),
-            }
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-    async def send_replace(self, session_id: str, orig_order_id: str, updates: dict) -> dict:
-        try:
-            session = self._sessions.get(session_id)
-            if not session:
-                return {"status": "error", "error": f"Session {session_id} not found"}
-            session["messages_sent"] += 1
-            return {
-                "status": "ok",
-                "msg_type": "G",
-                "session_id": session_id,
-                "orig_order_id": orig_order_id,
-                "updates": updates,
-                "sent_at": datetime.now(timezone.utc).isoformat(),
-            }
+            session["status"] = "disconnected"
+            return {"status": "ok", "session_id": session_id, "disconnected": True}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 

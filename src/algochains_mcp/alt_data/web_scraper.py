@@ -12,13 +12,13 @@ class WebScraperEngine:
     def __init__(self) -> None:
         self._jobs: dict[str, dict] = {}
 
-    async def create_scrape_job(self, url: str, selectors: dict, schedule: str | None = None) -> dict:
+    async def scrape(self, url: str, selectors: dict | None = None, schedule: str | None = None) -> dict:
         try:
             job_id = uuid.uuid4().hex[:12]
             job = {
                 "id": job_id,
                 "url": url,
-                "selectors": selectors,
+                "selectors": selectors or {},
                 "schedule": schedule,
                 "status": "pending",
                 "runs": 0,
@@ -30,7 +30,13 @@ class WebScraperEngine:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def run_scrape(self, job_id: str) -> dict:
+    async def list_jobs(self) -> dict:
+        try:
+            return {"status": "ok", "jobs": list(self._jobs.values()), "count": len(self._jobs)}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_results(self, job_id: str, limit: int = 100) -> dict:
         try:
             job = self._jobs.get(job_id)
             if not job:
@@ -38,6 +44,6 @@ class WebScraperEngine:
             job["runs"] += 1
             job["last_run"] = datetime.now(timezone.utc).isoformat()
             job["status"] = "completed"
-            return {"status": "ok", "job_id": job_id, "data": [], "scraped_at": job["last_run"]}
+            return {"status": "ok", "job_id": job_id, "data": [], "limit": limit, "scraped_at": job["last_run"]}
         except Exception as e:
             return {"status": "error", "error": str(e)}

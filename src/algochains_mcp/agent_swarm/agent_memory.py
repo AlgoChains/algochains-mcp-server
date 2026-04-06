@@ -9,29 +9,36 @@ class AgentMemory:
     """Shared memory store for agent coordination."""
 
     def __init__(self) -> None:
-        self._memory: dict[str, Any] = {}
+        self._memory: list[dict] = []
 
-    async def store(self, key: str, value: Any, agent_id: str | None = None) -> dict:
+    async def store(self, agent_id: str, memory_type: str, content: Any) -> dict:
         try:
-            self._memory[key] = {"value": value, "agent_id": agent_id, "stored_at": datetime.now(timezone.utc).isoformat()}
-            return {"status": "ok", "key": key}
+            entry = {"agent_id": agent_id, "memory_type": memory_type, "content": content, "stored_at": datetime.now(timezone.utc).isoformat()}
+            self._memory.append(entry)
+            return {"status": "ok", "entry": entry}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def retrieve(self, key: str) -> dict:
+    async def query(self, query: str, memory_type: str | None = None, agent_id: str | None = None, limit: int = 10) -> dict:
         try:
-            entry = self._memory.get(key)
-            if not entry:
-                return {"status": "error", "error": f"Key {key} not found"}
-            return {"status": "ok", "key": key, "data": entry}
+            results = self._memory[:]
+            if memory_type:
+                results = [m for m in results if m.get("memory_type") == memory_type]
+            if agent_id:
+                results = [m for m in results if m.get("agent_id") == agent_id]
+            return {"status": "ok", "results": results[:limit], "count": len(results)}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def list_keys(self, prefix: str | None = None) -> dict:
+    async def get_stats(self, agent_id: str | None = None) -> dict:
         try:
-            keys = list(self._memory.keys())
-            if prefix:
-                keys = [k for k in keys if k.startswith(prefix)]
-            return {"status": "ok", "keys": keys, "count": len(keys)}
+            entries = self._memory
+            if agent_id:
+                entries = [m for m in entries if m.get("agent_id") == agent_id]
+            types = {}
+            for m in entries:
+                t = m.get("memory_type", "unknown")
+                types[t] = types.get(t, 0) + 1
+            return {"status": "ok", "total_entries": len(entries), "by_type": types}
         except Exception as e:
             return {"status": "error", "error": str(e)}

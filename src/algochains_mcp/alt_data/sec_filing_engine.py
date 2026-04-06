@@ -13,7 +13,7 @@ class SECFilingEngine:
     def __init__(self) -> None:
         self._cache: dict[str, dict] = {}
 
-    async def get_filings(self, symbol: str, filing_type: str | None = None, limit: int = 10) -> dict:
+    async def analyze(self, symbol: str, filing_type: str | None = None, filing_url: str | None = None) -> dict:
         try:
             if filing_type and filing_type not in self.FILING_TYPES:
                 return {"status": "error", "error": f"Invalid filing type: {filing_type}. Must be one of {self.FILING_TYPES}"}
@@ -21,17 +21,6 @@ class SECFilingEngine:
                 "status": "ok",
                 "symbol": symbol,
                 "filing_type": filing_type,
-                "filings": [],
-                "count": 0,
-                "as_of": datetime.now(timezone.utc).isoformat(),
-            }
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-    async def analyze_filing(self, filing_url: str) -> dict:
-        try:
-            return {
-                "status": "ok",
                 "filing_url": filing_url,
                 "summary": "",
                 "key_metrics": {},
@@ -50,6 +39,19 @@ class SECFilingEngine:
                 "days": days,
                 "trades": [],
                 "net_insider_sentiment": "neutral",
+                "as_of": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_institutional_holdings(self, symbol: str, quarter: str | None = None) -> dict:
+        try:
+            return {
+                "status": "ok",
+                "symbol": symbol,
+                "quarter": quarter or "latest",
+                "holdings": [],
+                "total_institutional_pct": 0.0,
                 "as_of": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:

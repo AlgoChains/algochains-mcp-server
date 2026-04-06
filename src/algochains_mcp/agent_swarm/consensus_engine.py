@@ -10,37 +10,38 @@ class ConsensusEngine:
     """Multi-agent consensus for trading decisions."""
 
     def __init__(self) -> None:
-        self._votes: dict[str, list[dict]] = {}
+        self._proposals: dict[str, dict] = {}
+        self._history: list[dict] = []
 
-    async def propose(self, proposal: dict, required_votes: int = 3) -> dict:
+    async def request(self, proposal: dict, agent_ids: list[str] | None = None, method: str = "majority") -> dict:
         try:
             proposal_id = uuid.uuid4().hex[:12]
-            self._votes[proposal_id] = []
-            return {
-                "status": "ok",
-                "proposal_id": proposal_id,
+            record = {
+                "id": proposal_id,
                 "proposal": proposal,
-                "required_votes": required_votes,
+                "agent_ids": agent_ids or [],
+                "method": method,
+                "votes": [],
+                "status": "pending",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-    async def vote(self, proposal_id: str, agent_id: str, decision: str, confidence: float) -> dict:
-        try:
-            if proposal_id not in self._votes:
-                return {"status": "error", "error": f"Proposal {proposal_id} not found"}
-            vote = {"agent_id": agent_id, "decision": decision, "confidence": confidence, "voted_at": datetime.now(timezone.utc).isoformat()}
-            self._votes[proposal_id].append(vote)
-            return {"status": "ok", "vote": vote, "total_votes": len(self._votes[proposal_id])}
+            self._proposals[proposal_id] = record
+            self._history.append(record)
+            return {"status": "ok", "consensus_request": record}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
     async def get_result(self, proposal_id: str) -> dict:
         try:
-            votes = self._votes.get(proposal_id)
-            if votes is None:
+            record = self._proposals.get(proposal_id)
+            if not record:
                 return {"status": "error", "error": f"Proposal {proposal_id} not found"}
-            return {"status": "ok", "proposal_id": proposal_id, "votes": votes, "total": len(votes)}
+            return {"status": "ok", "result": record}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_history(self, limit: int = 20) -> dict:
+        try:
+            return {"status": "ok", "history": self._history[-limit:], "total": len(self._history)}
         except Exception as e:
             return {"status": "error", "error": str(e)}

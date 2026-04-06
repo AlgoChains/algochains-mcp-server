@@ -12,29 +12,20 @@ class RLAgentEngine:
     def __init__(self) -> None:
         self._agents: dict[str, dict] = {}
 
-    async def create_agent(
-        self,
-        env_config: dict,
-        algo: str = "ppo",
-        reward: str = "sharpe",
-        episodes: int = 1000,
-    ) -> dict:
+    async def create_agent(self, name: str, algorithm: str, environment: dict | None = None, reward_config: dict | None = None) -> dict:
         try:
-            if algo not in ("ppo", "sac"):
-                return {"status": "error", "error": f"Invalid algo: {algo}. Must be 'ppo' or 'sac'"}
-            if reward not in ("sharpe", "pnl", "sortino"):
-                return {"status": "error", "error": f"Invalid reward: {reward}. Must be 'sharpe', 'pnl', or 'sortino'"}
+            if algorithm not in ("ppo", "sac"):
+                return {"status": "error", "error": f"Invalid algorithm: {algorithm}. Must be 'ppo' or 'sac'"}
             agent_id = uuid.uuid4().hex[:12]
             agent = {
                 "id": agent_id,
-                "env_config": env_config,
-                "algo": algo,
-                "reward_fn": reward,
-                "episodes_target": episodes,
+                "name": name,
+                "algorithm": algorithm,
+                "environment": environment or {},
+                "reward_config": reward_config or {"reward_fn": "sharpe"},
                 "episodes_trained": 0,
                 "best_reward": None,
                 "metrics": None,
-                "checkpoint_path": None,
                 "stage": "dev",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -43,13 +34,7 @@ class RLAgentEngine:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def train(
-        self,
-        agent_id: str,
-        train_range: dict | None = None,
-        episodes: int = 1000,
-        checkpoint_every: int = 100,
-    ) -> dict:
+    async def train(self, agent_id: str, episodes: int = 1000, symbol: str | None = None) -> dict:
         try:
             agent = self._agents.get(agent_id)
             if not agent:
@@ -59,14 +44,13 @@ class RLAgentEngine:
                 "status": "ok",
                 "agent_id": agent_id,
                 "episodes_trained": agent["episodes_trained"],
-                "train_range": train_range,
-                "checkpoint_every": checkpoint_every,
+                "symbol": symbol,
                 "trained_at": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def evaluate(self, agent_id: str, eval_range: dict | None = None) -> dict:
+    async def evaluate(self, agent_id: str, episodes: int = 100) -> dict:
         try:
             agent = self._agents.get(agent_id)
             if not agent:
@@ -76,14 +60,14 @@ class RLAgentEngine:
             return {
                 "status": "ok",
                 "agent_id": agent_id,
-                "eval_range": eval_range,
+                "episodes": episodes,
                 "metrics": eval_metrics,
                 "evaluated_at": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def get_agent_state(self, agent_id: str) -> dict:
+    async def get_state(self, agent_id: str) -> dict:
         try:
             agent = self._agents.get(agent_id)
             if not agent:

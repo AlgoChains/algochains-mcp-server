@@ -12,12 +12,13 @@ class TenantManager:
     def __init__(self) -> None:
         self._tenants: dict[str, dict] = {}
 
-    async def create_tenant(self, name: str, plan: str = "starter", config: dict | None = None) -> dict:
+    async def create_tenant(self, company_name: str, admin_email: str, plan: str = "free", config: dict | None = None) -> dict:
         try:
             tenant_id = uuid.uuid4().hex[:12]
             tenant = {
                 "id": tenant_id,
-                "name": name,
+                "company_name": company_name,
+                "admin_email": admin_email,
                 "plan": plan,
                 "config": config or {},
                 "status": "active",
@@ -37,22 +38,15 @@ class TenantManager:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def list_tenants(self, status: str | None = None) -> dict:
-        try:
-            tenants = list(self._tenants.values())
-            if status:
-                tenants = [t for t in tenants if t["status"] == status]
-            return {"status": "ok", "tenants": tenants, "count": len(tenants)}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-    async def update_plan(self, tenant_id: str, new_plan: str) -> dict:
+    async def update_tenant(self, tenant_id: str, updates: dict) -> dict:
         try:
             tenant = self._tenants.get(tenant_id)
             if not tenant:
                 return {"status": "error", "error": f"Tenant {tenant_id} not found"}
-            old_plan = tenant["plan"]
-            tenant["plan"] = new_plan
-            return {"status": "ok", "tenant_id": tenant_id, "old_plan": old_plan, "new_plan": new_plan}
+            for k, v in updates.items():
+                if k != "id":
+                    tenant[k] = v
+            tenant["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return {"status": "ok", "tenant": tenant}
         except Exception as e:
             return {"status": "error", "error": str(e)}

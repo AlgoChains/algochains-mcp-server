@@ -29,10 +29,14 @@ class GPUDispatcher:
     def __init__(self) -> None:
         self._platform = "desktop" if sys.platform == "linux" else "mac"
 
-    async def dispatch(self, task_type: str, payload: dict) -> dict:
+    async def dispatch(self, task_type: str, payload: dict, prefer_gpu: str = "auto") -> dict:
         try:
             config = GPU_DISPATCH_CONFIG
-            if task_type in config["desktop"]["models"]:
+            if prefer_gpu == "desktop":
+                target = "desktop"
+            elif prefer_gpu == "mac":
+                target = "mac"
+            elif task_type in config["desktop"]["models"]:
                 target = "desktop"
             else:
                 target = self._platform
@@ -41,13 +45,14 @@ class GPUDispatcher:
                 "target": target,
                 "device": config[target]["device"],
                 "task_type": task_type,
+                "prefer_gpu": prefer_gpu,
                 "max_batch": config[target]["max_batch"],
                 "dispatched_at": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def check_gpu_status(self) -> dict:
+    async def status(self) -> dict:
         try:
             mac_status = {
                 "platform": "mac",

@@ -12,25 +12,14 @@ class FeatureEngine:
     def __init__(self) -> None:
         self._feature_sets: dict[str, dict] = {}
 
-    async def create_feature_set(
-        self,
-        symbols: list[str],
-        timeframe: str,
-        features: list[dict],
-        target: str,
-        horizon: str,
-        name: str | None = None,
-    ) -> dict:
+    async def create_feature_set(self, name: str, features: list[dict], target: str | None = None) -> dict:
         try:
             fs_id = uuid.uuid4().hex[:12]
             fs = {
                 "id": fs_id,
-                "name": name or f"fs_{fs_id}",
-                "symbols": symbols,
-                "timeframe": timeframe,
+                "name": name,
                 "features": features,
                 "target": target,
-                "horizon": horizon,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             self._feature_sets[fs_id] = fs
@@ -38,18 +27,17 @@ class FeatureEngine:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def compute_features(self, feature_set_id: str, data_range: dict) -> dict:
+    async def compute_features(self, feature_set_id: str, symbol: str, start_date: str | None = None, end_date: str | None = None) -> dict:
         try:
             fs = self._feature_sets.get(feature_set_id)
             if not fs:
                 return {"status": "error", "error": f"Feature set {feature_set_id} not found"}
             computed = {
                 "feature_set_id": feature_set_id,
-                "data_range": data_range,
-                "symbols": fs["symbols"],
+                "symbol": symbol,
+                "start_date": start_date,
+                "end_date": end_date,
                 "feature_count": len(fs["features"]),
-                "target": fs["target"],
-                "horizon": fs["horizon"],
                 "rows_generated": 0,
                 "computed_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -57,10 +45,13 @@ class FeatureEngine:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def list_feature_sets(self) -> list[dict]:
-        return list(self._feature_sets.values())
+    async def list_feature_sets(self) -> dict:
+        try:
+            return {"status": "ok", "feature_sets": list(self._feature_sets.values()), "count": len(self._feature_sets)}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
 
-    async def get_feature_importance(self, feature_set_id: str, model_id: str) -> dict:
+    async def get_feature_importance(self, feature_set_id: str, model_id: str | None = None) -> dict:
         try:
             fs = self._feature_sets.get(feature_set_id)
             if not fs:

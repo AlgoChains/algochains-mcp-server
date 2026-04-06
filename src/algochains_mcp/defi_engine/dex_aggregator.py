@@ -14,7 +14,7 @@ class DEXAggregator:
     def __init__(self) -> None:
         self._quotes: dict[str, dict] = {}
 
-    async def get_quote(self, token_in: str, token_out: str, amount: float, chain: str = "ethereum") -> dict:
+    async def get_quote(self, token_in: str, token_out: str, amount: float, chain: str | None = None) -> dict:
         try:
             quote_id = uuid.uuid4().hex[:12]
             quote = {
@@ -25,7 +25,7 @@ class DEXAggregator:
                 "estimated_out": 0.0,
                 "price_impact_pct": 0.0,
                 "best_route": [],
-                "chain": chain,
+                "chain": chain or "ethereum",
                 "quoted_at": datetime.now(timezone.utc).isoformat(),
             }
             self._quotes[quote_id] = quote
@@ -33,7 +33,7 @@ class DEXAggregator:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def execute_swap(self, quote_id: str, slippage_tolerance: float = 0.5) -> dict:
+    async def execute_swap(self, quote_id: str, slippage_tolerance: float = 0.005, deadline_minutes: int = 20) -> dict:
         try:
             quote = self._quotes.get(quote_id)
             if not quote:
@@ -44,7 +44,22 @@ class DEXAggregator:
                 "tx_hash": tx_hash,
                 "quote_id": quote_id,
                 "slippage_tolerance": slippage_tolerance,
+                "deadline_minutes": deadline_minutes,
                 "executed_at": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_liquidity(self, token_in: str, token_out: str, chain: str | None = None) -> dict:
+        try:
+            return {
+                "status": "ok",
+                "token_in": token_in,
+                "token_out": token_out,
+                "chain": chain or "ethereum",
+                "total_liquidity_usd": 0.0,
+                "dexes": [{"name": d, "liquidity_usd": 0.0} for d in self.SUPPORTED_DEXES],
+                "as_of": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}

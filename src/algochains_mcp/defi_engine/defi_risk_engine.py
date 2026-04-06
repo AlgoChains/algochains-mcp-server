@@ -11,11 +11,11 @@ class DeFiRiskEngine:
     def __init__(self) -> None:
         self._assessments: list[dict] = []
 
-    async def assess_protocol(self, protocol: str, chain: str = "ethereum") -> dict:
+    async def assess(self, protocol: str, chain: str | None = None) -> dict:
         try:
             assessment = {
                 "protocol": protocol,
-                "chain": chain,
+                "chain": chain or "ethereum",
                 "audit_score": 0.0,
                 "tvl_usd": 0.0,
                 "smart_contract_risk": "unknown",
@@ -37,6 +37,31 @@ class DeFiRiskEngine:
                 "chain_concentration": {},
                 "protocol_concentration": {},
                 "risk_score": 0.0,
+                "as_of": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def monitor_liquidation(self, position_id: str) -> dict:
+        try:
+            return {
+                "status": "ok",
+                "position_id": position_id,
+                "health_factor": 0.0,
+                "liquidation_price": 0.0,
+                "collateral_ratio": 0.0,
+                "as_of": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_insurance(self, protocol: str, coverage_amount: float | None = None) -> dict:
+        try:
+            return {
+                "status": "ok",
+                "protocol": protocol,
+                "coverage_amount": coverage_amount,
+                "options": [],
                 "as_of": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:

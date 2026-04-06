@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "algochains": {
+      "command": "algochains-mcp",
+      "env": {
+        "ALGOCHAINS_TOOL_MODE": "full"
+      }
+    }
+  },
+  "defaults": {
+    "outputFormat": "json",
+    "timeout": 120
+  }
+}

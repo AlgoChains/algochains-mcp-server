@@ -10,6 +10,7 @@ class ToolRouter:
 
     def __init__(self) -> None:
         self._call_log: list[dict] = []
+        self._permissions: dict[str, list[str]] = {}
 
     async def route(self, agent_id: str, tool_name: str, arguments: dict) -> dict:
         try:
@@ -24,11 +25,10 @@ class ToolRouter:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def get_call_log(self, agent_id: str | None = None, limit: int = 50) -> dict:
+    async def get_permissions(self, agent_id: str) -> dict:
         try:
-            log = self._call_log
-            if agent_id:
-                log = [e for e in log if e["agent_id"] == agent_id]
-            return {"status": "ok", "log": log[-limit:], "total": len(log)}
+            perms = self._permissions.get(agent_id, ["*"])
+            calls = [e for e in self._call_log if e.get("agent_id") == agent_id]
+            return {"status": "ok", "agent_id": agent_id, "permissions": perms, "recent_calls": len(calls)}
         except Exception as e:
             return {"status": "error", "error": str(e)}

@@ -11,12 +11,13 @@ class SatelliteDataEngine:
     def __init__(self) -> None:
         self._datasets: dict[str, dict] = {}
 
-    async def get_parking_lot_data(self, company: str, locations: list[str] | None = None) -> dict:
+    async def analyze(self, location: str, data_type: str | None = None, symbol: str | None = None) -> dict:
         try:
             return {
                 "status": "ok",
-                "company": company,
-                "locations": locations or [],
+                "location": location,
+                "data_type": data_type or "parking_lot",
+                "symbol": symbol,
                 "occupancy_pct": 0.0,
                 "trend": "stable",
                 "data_points": 0,
@@ -25,14 +26,14 @@ class SatelliteDataEngine:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def get_shipping_data(self, region: str = "global") -> dict:
+    async def get_timeseries(self, location_id: str, metric: str | None = None, lookback_days: int = 30) -> dict:
         try:
             return {
                 "status": "ok",
-                "region": region,
-                "vessel_count": 0,
-                "port_congestion_index": 0.0,
-                "cargo_volume_trend": "stable",
+                "location_id": location_id,
+                "metric": metric or "occupancy",
+                "lookback_days": lookback_days,
+                "data_points": [],
                 "as_of": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:

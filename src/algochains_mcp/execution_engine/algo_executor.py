@@ -12,25 +12,15 @@ class AlgoExecutor:
     ALGO_TYPES = ("twap", "vwap", "iceberg", "sniper")
 
     def __init__(self) -> None:
-        self._algo_orders: dict[str, dict] = {}
+        self._executions: dict[str, dict] = {}
 
-    async def execute_twap(self, order: dict, duration_minutes: int = 30, slice_count: int = 10) -> dict:
-        return await self._create_algo_order("twap", order, {"duration_minutes": duration_minutes, "slice_count": slice_count})
-
-    async def execute_vwap(self, order: dict, participation_rate: float = 0.1, max_duration: int = 60) -> dict:
-        return await self._create_algo_order("vwap", order, {"participation_rate": participation_rate, "max_duration": max_duration})
-
-    async def execute_iceberg(self, order: dict, visible_qty: float = 100, variance_pct: float = 10) -> dict:
-        return await self._create_algo_order("iceberg", order, {"visible_qty": visible_qty, "variance_pct": variance_pct})
-
-    async def execute_sniper(self, order: dict, target_price: float = 0.0, urgency: str = "medium") -> dict:
-        return await self._create_algo_order("sniper", order, {"target_price": target_price, "urgency": urgency})
-
-    async def _create_algo_order(self, algo_type: str, order: dict, params: dict) -> dict:
+    async def start(self, algo_type: str, order: dict, parameters: dict | None = None) -> dict:
         try:
-            algo_id = uuid.uuid4().hex[:12]
-            algo_order = {
-                "id": algo_id,
+            if algo_type not in self.ALGO_TYPES:
+                return {"status": "error", "error": f"Invalid algo_type: {algo_type}. Must be one of {self.ALGO_TYPES}"}
+            execution_id = uuid.uuid4().hex[:12]
+            execution = {
+                "id": execution_id,
                 "algo_type": algo_type,
                 "symbol": order.get("symbol", ""),
                 "side": order.get("side", ""),
@@ -38,33 +28,33 @@ class AlgoExecutor:
                 "filled_qty": 0,
                 "avg_fill_price": None,
                 "status": "active",
-                "params": params,
+                "parameters": parameters or {},
                 "child_orders": [],
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "completed_at": None,
             }
-            self._algo_orders[algo_id] = algo_order
-            return {"status": "ok", "algo_order": algo_order}
+            self._executions[execution_id] = execution
+            return {"status": "ok", "execution": execution}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def get_status(self, algo_order_id: str) -> dict:
+    async def stop(self, execution_id: str) -> dict:
         try:
-            order = self._algo_orders.get(algo_order_id)
-            if not order:
-                return {"status": "error", "error": f"Algo order {algo_order_id} not found"}
-            pct = (order["filled_qty"] / order["total_qty"] * 100) if order["total_qty"] > 0 else 0
-            return {"status": "ok", "algo_order": order, "fill_pct": round(pct, 2)}
+            execution = self._executions.get(execution_id)
+            if not execution:
+                return {"status": "error", "error": f"Execution {execution_id} not found"}
+            execution["status"] = "stopped"
+            execution["completed_at"] = datetime.now(timezone.utc).isoformat()
+            return {"status": "ok", "execution_id": execution_id, "new_status": "stopped"}
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def cancel(self, algo_order_id: str) -> dict:
+    async def get_status(self, execution_id: str) -> dict:
         try:
-            order = self._algo_orders.get(algo_order_id)
-            if not order:
-                return {"status": "error", "error": f"Algo order {algo_order_id} not found"}
-            order["status"] = "cancelled"
-            order["completed_at"] = datetime.now(timezone.utc).isoformat()
-            return {"status": "ok", "algo_order_id": algo_order_id, "new_status": "cancelled"}
+            execution = self._executions.get(execution_id)
+            if not execution:
+                return {"status": "error", "error": f"Execution {execution_id} not found"}
+            pct = (execution["filled_qty"] / execution["total_qty"] * 100) if execution["total_qty"] > 0 else 0
+            return {"status": "ok", "execution": execution, "fill_pct": round(pct, 2)}
         except Exception as e:
             return {"status": "error", "error": str(e)}

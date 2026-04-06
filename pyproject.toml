@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "algochains-mcp-server"
-version = "7.0.0"
-description = "AlgoChains MCP Server — Universal AI-to-broker trading protocol with BYOK key orchestration, proprietary dataset builder, marketplace, MCPT validation, streaming, portfolio optimization, notifications, and pluggable data providers"
+version = "20.0.0"
+description = "AlgoChains MCP Server — Universal AI-to-broker trading protocol with 275+ tools, account protection (13 pre-trade safety guards), Builder SDK ($199/mo data warehouse + strategy submission), MCPT marketplace, BYOK keys, streaming, portfolio optimization, and memory-safe architecture"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 authors = [{ name = "AlgoChains", email = "tyler@algochains.io" }]
-keywords = ["mcp", "trading", "broker", "algochains", "alpaca", "ibkr", "oanda", "quantconnect", "polygon", "finnhub", "portfolio", "streaming", "byok", "datasets", "ml"]
+keywords = ["mcp", "trading", "broker", "algochains", "alpaca", "ibkr", "oanda", "quantconnect", "polygon", "finnhub", "portfolio", "streaming", "byok", "datasets", "ml", "backtrader", "marketplace", "account-protection"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -25,6 +25,8 @@ dependencies = [
     "httpx>=0.27.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
+    "pandas>=2.0.0",
+    "yfinance>=0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -59,6 +61,8 @@ data-all = [
 ]
 notifications = ["firebase-admin>=6.0.0"]
 datasets = ["pandas>=2.0.0", "pyarrow>=14.0.0"]
+backtrader = ["backtrader>=1.9.78"]
+supabase = ["supabase>=2.0.0"]
 
 [project.scripts]
 algochains-mcp = "algochains_mcp.server:main"

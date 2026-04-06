@@ -12,31 +12,44 @@ class SentimentEngine:
     def __init__(self) -> None:
         self._cache: dict[str, dict] = {}
 
-    async def analyze_news(self, symbol: str, sources: list[str] | None = None, lookback_hours: int = 24) -> dict:
+    async def analyze(self, symbol: str, source: str | None = None, text: str | None = None) -> dict:
         try:
             return {
                 "status": "ok",
                 "symbol": symbol,
-                "sources": sources or ["reuters", "bloomberg", "wsj"],
-                "lookback_hours": lookback_hours,
+                "source": source or "news",
+                "text_provided": bool(text),
                 "sentiment_score": 0.0,
                 "sentiment_label": "neutral",
-                "article_count": 0,
-                "top_articles": [],
+                "confidence": 0.0,
                 "analyzed_at": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def get_sentiment_history(self, symbol: str, days: int = 30) -> dict:
+    async def get_history(self, symbol: str, source: str | None = None, lookback_days: int = 30) -> dict:
         try:
             return {
                 "status": "ok",
                 "symbol": symbol,
-                "days": days,
+                "source": source or "all",
+                "lookback_days": lookback_days,
                 "history": [],
                 "avg_sentiment": 0.0,
                 "trend": "flat",
+                "as_of": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_signal(self, symbol: str) -> dict:
+        try:
+            return {
+                "status": "ok",
+                "symbol": symbol,
+                "signal": "neutral",
+                "strength": 0.0,
+                "sources_analyzed": 0,
                 "as_of": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:

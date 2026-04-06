@@ -140,6 +140,25 @@ class SubscriptionError(MarketplaceError):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Input validation
+# ═══════════════════════════════════════════════════════════════════
+
+class InputValidationError(AlgoChainsError):
+    """Tool arguments failed input validation — missing or invalid fields."""
+
+    def __init__(self, message: str, tool: str = "", field: str = "", **kwargs):
+        self.tool = tool
+        self.field = field
+        super().__init__(message, **kwargs)
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d["tool"] = self.tool
+        d["field"] = self.field
+        return d
+
+
+# ═══════════════════════════════════════════════════════════════════
 # Rate limiting
 # ═══════════════════════════════════════════════════════════════════
 

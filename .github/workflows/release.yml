@@ -1,0 +1,88 @@
+name: Release CLI + SDK
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install AlgoChains MCP + MCPorter
+        run: |
+          pip install -e ".[dev]"
+          npm install -g mcporter
+
+      - name: Generate CLI bundle
+        run: |
+          npx mcporter generate-cli --server algochains --bundle dist/algochains-cli.js
+          echo "CLI_SIZE=$(wc -c < dist/algochains-cli.js)" >> $GITHUB_ENV
+
+      - name: Generate TypeScript SDK
+        run: |
+          npx mcporter emit-ts algochains --mode types --out packages/sdk/src/types.d.ts
+          npx mcporter emit-ts algochains --mode client --out packages/sdk/src/client.d.ts
+          echo "SDK_LINES=$(wc -l < packages/sdk/src/types.d.ts)" >> $GITHUB_ENV
+
+      - name: Verify tool count
+        run: |
+          TOOLS=$(npx mcporter list algochains --json | jq '.tools | length')
+          echo "TOOL_COUNT=$TOOLS" >> $GITHUB_ENV
+          [ "$TOOLS" -ge 242 ] || (echo "Tool count regression: $TOOLS < 242" && exit 1)
+
+      - name: Create release artifacts
+        run: |
+          mkdir -p release
+          cp dist/algochains-cli.js release/
+          tar -czf release/algochains-sdk-${{ github.ref_name }}.tar.gz -C packages/sdk .
+          cp scripts/algochains release/algochains-wrapper.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/algochains-cli.js
+            release/algochains-sdk-${{ github.ref_name }}.tar.gz
+            release/algochains-wrapper.sh
+          body: |
+            ## AlgoChains ${{ github.ref_name }}
+
+            **Tools:** ${{ env.TOOL_COUNT }}
+            **CLI Bundle:** ${{ env.CLI_SIZE }} bytes
+            **SDK Types:** ${{ env.SDK_LINES }} lines
+
+            ### Quick Start
+            ```bash
+            # Download CLI
+            curl -fsSL https://github.com/AlgoChains/algochains-mcp-server/releases/download/${{ github.ref_name }}/algochains-cli.js -o algochains-cli.js
+            node algochains-cli.js discover-tools --query "portfolio"
+            node algochains-cli.js detect-market-regime
+            ```
+
+  publish-sdk:
+    runs-on: ubuntu-latest
+    needs: build-cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Publish @algochains/sdk
+        working-directory: packages/sdk
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

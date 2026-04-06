@@ -1,12 +1,26 @@
 """
-AlgoChains MCP Server — the main entry point.
+AlgoChains MCP Server v18.0 — institutional-grade trading platform.
 
-Exposes 25+ tools across 5 domains:
-  1. Trading    — place/cancel/close orders on any connected broker
-  2. Portfolio  — positions, account info, P&L across all brokers
-  3. Market     — quotes, snapshots
-  4. Marketplace — browse/publish/subscribe to AlgoChains bot listings
-  5. Strategy   — submit strategies for MCPT validation, check gate status
+242 tools across 12 domains (V10–V18), with smart tiered exposure:
+
+  SMART MODE (default, ALGOCHAINS_TOOL_MODE=smart):
+    25 Tier 1 tools exposed directly — trading, data, strategy, intent, meta-tools.
+    210+ Tier 2 tools discoverable via discover_tools → execute_dynamic_tool.
+    ~4K tokens vs ~40K+. Works within Cursor (80-tool limit) and Windsurf.
+
+  FULL MODE (ALGOCHAINS_TOOL_MODE=full):
+    All 242 tools exposed. For clients with their own lazy loading (Claude Code).
+
+V17.1 additions (MCP 2025-06-18 spec compliance):
+  - Tool Behavior Annotations on ALL tools (readOnly/destructive/idempotent/openWorld)
+  - Massive parity: pagination auto-detection, per-request API key, LLM tracking
+  - Composable pipeline: massive_run_pipeline (search→fetch→store→query in 1 call)
+  - Resource Templates: algochains://market/{ticker}, portfolio/{broker}, massive/tables/{table}
+
+Research basis:
+  - arXiv:2603.20313 — 99.6% token reduction with semantic tool discovery
+  - Claude Code MCP Tool Search — 95% context savings via lazy loading
+  - Cursor hard limit: 80 tools. This server exposes 21 in smart mode.
 
 Start with:  algochains-mcp  (or python -m algochains_mcp.server)
 """
@@ -26,8 +40,10 @@ from mcp.types import (
     PromptArgument,
     PromptMessage,
     Resource,
+    ResourceTemplate,
     TextContent,
     Tool,
+    ToolAnnotations,
 )
 
 from .brokers.base import OrderSide, OrderType
@@ -40,7 +56,11 @@ from .errors import (
 )
 from .marketplace.bridge import MarketplaceBridge
 from .marketplace.validator import StrategyValidator
-from .middleware import get_rate_limiter, get_tool_logger
+from .middleware import (
+    get_rate_limiter, get_tool_category, get_tool_logger, get_tool_semaphore,
+    get_tool_timeout, validate_arguments, check_circuit, record_success,
+    record_failure, guard_response_size, CircuitOpenError,
+)
 from .streaming.manager import StreamManager, StreamTopic
 from .portfolio.optimizer import AllocationMethod, BotMetrics, PortfolioOptimizer
 from .notifications.push import (
@@ -109,11 +129,118 @@ from .cloud_saas.billing_engine import BillingEngine
 from .cloud_saas.strategy_marketplace import StrategyMarketplace
 from .cloud_saas.white_label_engine import WhiteLabelEngine
 from .cloud_saas.api_gateway import APIGateway
+# V17: Massive White-Label + Dynamic Toolsets
+from .data_providers.massive_whitelabel import MassiveWhiteLabelProvider
+from .dynamic_toolsets.gateway import DynamicToolsetGateway
+# V18: Intent-Based Trading + Genius Layer
+from .intent_engine.intent_parser import IntentParser
+from .intent_engine.constraint_solver import ConstraintSolver
+from .intent_engine.plan_executor import PlanExecutor
+from .intent_engine.shadow_portfolio import ShadowPortfolioEngine
+from .intent_engine.strategy_evolution import StrategyEvolutionEngine
+from .intent_engine.arbitrage_detector import ArbitrageDetector
+from .intent_engine.predictive_prefetch import PredictiveStatePrefetch
+from .intent_engine.regime_detector import RegimeDetector as IntentRegimeDetector
+# V20: Account Protection + Builder SDK + Memory Safety
+from .account_protection.engine import AccountProtectionEngine, ProtectionConfig
+from .account_protection.guards import AccountSnapshot, OrderIntent
+from .builder_sdk.data_warehouse import DataWarehouseClient, DataQuery
+from .builder_sdk.strategy_runner import StrategyRunner, BacktestConfig
+from .builder_sdk.submission_pipeline import SubmissionPipeline, StrategySubmission
+from .memory_safety import get_memory_monitor, MemoryMonitor
+# V19: Alpha Engines — real alpha-generating analytics
+from .alpha_engines.vwap_engine import VWAPEngine
+from .alpha_engines.dark_pool_engine import DarkPoolEngine
+from .alpha_engines.gex_engine import GEXEngine
+from .alpha_engines.vol_surface import VolSurfaceEngine
+from .alpha_engines.cross_asset import CrossAssetEngine
+from .alpha_engines.congressional import CongressionalEngine
+from .alpha_engines.kelly_engine import KellyEngine
+from .alpha_engines.options_flow import OptionsFlowEngine
+from .alpha_engines.tape_reader import TapeReaderEngine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("algochains_mcp.server")
 
-app = Server("algochains-mcp-server")
+SERVER_INSTRUCTIONS = (
+    "AlgoChains MCP Server v19 — institutional-grade trading platform with 262 tools across "
+    "market data, trading, strategy building, ML/AI, execution, analytics, alt data, DeFi, cloud SaaS, "
+    "intent-based trading, and V19 alpha engines. In smart mode (default), ~25 core tools are exposed. "
+    "Use 'discover_tools' to find 230+ additional tools. NEW in V19: Alpha engines for VWAP deviation, "
+    "dark pool detection, gamma exposure (GEX), volatility surface, cross-asset correlation, congressional/"
+    "insider trades, Kelly criterion sizing, unusual options flow, and tape reading. Use 'compute_gex' for "
+    "dealer gamma, 'unusual_options_activity' for smart money flow, 'read_tape' for tick-level momentum, "
+    "'compute_kelly' for optimal position sizing, and 'pair_trade_signal' for stat-arb. "
+    "For market data, use 'massive_*' tools. Set ALGOCHAINS_TOOL_MODE=full to expose all tools."
+)
+
+app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
+
+# ═══════════════════════════════════════════════════════════════════
+# MCP 2025-06-18 Tool Behavior Annotations — safety metadata
+# ═══════════════════════════════════════════════════════════════════
+# IDEs use these to auto-approve safe tools and show confirmation for dangerous ones.
+ANNOT_READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+ANNOT_READ_EXTERNAL = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+ANNOT_WRITE_SAFE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+ANNOT_WRITE_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
+ANNOT_TRADE_EXEC = ToolAnnotations(title="Trade Execution", readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
+ANNOT_SEARCH = ToolAnnotations(title="Search", readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+ANNOT_COMPUTE = ToolAnnotations(title="Computation", readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+
+# Map tool names → their annotation category for bulk assignment
+_TOOL_ANNOTATION_MAP: dict[str, ToolAnnotations] = {}
+
+def _classify_tool_annotations() -> dict[str, ToolAnnotations]:
+    """Classify all tools by their behavior for MCP 2025-06-18 annotations."""
+    trade_exec = {
+        "place_order", "cancel_order", "cancel_all_orders", "close_position",
+        "close_all_positions", "modify_order", "deploy_strategy",
+        "subscribe_to_strategy", "publish_strategy_to_marketplace",
+        "execute_dynamic_tool", "submit_inst_order", "cancel_inst_order",
+        "start_algo_executor", "stop_algo_executor", "create_yield_position",
+        "close_yield_position", "execute_swap", "execute_flash_loan",
+    }
+    write_safe = {
+        "connect_broker", "create_dataset", "configure_white_label",
+        "generate_api_key", "revoke_api_key", "register_model",
+        "create_feature_set", "create_rl_agent", "train_rl_agent",
+        "configure_alert", "start_scrape_job", "create_agent_swarm",
+        "assign_swarm_task", "set_strategy_state", "build_strategy_spec",
+    }
+    read_external = {
+        "get_quote", "get_account", "get_positions", "get_orders",
+        "get_order_history", "portfolio_summary", "get_execution_report",
+        "get_platform_health", "get_api_usage", "get_white_label_config",
+        "list_api_keys", "get_pool_analytics", "get_gas_estimate",
+        "get_regime_history", "get_social_sentiment", "get_news_sentiment",
+        "massive_call_api", "massive_get_endpoint_docs",
+    }
+    search_local = {
+        "discover_tools", "get_tool_details", "massive_search_endpoints",
+        "browse_strategy_marketplace", "list_models", "list_feature_sets",
+        "list_datasets", "list_rl_agents",
+    }
+    compute = {
+        "run_backtest", "validate_strategy", "optimize_strategy",
+        "massive_query_data", "massive_run_pipeline",
+        "predict_model", "evaluate_model", "generate_features",
+        "detect_regime", "analyze_sentiment", "run_attribution",
+    }
+    m: dict[str, ToolAnnotations] = {}
+    for name in trade_exec:
+        m[name] = ANNOT_TRADE_EXEC
+    for name in write_safe:
+        m[name] = ANNOT_WRITE_SAFE
+    for name in read_external:
+        m[name] = ANNOT_READ_EXTERNAL
+    for name in search_local:
+        m[name] = ANNOT_SEARCH
+    for name in compute:
+        m[name] = ANNOT_COMPUTE
+    return m
+
+_TOOL_ANNOTATION_MAP = _classify_tool_annotations()
 
 _config: ServerConfig | None = None
 _registry: BrokerRegistry | None = None
@@ -183,6 +310,62 @@ _billing_engine: BillingEngine | None = None
 _strategy_market: StrategyMarketplace | None = None
 _white_label: WhiteLabelEngine | None = None
 _api_gateway: APIGateway | None = None
+# V17 singletons
+_massive_provider: MassiveWhiteLabelProvider | None = None
+_dynamic_gateway: DynamicToolsetGateway | None = None
+# V18 singletons
+_intent_parser: IntentParser | None = None
+_constraint_solver: ConstraintSolver | None = None
+_plan_executor: PlanExecutor | None = None
+_shadow_engine: ShadowPortfolioEngine | None = None
+_evolution_engine: StrategyEvolutionEngine | None = None
+_arbitrage_detector: ArbitrageDetector | None = None
+_predictive_prefetch: PredictiveStatePrefetch | None = None
+_intent_regime: IntentRegimeDetector | None = None
+# V19 singletons
+_vwap_engine: VWAPEngine | None = None
+_dark_pool_engine: DarkPoolEngine | None = None
+_gex_engine: GEXEngine | None = None
+_vol_surface_engine: VolSurfaceEngine | None = None
+_cross_asset_engine: CrossAssetEngine | None = None
+_congressional_engine: CongressionalEngine | None = None
+_kelly_engine: KellyEngine | None = None
+_options_flow_engine: OptionsFlowEngine | None = None
+_tape_reader_engine: TapeReaderEngine | None = None
+# V20 singletons
+_account_protection: AccountProtectionEngine | None = None
+_data_warehouse: DataWarehouseClient | None = None
+_strategy_runner: StrategyRunner | None = None
+_submission_pipeline: SubmissionPipeline | None = None
+_memory_monitor: MemoryMonitor | None = None
+
+
+def _get_account_protection() -> AccountProtectionEngine:
+    global _account_protection
+    if _account_protection is None:
+        _account_protection = AccountProtectionEngine()
+    return _account_protection
+
+
+def _get_data_warehouse() -> DataWarehouseClient:
+    global _data_warehouse
+    if _data_warehouse is None:
+        _data_warehouse = DataWarehouseClient()
+    return _data_warehouse
+
+
+def _get_strategy_runner() -> StrategyRunner:
+    global _strategy_runner
+    if _strategy_runner is None:
+        _strategy_runner = StrategyRunner()
+    return _strategy_runner
+
+
+def _get_submission_pipeline() -> SubmissionPipeline:
+    global _submission_pipeline
+    if _submission_pipeline is None:
+        _submission_pipeline = SubmissionPipeline()
+    return _submission_pipeline
 
 
 def _get_registry() -> BrokerRegistry:
@@ -414,19 +597,25 @@ def _get_pnl_streamer() -> PnLStreamer:
 def _get_order_flow() -> OrderFlowAnalyzer:
     global _order_flow
     if _order_flow is None:
-        _order_flow = OrderFlowAnalyzer()
+        cfg = _load_config()
+        key = cfg.polygon.api_key if cfg.polygon else ""
+        _order_flow = OrderFlowAnalyzer(polygon_key=key)
     return _order_flow
 
 def _get_microstructure() -> MicrostructureEngine:
     global _microstructure
     if _microstructure is None:
-        _microstructure = MicrostructureEngine()
+        cfg = _load_config()
+        key = cfg.polygon.api_key if cfg.polygon else ""
+        _microstructure = MicrostructureEngine(polygon_key=key)
     return _microstructure
 
 def _get_regime_detector() -> RegimeDetector:
     global _regime_detector
     if _regime_detector is None:
-        _regime_detector = RegimeDetector()
+        cfg = _load_config()
+        key = cfg.polygon.api_key if cfg.polygon else ""
+        _regime_detector = RegimeDetector(polygon_key=key)
     return _regime_detector
 
 def _get_alert_engine() -> AlertEngine:
@@ -577,6 +766,165 @@ def _get_api_gateway() -> APIGateway:
         _api_gateway = APIGateway()
     return _api_gateway
 
+# ── V17 getters ──────────────────────────────────────────────
+_massive_startup_done = False
+
+async def _get_massive_provider() -> MassiveWhiteLabelProvider:
+    global _massive_provider, _config, _massive_startup_done
+    if _massive_provider is None:
+        if _config is None:
+            _config = load_config()
+        _massive_provider = MassiveWhiteLabelProvider(_config.massive)
+    if not _massive_startup_done:
+        _massive_startup_done = True
+        await _massive_provider.startup()
+    return _massive_provider
+
+def _get_dynamic_gateway() -> DynamicToolsetGateway:
+    global _dynamic_gateway
+    if _dynamic_gateway is None:
+        _dynamic_gateway = DynamicToolsetGateway()
+        _dynamic_gateway.register_tools_from_list(
+            [t.model_dump() if hasattr(t, 'model_dump') else {"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in TOOLS],
+            category="core",
+            version="v18",
+        )
+        _dynamic_gateway.build_index()
+    return _dynamic_gateway
+
+
+# ── V18 Intent Engine getters ────────────────────────────────────
+
+def _get_intent_parser() -> IntentParser:
+    global _intent_parser
+    if _intent_parser is None:
+        _intent_parser = IntentParser()
+    return _intent_parser
+
+
+def _get_constraint_solver() -> ConstraintSolver:
+    global _constraint_solver
+    if _constraint_solver is None:
+        _constraint_solver = ConstraintSolver(broker_registry=_registry)
+    return _constraint_solver
+
+
+def _get_plan_executor() -> PlanExecutor:
+    global _plan_executor
+    if _plan_executor is None:
+        _plan_executor = PlanExecutor()
+    return _plan_executor
+
+
+def _get_shadow_engine() -> ShadowPortfolioEngine:
+    global _shadow_engine
+    if _shadow_engine is None:
+        _shadow_engine = ShadowPortfolioEngine()
+    return _shadow_engine
+
+
+def _get_evolution_engine() -> StrategyEvolutionEngine:
+    global _evolution_engine
+    if _evolution_engine is None:
+        _evolution_engine = StrategyEvolutionEngine()
+    return _evolution_engine
+
+
+def _get_arbitrage_detector() -> ArbitrageDetector:
+    global _arbitrage_detector
+    if _arbitrage_detector is None:
+        _arbitrage_detector = ArbitrageDetector(broker_registry=_registry)
+    return _arbitrage_detector
+
+
+def _get_predictive_prefetch() -> PredictiveStatePrefetch:
+    global _predictive_prefetch
+    if _predictive_prefetch is None:
+        _predictive_prefetch = PredictiveStatePrefetch()
+    return _predictive_prefetch
+
+
+def _get_intent_regime() -> IntentRegimeDetector:
+    global _intent_regime
+    if _intent_regime is None:
+        _intent_regime = IntentRegimeDetector()
+    return _intent_regime
+
+
+# ── V19 Alpha Engine getters ──────────────────────────────────
+def _get_vwap_engine() -> VWAPEngine:
+    global _vwap_engine, _config
+    if _vwap_engine is None:
+        if _config is None:
+            _config = load_config()
+        _vwap_engine = VWAPEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+    return _vwap_engine
+
+def _get_dark_pool_engine() -> DarkPoolEngine:
+    global _dark_pool_engine, _config
+    if _dark_pool_engine is None:
+        if _config is None:
+            _config = load_config()
+        _dark_pool_engine = DarkPoolEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+    return _dark_pool_engine
+
+def _get_gex_engine() -> GEXEngine:
+    global _gex_engine, _config
+    if _gex_engine is None:
+        if _config is None:
+            _config = load_config()
+        _gex_engine = GEXEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+    return _gex_engine
+
+def _get_vol_surface_engine() -> VolSurfaceEngine:
+    global _vol_surface_engine, _config
+    if _vol_surface_engine is None:
+        if _config is None:
+            _config = load_config()
+        _vol_surface_engine = VolSurfaceEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+    return _vol_surface_engine
+
+def _get_cross_asset_engine() -> CrossAssetEngine:
+    global _cross_asset_engine, _config
+    if _cross_asset_engine is None:
+        if _config is None:
+            _config = load_config()
+        _cross_asset_engine = CrossAssetEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+    return _cross_asset_engine
+
+def _get_congressional_engine() -> CongressionalEngine:
+    global _congressional_engine, _config
+    if _congressional_engine is None:
+        if _config is None:
+            _config = load_config()
+        _congressional_engine = CongressionalEngine(
+            polygon_key=_config.polygon.api_key if _config.polygon else "",
+            finnhub_key=_config.finnhub.api_key if _config.finnhub else "",
+        )
+    return _congressional_engine
+
+def _get_kelly_engine() -> KellyEngine:
+    global _kelly_engine
+    if _kelly_engine is None:
+        _kelly_engine = KellyEngine()
+    return _kelly_engine
+
+def _get_options_flow_engine() -> OptionsFlowEngine:
+    global _options_flow_engine, _config
+    if _options_flow_engine is None:
+        if _config is None:
+            _config = load_config()
+        _options_flow_engine = OptionsFlowEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+    return _options_flow_engine
+
+def _get_tape_reader_engine() -> TapeReaderEngine:
+    global _tape_reader_engine, _config
+    if _tape_reader_engine is None:
+        if _config is None:
+            _config = load_config()
+        _tape_reader_engine = TapeReaderEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+    return _tape_reader_engine
+
 
 def _text(data: Any) -> list[TextContent]:
     if isinstance(data, (dict, list)):
@@ -615,6 +963,20 @@ TOOLS = [
             },
             "required": ["broker", "symbol", "side", "qty"],
         },
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string"},
+                "symbol": {"type": "string"},
+                "side": {"type": "string"},
+                "qty": {"type": "number"},
+                "order_type": {"type": "string"},
+                "status": {"type": "string"},
+                "filled_price": {"type": "number"},
+                "broker": {"type": "string"},
+            },
+        },
+        annotations=ANNOT_TRADE_EXEC,
     ),
     Tool(
         name="cancel_order",
@@ -627,6 +989,8 @@ TOOLS = [
             },
             "required": ["broker", "order_id"],
         },
+    
+        annotations=ANNOT_TRADE_EXEC,
     ),
     Tool(
         name="close_position",
@@ -639,6 +1003,18 @@ TOOLS = [
             },
             "required": ["broker", "symbol"],
         },
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string"},
+                "symbol": {"type": "string"},
+                "side": {"type": "string"},
+                "qty": {"type": "number"},
+                "status": {"type": "string"},
+                "filled_price": {"type": "number"},
+            },
+        },
+        annotations=ANNOT_TRADE_EXEC,
     ),
     Tool(
         name="close_all_positions",
@@ -650,6 +1026,8 @@ TOOLS = [
             },
             "required": ["broker"],
         },
+    
+        annotations=ANNOT_WRITE_DESTRUCTIVE,
     ),
     # ── Portfolio ────────────────────────────────────────────────
     Tool(
@@ -662,6 +1040,17 @@ TOOLS = [
             },
             "required": ["broker"],
         },
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "equity": {"type": "number"},
+                "cash": {"type": "number"},
+                "buying_power": {"type": "number"},
+                "currency": {"type": "string"},
+                "broker": {"type": "string"},
+            },
+        },
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_positions",
@@ -673,6 +1062,28 @@ TOOLS = [
             },
             "required": ["broker"],
         },
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "positions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "symbol": {"type": "string"},
+                            "qty": {"type": "number"},
+                            "side": {"type": "string"},
+                            "avg_entry_price": {"type": "number"},
+                            "current_price": {"type": "number"},
+                            "unrealized_pnl": {"type": "number"},
+                            "market_value": {"type": "number"},
+                        },
+                    },
+                },
+                "count": {"type": "integer"},
+            },
+        },
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_orders",
@@ -685,11 +1096,36 @@ TOOLS = [
             },
             "required": ["broker"],
         },
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "orders": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "order_id": {"type": "string"},
+                            "symbol": {"type": "string"},
+                            "side": {"type": "string"},
+                            "qty": {"type": "number"},
+                            "order_type": {"type": "string"},
+                            "status": {"type": "string"},
+                            "filled_qty": {"type": "number"},
+                            "limit_price": {"type": "number"},
+                        },
+                    },
+                },
+                "count": {"type": "integer"},
+            },
+        },
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_portfolio_summary",
         description="Get a unified portfolio summary across ALL connected brokers — total equity, positions, and P&L.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     # ── Market Data ─────────────────────────────────────────────
     Tool(
@@ -703,12 +1139,26 @@ TOOLS = [
             },
             "required": ["broker", "symbol"],
         },
+        outputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string"},
+                "bid": {"type": "number"},
+                "ask": {"type": "number"},
+                "last": {"type": "number"},
+                "volume": {"type": "number"},
+                "timestamp": {"type": "string"},
+            },
+        },
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     # ── Broker Management ───────────────────────────────────────
     Tool(
         name="list_brokers",
         description="List all configured and connected brokers with their status and supported asset classes.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="connect_broker",
@@ -720,11 +1170,15 @@ TOOLS = [
             },
             "required": ["broker"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="broker_health_check",
         description="Run health check on all connected brokers.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     # ── Marketplace ─────────────────────────────────────────────
     Tool(
@@ -739,6 +1193,8 @@ TOOLS = [
                 "limit": {"type": "integer", "default": 20},
             },
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_listing_detail",
@@ -750,6 +1206,8 @@ TOOLS = [
             },
             "required": ["slug"],
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="subscribe_to_bot",
@@ -763,6 +1221,8 @@ TOOLS = [
             },
             "required": ["slug", "broker"],
         },
+    
+        annotations=ANNOT_TRADE_EXEC,
     ),
     # ── Strategy Submission & Validation ────────────────────────
     Tool(
@@ -805,6 +1265,8 @@ TOOLS = [
             },
             "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="check_validation_status",
@@ -816,17 +1278,23 @@ TOOLS = [
             },
             "required": ["submission_id"],
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_validation_gates",
         description="Get the current validation gate thresholds and requirements for strategy submissions.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     # ── Diagnostics ────────────────────────────────────────────
     Tool(
         name="server_diagnostics",
         description="Get AlgoChains MCP server diagnostics: tool call statistics, error rates, recent call history, and broker connection status.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     # ── V4: Streaming ─────────────────────────────────────────
     Tool(
@@ -841,6 +1309,8 @@ TOOLS = [
             },
             "required": ["topic"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="stream_snapshot",
@@ -853,16 +1323,22 @@ TOOLS = [
             },
             "required": ["topic"],
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_realtime_pnl",
         description="Get real-time P&L snapshot across all connected brokers with live equity, unrealized P&L, and daily change.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="stream_stats",
         description="Get streaming system statistics: buffer sizes, active subscriptions, callback counts.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     # ── V5: Portfolio Optimizer ────────────────────────────────
     Tool(
@@ -894,6 +1370,8 @@ TOOLS = [
             },
             "required": ["bots", "total_capital"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="compare_allocations",
@@ -922,6 +1400,8 @@ TOOLS = [
             },
             "required": ["bots", "total_capital"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     # ── V6: Notifications ─────────────────────────────────────
     Tool(
@@ -938,6 +1418,8 @@ TOOLS = [
             },
             "required": ["channel"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="send_notification",
@@ -953,6 +1435,8 @@ TOOLS = [
             },
             "required": ["title", "body"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="get_notification_history",
@@ -964,17 +1448,23 @@ TOOLS = [
                 "event": {"type": "string", "description": "Filter by event type"},
             },
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="notification_stats",
         description="Get notification system statistics: configured channels, send counts by event and priority.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     # ── Data Providers (Optional) ─────────────────────────────
     Tool(
         name="list_data_providers",
         description="List all available and configured data providers (Polygon, Yahoo Finance, Alpha Vantage, Finnhub, Twelve Data, etc.).",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_market_data",
@@ -991,6 +1481,8 @@ TOOLS = [
             },
             "required": ["symbol"],
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_realtime_quote",
@@ -1003,6 +1495,8 @@ TOOLS = [
             },
             "required": ["symbol"],
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_news",
@@ -1016,6 +1510,8 @@ TOOLS = [
             },
             "required": ["symbol"],
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_fundamentals",
@@ -1028,6 +1524,8 @@ TOOLS = [
             },
             "required": ["symbol"],
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="search_symbols",
@@ -1040,17 +1538,23 @@ TOOLS = [
             },
             "required": ["query"],
         },
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="data_provider_health",
         description="Run health checks on all configured data providers.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     # ── V7: BYOK Key Orchestrator ──────────────────────────────
     Tool(
         name="discover_keys",
         description="Autonomously scan your environment for existing API keys across 10+ data providers. Checks env vars, .env files, IDE configs, shell profiles, and config directories. Say 'gather my keys' to trigger.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="validate_keys",
@@ -1065,11 +1569,15 @@ TOOLS = [
                 },
             },
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="key_gap_analysis",
         description="Show what data providers you're missing, what each unlocks, signup URLs, free tier availability, and a quick-win recommendation.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="provision_key",
@@ -1083,11 +1591,15 @@ TOOLS = [
             },
             "required": ["provider", "key_value"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="key_health",
         description="Real-time health check of all configured API keys. Shows which are valid, expired, rate-limited, or invalid.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="export_config",
@@ -1098,6 +1610,8 @@ TOOLS = [
                 "format": {"type": "string", "enum": ["env", "json", "mcp_windsurf", "mcp_cursor", "mcp_vscode"], "default": "env"},
             },
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     # ── V7: Proprietary Dataset Builder ────────────────────────
     Tool(
@@ -1120,16 +1634,22 @@ TOOLS = [
             },
             "required": ["symbol"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="list_datasets",
         description="List all built proprietary datasets with metadata (rows, columns, date range, sources, size).",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="dataset_status",
         description="Show what data you CAN build vs what you're missing based on your available API keys.",
         inputSchema={"type": "object", "properties": {}},
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="enrich_dataset",
@@ -1145,6 +1665,8 @@ TOOLS = [
             },
             "required": ["dataset_id", "enrichments"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="export_dataset",
@@ -1159,406 +1681,1020 @@ TOOLS = [
             },
             "required": ["dataset_id"],
         },
+    
+        annotations=ANNOT_WRITE_SAFE,
     ),
     # ═══════════════════════════════════════════════════════════════
     # V8: Strategy Builder SDK (8 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="create_strategy", description="Create a new AI-native declarative strategy specification (StrategySpec). Define indicators, entry/exit rules, position sizing in JSON.",
-         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "timeframe": {"type": "string"}, "asset_class": {"type": "string", "enum": ["equity", "forex", "crypto", "futures"]}, "indicators": {"type": "array"}, "entry_rules": {"type": "object"}, "exit_rules": {"type": "object"}, "position_sizing": {"type": "object"}}, "required": ["name", "symbols", "timeframe", "indicators", "entry_rules", "exit_rules"]}),
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "timeframe": {"type": "string"}, "asset_class": {"type": "string", "enum": ["equity", "forex", "crypto", "futures"]}, "indicators": {"type": "array"}, "entry_rules": {"type": "object"}, "exit_rules": {"type": "object"}, "position_sizing": {"type": "object"}}, "required": ["name", "symbols", "timeframe", "indicators", "entry_rules", "exit_rules"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="validate_strategy", description="Validate a StrategySpec for schema correctness, parameter ranges, and internal consistency.",
-         inputSchema={"type": "object", "properties": {"spec": {"type": "object", "description": "Full StrategySpec object to validate"}}, "required": ["spec"]}),
+         inputSchema={"type": "object", "properties": {"spec": {"type": "object", "description": "Full StrategySpec object to validate"}}, "required": ["spec"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="backtest_strategy", description="Run a backtest on a StrategySpec using the Rust engine. Returns Sharpe, drawdown, win rate, P&L.",
-         inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "capital": {"type": "number", "default": 10000}}, "required": ["spec"]}),
+         inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "capital": {"type": "number", "default": 10000}}, "required": ["spec"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="optimize_strategy", description="Run Optuna-based parameter optimization on a StrategySpec. Finds best params across n_trials.",
-         inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "n_trials": {"type": "integer", "default": 100}, "metric": {"type": "string", "default": "sharpe"}}, "required": ["spec"]}),
+         inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "n_trials": {"type": "integer", "default": 100}, "metric": {"type": "string", "default": "sharpe"}}, "required": ["spec"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="walk_forward_test", description="Run K-fold walk-forward validation on a strategy. Tests robustness across time periods.",
-         inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "n_folds": {"type": "integer", "default": 5}, "train_pct": {"type": "number", "default": 0.70}}, "required": ["spec"]}),
+         inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "n_folds": {"type": "integer", "default": 5}, "train_pct": {"type": "number", "default": 0.70}}, "required": ["spec"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="deploy_strategy", description="Deploy a validated strategy to paper or live trading on a connected broker.",
-         inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "broker": {"type": "string"}, "mode": {"type": "string", "enum": ["paper", "live"], "default": "paper"}, "capital": {"type": "number", "default": 10000}}, "required": ["spec", "broker"]}),
+         inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "broker": {"type": "string"}, "mode": {"type": "string", "enum": ["paper", "live"], "default": "paper"}, "capital": {"type": "number", "default": 10000}}, "required": ["spec", "broker"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="list_templates", description="Browse pre-built strategy templates (RSI Momentum, BB Mean Reversion, EMA Crossover, etc).",
-         inputSchema={"type": "object", "properties": {"category": {"type": "string", "enum": ["momentum", "mean_reversion", "trend", "breakout", "pairs"]}, "asset_class": {"type": "string"}}}),
+         inputSchema={"type": "object", "properties": {"category": {"type": "string", "enum": ["momentum", "mean_reversion", "trend", "breakout", "pairs"]}, "asset_class": {"type": "string"}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="fork_template", description="Fork a strategy template into your own editable StrategySpec with custom parameters.",
-         inputSchema={"type": "object", "properties": {"template_id": {"type": "string"}, "new_name": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "overrides": {"type": "object"}}, "required": ["template_id"]}),
+         inputSchema={"type": "object", "properties": {"template_id": {"type": "string"}, "new_name": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "overrides": {"type": "object"}}, "required": ["template_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V8: Social Trading (6 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="become_leader", description="Register as a copy-trading leader. Requires 90+ day track record, 50+ trades, Sharpe ≥ 1.0.",
-         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}, "handle": {"type": "string"}, "track_record": {"type": "object"}}, "required": ["user_id", "handle"]}),
+         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}, "handle": {"type": "string"}, "track_record": {"type": "object"}}, "required": ["user_id", "handle"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_leader_stats", description="Get a leader's full performance stats, followers, and recent signals.",
-         inputSchema={"type": "object", "properties": {"leader_id": {"type": "string"}}, "required": ["leader_id"]}),
+         inputSchema={"type": "object", "properties": {"leader_id": {"type": "string"}}, "required": ["leader_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="follow_leader", description="Start copy-trading a leader with configurable scaling and risk limits.",
-         inputSchema={"type": "object", "properties": {"follower_id": {"type": "string"}, "leader_id": {"type": "string"}, "config": {"type": "object"}}, "required": ["follower_id", "leader_id"]}),
+         inputSchema={"type": "object", "properties": {"follower_id": {"type": "string"}, "leader_id": {"type": "string"}, "config": {"type": "object"}}, "required": ["follower_id", "leader_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="unfollow_leader", description="Stop copy-trading a leader. Optionally close all copied positions.",
-         inputSchema={"type": "object", "properties": {"follower_id": {"type": "string"}, "leader_id": {"type": "string"}, "close_positions": {"type": "boolean", "default": false}}, "required": ["follower_id", "leader_id"]}),
+         inputSchema={"type": "object", "properties": {"follower_id": {"type": "string"}, "leader_id": {"type": "string"}, "close_positions": {"type": "boolean", "default": False}}, "required": ["follower_id", "leader_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_copy_status", description="Get status of all copy-trading relationships for a follower.",
-         inputSchema={"type": "object", "properties": {"follower_id": {"type": "string"}}, "required": ["follower_id"]}),
+         inputSchema={"type": "object", "properties": {"follower_id": {"type": "string"}}, "required": ["follower_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="set_copy_parameters", description="Update copy-trading parameters (scaling, risk limits, allowed assets).",
-         inputSchema={"type": "object", "properties": {"follower_id": {"type": "string"}, "leader_id": {"type": "string"}, "config_updates": {"type": "object"}}, "required": ["follower_id", "leader_id", "config_updates"]}),
+         inputSchema={"type": "object", "properties": {"follower_id": {"type": "string"}, "leader_id": {"type": "string"}, "config_updates": {"type": "object"}}, "required": ["follower_id", "leader_id", "config_updates"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V8: Community Signals (5 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="publish_signal", description="Publish a trading signal to the community feed with optional trade verification.",
-         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}, "symbol": {"type": "string"}, "direction": {"type": "string", "enum": ["long", "short"]}, "timeframe": {"type": "string"}, "entry_price": {"type": "number"}, "stop_loss": {"type": "number"}, "take_profit": {"type": "number"}, "confidence": {"type": "number"}, "rationale": {"type": "string"}, "trade_hash": {"type": "string"}}, "required": ["user_id", "symbol", "direction"]}),
+         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}, "symbol": {"type": "string"}, "direction": {"type": "string", "enum": ["long", "short"]}, "timeframe": {"type": "string"}, "entry_price": {"type": "number"}, "stop_loss": {"type": "number"}, "take_profit": {"type": "number"}, "confidence": {"type": "number"}, "rationale": {"type": "string"}, "trade_hash": {"type": "string"}}, "required": ["user_id", "symbol", "direction"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="subscribe_signals", description="Subscribe to community signals with filters (symbol, category, min accuracy).",
-         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}, "filters": {"type": "object"}}, "required": ["user_id"]}),
+         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}, "filters": {"type": "object"}}, "required": ["user_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="verify_signal", description="Verify a signal with trade proof from broker (order ID, fill price, fill time).",
-         inputSchema={"type": "object", "properties": {"signal_id": {"type": "string"}, "trade_proof": {"type": "object"}}, "required": ["signal_id", "trade_proof"]}),
+         inputSchema={"type": "object", "properties": {"signal_id": {"type": "string"}, "trade_proof": {"type": "object"}}, "required": ["signal_id", "trade_proof"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_consensus", description="Get community consensus for a symbol — weighted by publisher accuracy scores.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "1h"}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "1h"}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_signal_accuracy", description="Get a user's signal accuracy score and history.",
-         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"]}),
+         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V9: Risk Dashboard (10 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="calculate_var", description="Calculate Value-at-Risk (parametric, historical, or Monte Carlo) at given confidence level.",
-         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}, "method": {"type": "string", "enum": ["parametric", "historical", "monte_carlo"], "default": "parametric"}, "confidence": {"type": "number", "default": 0.95}, "horizon_days": {"type": "integer", "default": 1}}, "required": ["portfolio"]}),
+         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}, "method": {"type": "string", "enum": ["parametric", "historical", "monte_carlo"], "default": "parametric"}, "confidence": {"type": "number", "default": 0.95}, "horizon_days": {"type": "integer", "default": 1}}, "required": ["portfolio"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="calculate_expected_shortfall", description="Calculate Expected Shortfall (CVaR) — average loss in tail scenarios beyond VaR.",
-         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}, "confidence": {"type": "number", "default": 0.95}, "horizon_days": {"type": "integer", "default": 1}}, "required": ["portfolio"]}),
+         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}, "confidence": {"type": "number", "default": 0.95}, "horizon_days": {"type": "integer", "default": 1}}, "required": ["portfolio"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_factor_exposure", description="Analyze portfolio factor exposures (Market, Size, Value, Momentum, Volatility, Quality).",
-         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]}),
+         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="run_stress_test", description="Run historical or custom stress tests (COVID, GFC, Flash Crash, etc) on portfolio.",
-         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}, "scenario": {"type": "string"}, "custom_shocks": {"type": "object"}}, "required": ["portfolio"]}),
+         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}, "scenario": {"type": "string"}, "custom_shocks": {"type": "object"}}, "required": ["portfolio"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_drawdown_monitor", description="Monitor current drawdown vs peak, with estimated recovery time.",
-         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]}),
+         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_margin_utilization", description="Check margin utilization, buffer to margin call, and status.",
-         inputSchema={"type": "object", "properties": {"account": {"type": "object"}}, "required": ["account"]}),
+         inputSchema={"type": "object", "properties": {"account": {"type": "object"}}, "required": ["account"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_greeks_exposure", description="Get aggregate portfolio Greeks (delta, gamma, theta, vega, rho) for options positions.",
-         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]}),
+         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="configure_risk_alert", description="Set up risk alert rules (drawdown, VaR breach, margin, concentration, loss limit).",
-         inputSchema={"type": "object", "properties": {"alert_type": {"type": "string", "enum": ["drawdown", "var_breach", "margin", "concentration", "loss_limit"]}, "threshold": {"type": "number"}, "action": {"type": "string", "default": "notify"}, "channels": {"type": "array", "items": {"type": "string"}}}, "required": ["alert_type", "threshold"]}),
+         inputSchema={"type": "object", "properties": {"alert_type": {"type": "string", "enum": ["drawdown", "var_breach", "margin", "concentration", "loss_limit"]}, "threshold": {"type": "number"}, "action": {"type": "string", "default": "notify"}, "channels": {"type": "array", "items": {"type": "string"}}}, "required": ["alert_type", "threshold"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="check_risk_alerts", description="Evaluate all active risk alert rules against current portfolio state.",
-         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]}),
+         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_concentration_risk", description="Analyze portfolio concentration (HHI index, top holdings weight, diversification assessment).",
-         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]}),
+         inputSchema={"type": "object", "properties": {"portfolio": {"type": "object"}}, "required": ["portfolio"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V9: Compliance Module (8 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="pre_trade_check", description="Run compliance pre-trade checks (position limits, order size, daily loss, restricted list, wash trade).",
-         inputSchema={"type": "object", "properties": {"order": {"type": "object"}, "account": {"type": "object"}, "profile_id": {"type": "string"}}, "required": ["order", "account"]}),
+         inputSchema={"type": "object", "properties": {"order": {"type": "object"}, "account": {"type": "object"}, "profile_id": {"type": "string"}}, "required": ["order", "account"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="post_trade_surveillance", description="Run post-trade surveillance for layering, spoofing, and momentum ignition patterns.",
-         inputSchema={"type": "object", "properties": {"trades": {"type": "array", "items": {"type": "object"}}}, "required": ["trades"]}),
+         inputSchema={"type": "object", "properties": {"trades": {"type": "array", "items": {"type": "object"}}}, "required": ["trades"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_audit_trail", description="Retrieve tamper-proof blockchain-style audit trail with chain integrity verification.",
-         inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 50}, "action_filter": {"type": "string"}}}),
+         inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 50}, "action_filter": {"type": "string"}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="activate_kill_switch", description="Activate trading kill switch — immediately halts all order submission.",
-         inputSchema={"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}),
+         inputSchema={"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]},
+        annotations=ANNOT_WRITE_DESTRUCTIVE,
+    ),
     Tool(name="deactivate_kill_switch", description="Deactivate trading kill switch and resume normal operations.",
-         inputSchema={"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}),
+         inputSchema={"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]},
+        annotations=ANNOT_WRITE_DESTRUCTIVE,
+    ),
     Tool(name="set_compliance_profile", description="Set or update a compliance profile with custom trading limits.",
-         inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "limits": {"type": "object"}}, "required": ["profile_id", "limits"]}),
+         inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "limits": {"type": "object"}}, "required": ["profile_id", "limits"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_compliance_profile", description="Retrieve a compliance profile's current limits and settings.",
-         inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}}, "required": ["profile_id"]}),
+         inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}}, "required": ["profile_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="best_execution_report", description="Generate best execution analysis — slippage, venue quality, fill assessment.",
-         inputSchema={"type": "object", "properties": {"trades": {"type": "array", "items": {"type": "object"}}}, "required": ["trades"]}),
+         inputSchema={"type": "object", "properties": {"trades": {"type": "array", "items": {"type": "object"}}}, "required": ["trades"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_wash_trade_alerts", description="List potential wash trade violations detected across recent trades.",
-         inputSchema={"type": "object", "properties": {"days": {"type": "integer", "default": 30}}}),
+         inputSchema={"type": "object", "properties": {"days": {"type": "integer", "default": 30}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="set_restricted_list", description="Update restricted securities, sectors, or countries for a compliance profile.",
-         inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "sectors": {"type": "array", "items": {"type": "string"}}, "countries": {"type": "array", "items": {"type": "string"}}}, "required": ["profile_id"]}),
+         inputSchema={"type": "object", "properties": {"profile_id": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "sectors": {"type": "array", "items": {"type": "string"}}, "countries": {"type": "array", "items": {"type": "string"}}}, "required": ["profile_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="run_surveillance_scan", description="Trigger on-demand post-trade surveillance scan for layering, spoofing, wash trades.",
-         inputSchema={"type": "object", "properties": {"lookback_hours": {"type": "integer", "default": 24}}}),
+         inputSchema={"type": "object", "properties": {"lookback_hours": {"type": "integer", "default": 24}}},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_compliance_status", description="Current compliance state: daily P&L vs limits, violations, kill switch status.",
-         inputSchema={"type": "object", "properties": {"account": {"type": "object"}, "profile_id": {"type": "string"}}, "required": ["account"]}),
+         inputSchema={"type": "object", "properties": {"account": {"type": "object"}, "profile_id": {"type": "string"}}, "required": ["account"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V9: Multi-Tenant White-Label (10 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="create_tenant", description="Create a new white-label tenant with tier, branding, and API key.",
-         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "admin_email": {"type": "string"}, "tier": {"type": "string", "enum": ["starter", "growth", "professional", "enterprise"], "default": "starter"}, "branding": {"type": "object"}}, "required": ["name", "admin_email"]}),
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "admin_email": {"type": "string"}, "tier": {"type": "string", "enum": ["starter", "growth", "professional", "enterprise"], "default": "starter"}, "branding": {"type": "object"}}, "required": ["name", "admin_email"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_tenant", description="Retrieve tenant details including sub-account count and configuration.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="update_tenant", description="Update tenant name, branding, tier, or status.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "updates": {"type": "object"}}, "required": ["tenant_id", "updates"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "updates": {"type": "object"}}, "required": ["tenant_id", "updates"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="create_sub_account", description="Create a sub-account under a tenant with role-based permissions.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "user_id": {"type": "string"}, "name": {"type": "string"}, "permissions": {"type": "array", "items": {"type": "string"}}}, "required": ["tenant_id", "user_id", "name"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "user_id": {"type": "string"}, "name": {"type": "string"}, "permissions": {"type": "array", "items": {"type": "string"}}}, "required": ["tenant_id", "user_id", "name"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="list_sub_accounts", description="List all sub-accounts for a tenant.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="configure_broker_routing", description="Configure broker routing rules for a tenant (which broker handles which asset class).",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "broker_config": {"type": "object"}}, "required": ["tenant_id", "broker_config"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "broker_config": {"type": "object"}}, "required": ["tenant_id", "broker_config"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_billing_summary", description="Get billing summary for a tenant (tier, usage, estimated monthly cost).",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_tenant_dashboard", description="Aggregate metrics for a tenant: AUM, active accounts, daily P&L, usage stats.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_sub_account_status", description="Detailed status of a sub-account: positions, P&L, compliance state, recent trades.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "sub_account_id": {"type": "string"}}, "required": ["tenant_id", "sub_account_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "sub_account_id": {"type": "string"}}, "required": ["tenant_id", "sub_account_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="set_sub_account_permissions", description="Update sub-account permissions: trade limits, asset classes, marketplace access.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "sub_account_id": {"type": "string"}, "permissions": {"type": "object"}}, "required": ["tenant_id", "sub_account_id", "permissions"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "sub_account_id": {"type": "string"}, "permissions": {"type": "object"}}, "required": ["tenant_id", "sub_account_id", "permissions"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V10: ML/AI-Native Strategy Engine (20 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="create_feature_set", description="Create a named feature set with indicator definitions for ML model training.",
-         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "features": {"type": "array", "items": {"type": "object"}}, "target": {"type": "string"}}, "required": ["name", "features"]}),
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "features": {"type": "array", "items": {"type": "object"}}, "target": {"type": "string"}}, "required": ["name", "features"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="compute_features", description="Compute feature values for a symbol over a date range using a saved feature set.",
-         inputSchema={"type": "object", "properties": {"feature_set_id": {"type": "string"}, "symbol": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}}, "required": ["feature_set_id", "symbol"]}),
+         inputSchema={"type": "object", "properties": {"feature_set_id": {"type": "string"}, "symbol": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}}, "required": ["feature_set_id", "symbol"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="list_feature_sets", description="List all saved feature sets with metadata.",
-         inputSchema={"type": "object", "properties": {}}),
+         inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_feature_importance", description="Get feature importance rankings for a trained model's feature set.",
-         inputSchema={"type": "object", "properties": {"feature_set_id": {"type": "string"}, "model_id": {"type": "string"}}, "required": ["feature_set_id"]}),
+         inputSchema={"type": "object", "properties": {"feature_set_id": {"type": "string"}, "model_id": {"type": "string"}}, "required": ["feature_set_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="train_model", description="Train an ML model (XGBoost, LSTM, transformer) on a feature set with train/test split.",
-         inputSchema={"type": "object", "properties": {"feature_set_id": {"type": "string"}, "model_type": {"type": "string", "enum": ["xgboost", "lstm", "transformer", "random_forest", "lightgbm"]}, "hyperparameters": {"type": "object"}, "train_split": {"type": "number", "default": 0.8}}, "required": ["feature_set_id", "model_type"]}),
+         inputSchema={"type": "object", "properties": {"feature_set_id": {"type": "string"}, "model_type": {"type": "string", "enum": ["xgboost", "lstm", "transformer", "random_forest", "lightgbm"]}, "hyperparameters": {"type": "object"}, "train_split": {"type": "number", "default": 0.8}}, "required": ["feature_set_id", "model_type"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="evaluate_model", description="Evaluate a trained model on held-out test data with comprehensive metrics.",
-         inputSchema={"type": "object", "properties": {"model_id": {"type": "string"}, "test_data_id": {"type": "string"}}, "required": ["model_id"]}),
+         inputSchema={"type": "object", "properties": {"model_id": {"type": "string"}, "test_data_id": {"type": "string"}}, "required": ["model_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="predict", description="Run inference on a trained model for a symbol to get signal predictions.",
-         inputSchema={"type": "object", "properties": {"model_id": {"type": "string"}, "symbol": {"type": "string"}, "features": {"type": "object"}}, "required": ["model_id", "symbol"]}),
+         inputSchema={"type": "object", "properties": {"model_id": {"type": "string"}, "symbol": {"type": "string"}, "features": {"type": "object"}}, "required": ["model_id", "symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="explain_prediction", description="Get SHAP-based explanation for a model prediction.",
-         inputSchema={"type": "object", "properties": {"model_id": {"type": "string"}, "prediction_id": {"type": "string"}}, "required": ["model_id", "prediction_id"]}),
+         inputSchema={"type": "object", "properties": {"model_id": {"type": "string"}, "prediction_id": {"type": "string"}}, "required": ["model_id", "prediction_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="register_model", description="Register a trained model in the model registry with version and metadata.",
-         inputSchema={"type": "object", "properties": {"model_id": {"type": "string"}, "name": {"type": "string"}, "version": {"type": "string"}, "metrics": {"type": "object"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["model_id", "name"]}),
+         inputSchema={"type": "object", "properties": {"model_id": {"type": "string"}, "name": {"type": "string"}, "version": {"type": "string"}, "metrics": {"type": "object"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["model_id", "name"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="promote_model", description="Promote a model to a target stage (staging, production, archived).",
-         inputSchema={"type": "object", "properties": {"registry_id": {"type": "string"}, "stage": {"type": "string", "enum": ["staging", "production", "archived"]}}, "required": ["registry_id", "stage"]}),
+         inputSchema={"type": "object", "properties": {"registry_id": {"type": "string"}, "stage": {"type": "string", "enum": ["staging", "production", "archived"]}}, "required": ["registry_id", "stage"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="list_models", description="List all models in the registry with optional stage filter.",
-         inputSchema={"type": "object", "properties": {"stage": {"type": "string"}, "name_filter": {"type": "string"}}}),
+         inputSchema={"type": "object", "properties": {"stage": {"type": "string"}, "name_filter": {"type": "string"}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="compare_models", description="Compare two or more models side-by-side on key metrics.",
-         inputSchema={"type": "object", "properties": {"model_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["model_ids"]}),
+         inputSchema={"type": "object", "properties": {"model_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["model_ids"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="archive_model", description="Archive a model, removing it from active use.",
-         inputSchema={"type": "object", "properties": {"registry_id": {"type": "string"}, "reason": {"type": "string"}}, "required": ["registry_id"]}),
+         inputSchema={"type": "object", "properties": {"registry_id": {"type": "string"}, "reason": {"type": "string"}}, "required": ["registry_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="create_rl_agent", description="Create a reinforcement learning trading agent with environment and reward config.",
-         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "algorithm": {"type": "string", "enum": ["ppo", "dqn", "a2c", "sac"]}, "environment": {"type": "object"}, "reward_config": {"type": "object"}}, "required": ["name", "algorithm"]}),
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "algorithm": {"type": "string", "enum": ["ppo", "dqn", "a2c", "sac"]}, "environment": {"type": "object"}, "reward_config": {"type": "object"}}, "required": ["name", "algorithm"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="train_rl_agent", description="Train an RL agent on historical or simulated market data.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "episodes": {"type": "integer", "default": 1000}, "symbol": {"type": "string"}}, "required": ["agent_id"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "episodes": {"type": "integer", "default": 1000}, "symbol": {"type": "string"}}, "required": ["agent_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="evaluate_rl_agent", description="Evaluate RL agent performance with episode statistics.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "episodes": {"type": "integer", "default": 100}}, "required": ["agent_id"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "episodes": {"type": "integer", "default": 100}}, "required": ["agent_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_rl_agent_state", description="Get current state and policy of an RL agent.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="dispatch_gpu_task", description="Route a compute task to Mac M3 Max or Desktop RTX GPU.",
-         inputSchema={"type": "object", "properties": {"task_type": {"type": "string", "enum": ["training", "inference", "optimization", "backtest"]}, "payload": {"type": "object"}, "prefer_gpu": {"type": "string", "enum": ["mac_m3", "desktop_rtx", "auto"]}}, "required": ["task_type", "payload"]}),
+         inputSchema={"type": "object", "properties": {"task_type": {"type": "string", "enum": ["training", "inference", "optimization", "backtest"]}, "payload": {"type": "object"}, "prefer_gpu": {"type": "string", "enum": ["mac_m3", "desktop_rtx", "auto"]}}, "required": ["task_type", "payload"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="gpu_status", description="Get status of all available GPU compute nodes.",
-         inputSchema={"type": "object", "properties": {}}),
+         inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="generate_strategy_spec", description="Use LLM to generate a complete strategy specification from natural language.",
-         inputSchema={"type": "object", "properties": {"description": {"type": "string"}, "asset_class": {"type": "string"}, "risk_tolerance": {"type": "string", "enum": ["conservative", "moderate", "aggressive"]}}, "required": ["description"]}),
+         inputSchema={"type": "object", "properties": {"description": {"type": "string"}, "asset_class": {"type": "string"}, "risk_tolerance": {"type": "string", "enum": ["conservative", "moderate", "aggressive"]}}, "required": ["description"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V11: Institutional-Grade Execution (18 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="validate_institutional_order", description="Validate an order against institutional compliance rules and limits.",
-         inputSchema={"type": "object", "properties": {"order": {"type": "object"}, "account_id": {"type": "string"}}, "required": ["order"]}),
+         inputSchema={"type": "object", "properties": {"order": {"type": "object"}, "account_id": {"type": "string"}}, "required": ["order"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="submit_institutional_order", description="Submit an institutional order with full audit trail and compliance checks.",
-         inputSchema={"type": "object", "properties": {"order": {"type": "object"}, "account_id": {"type": "string"}, "compliance_override": {"type": "boolean", "default": False}}, "required": ["order"]}),
+         inputSchema={"type": "object", "properties": {"order": {"type": "object"}, "account_id": {"type": "string"}, "compliance_override": {"type": "boolean", "default": False}}, "required": ["order"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="get_order_status", description="Get detailed status of an institutional order including fill reports.",
-         inputSchema={"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]}),
+         inputSchema={"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="route_order", description="Smart-route an order across venues for best execution.",
-         inputSchema={"type": "object", "properties": {"order": {"type": "object"}, "routing_strategy": {"type": "string", "enum": ["best_price", "lowest_latency", "dark_pool_first", "split"]}, "max_venues": {"type": "integer", "default": 5}}, "required": ["order"]}),
+         inputSchema={"type": "object", "properties": {"order": {"type": "object"}, "routing_strategy": {"type": "string", "enum": ["best_price", "lowest_latency", "dark_pool_first", "split"]}, "max_venues": {"type": "integer", "default": 5}}, "required": ["order"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="get_venue_analytics", description="Get execution analytics per venue: fill rates, latency, slippage.",
-         inputSchema={"type": "object", "properties": {"venue_id": {"type": "string"}, "lookback_days": {"type": "integer", "default": 30}}}),
+         inputSchema={"type": "object", "properties": {"venue_id": {"type": "string"}, "lookback_days": {"type": "integer", "default": 30}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="start_algo_execution", description="Start an algorithmic execution strategy (TWAP, VWAP, iceberg, sniper).",
-         inputSchema={"type": "object", "properties": {"algo_type": {"type": "string", "enum": ["twap", "vwap", "iceberg", "sniper", "pov"]}, "order": {"type": "object"}, "parameters": {"type": "object"}}, "required": ["algo_type", "order"]}),
+         inputSchema={"type": "object", "properties": {"algo_type": {"type": "string", "enum": ["twap", "vwap", "iceberg", "sniper", "pov"]}, "order": {"type": "object"}, "parameters": {"type": "object"}}, "required": ["algo_type", "order"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="stop_algo_execution", description="Stop a running algo execution and report fills.",
-         inputSchema={"type": "object", "properties": {"execution_id": {"type": "string"}}, "required": ["execution_id"]}),
+         inputSchema={"type": "object", "properties": {"execution_id": {"type": "string"}}, "required": ["execution_id"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="get_algo_execution_status", description="Get real-time status of an algo execution (progress, fills, slippage).",
-         inputSchema={"type": "object", "properties": {"execution_id": {"type": "string"}}, "required": ["execution_id"]}),
+         inputSchema={"type": "object", "properties": {"execution_id": {"type": "string"}}, "required": ["execution_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="connect_fix_session", description="Establish a FIX protocol session to an execution venue.",
-         inputSchema={"type": "object", "properties": {"venue": {"type": "string"}, "sender_comp_id": {"type": "string"}, "target_comp_id": {"type": "string"}, "config": {"type": "object"}}, "required": ["venue", "sender_comp_id", "target_comp_id"]}),
+         inputSchema={"type": "object", "properties": {"venue": {"type": "string"}, "sender_comp_id": {"type": "string"}, "target_comp_id": {"type": "string"}, "config": {"type": "object"}}, "required": ["venue", "sender_comp_id", "target_comp_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="disconnect_fix_session", description="Gracefully disconnect a FIX session.",
-         inputSchema={"type": "object", "properties": {"session_id": {"type": "string"}}, "required": ["session_id"]}),
+         inputSchema={"type": "object", "properties": {"session_id": {"type": "string"}}, "required": ["session_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_fix_session_status", description="Get FIX session health: heartbeat, sequence numbers, message counts.",
-         inputSchema={"type": "object", "properties": {"session_id": {"type": "string"}}, "required": ["session_id"]}),
+         inputSchema={"type": "object", "properties": {"session_id": {"type": "string"}}, "required": ["session_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="run_tca", description="Run transaction cost analysis on completed trades.",
-         inputSchema={"type": "object", "properties": {"trades": {"type": "array", "items": {"type": "object"}}, "benchmark": {"type": "string", "enum": ["vwap", "twap", "arrival_price", "close"], "default": "vwap"}}, "required": ["trades"]}),
+         inputSchema={"type": "object", "properties": {"trades": {"type": "array", "items": {"type": "object"}}, "benchmark": {"type": "string", "enum": ["vwap", "twap", "arrival_price", "close"], "default": "vwap"}}, "required": ["trades"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_tca_report", description="Get a comprehensive TCA report for a time period.",
-         inputSchema={"type": "object", "properties": {"start_date": {"type": "string"}, "end_date": {"type": "string"}, "account_id": {"type": "string"}}, "required": ["start_date", "end_date"]}),
+         inputSchema={"type": "object", "properties": {"start_date": {"type": "string"}, "end_date": {"type": "string"}, "account_id": {"type": "string"}}, "required": ["start_date", "end_date"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_implementation_shortfall", description="Calculate implementation shortfall for a set of orders.",
-         inputSchema={"type": "object", "properties": {"orders": {"type": "array", "items": {"type": "object"}}}, "required": ["orders"]}),
+         inputSchema={"type": "object", "properties": {"orders": {"type": "array", "items": {"type": "object"}}}, "required": ["orders"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="register_venue", description="Register a new execution venue in the venue registry.",
-         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "venue_type": {"type": "string", "enum": ["exchange", "dark_pool", "ats", "otc"]}, "config": {"type": "object"}}, "required": ["name", "venue_type"]}),
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "venue_type": {"type": "string", "enum": ["exchange", "dark_pool", "ats", "otc"]}, "config": {"type": "object"}}, "required": ["name", "venue_type"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="list_venues", description="List all registered execution venues with health status.",
-         inputSchema={"type": "object", "properties": {}}),
+         inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_venue_status", description="Get detailed status of a specific venue.",
-         inputSchema={"type": "object", "properties": {"venue_id": {"type": "string"}}, "required": ["venue_id"]}),
+         inputSchema={"type": "object", "properties": {"venue_id": {"type": "string"}}, "required": ["venue_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="set_venue_priority", description="Set routing priority for a venue.",
-         inputSchema={"type": "object", "properties": {"venue_id": {"type": "string"}, "priority": {"type": "integer"}}, "required": ["venue_id", "priority"]}),
+         inputSchema={"type": "object", "properties": {"venue_id": {"type": "string"}, "priority": {"type": "integer"}}, "required": ["venue_id", "priority"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V12: Real-Time Analytics (15 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="start_pnl_stream", description="Start real-time P&L streaming for an account or portfolio.",
-         inputSchema={"type": "object", "properties": {"account_id": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}}, "required": ["account_id"]}),
+         inputSchema={"type": "object", "properties": {"account_id": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}}, "required": ["account_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_pnl_snapshot", description="Get current P&L snapshot across all tracked positions.",
-         inputSchema={"type": "object", "properties": {"account_id": {"type": "string"}}, "required": ["account_id"]}),
+         inputSchema={"type": "object", "properties": {"account_id": {"type": "string"}}, "required": ["account_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_pnl_history", description="Get historical P&L time series for charting.",
-         inputSchema={"type": "object", "properties": {"account_id": {"type": "string"}, "interval": {"type": "string", "enum": ["1m", "5m", "1h", "1d"], "default": "1h"}, "lookback": {"type": "string", "default": "24h"}}, "required": ["account_id"]}),
+         inputSchema={"type": "object", "properties": {"account_id": {"type": "string"}, "interval": {"type": "string", "enum": ["1m", "5m", "1h", "1d"], "default": "1h"}, "lookback": {"type": "string", "default": "24h"}}, "required": ["account_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="analyze_order_flow", description="Analyze order flow for a symbol: buy/sell pressure, large trades, imbalances.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "lookback_minutes": {"type": "integer", "default": 60}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "lookback_minutes": {"type": "integer", "default": 60}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_order_flow_heatmap", description="Get order flow heatmap data for price levels.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "levels": {"type": "integer", "default": 20}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "levels": {"type": "integer", "default": 20}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_volume_profile", description="Get volume profile analysis for a symbol.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "lookback_days": {"type": "integer", "default": 5}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "lookback_days": {"type": "integer", "default": 5}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="analyze_microstructure", description="Analyze market microstructure: bid-ask spread, depth, tick patterns.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_toxicity_score", description="Get order flow toxicity score (VPIN) for a symbol.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "window": {"type": "integer", "default": 50}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "window": {"type": "integer", "default": 50}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="detect_regime", description="Detect current market regime using statistical methods.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "method": {"type": "string", "enum": ["hmm", "threshold", "ml"], "default": "hmm"}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "method": {"type": "string", "enum": ["hmm", "threshold", "ml"], "default": "hmm"}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_regime_history", description="Get historical regime classifications for a symbol.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "lookback_days": {"type": "integer", "default": 90}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "lookback_days": {"type": "integer", "default": 90}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_regime_transition_matrix", description="Get regime transition probability matrix.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="create_alert", description="Create a real-time alert with conditions and actions.",
-         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "condition": {"type": "object"}, "actions": {"type": "array", "items": {"type": "object"}}, "channels": {"type": "array", "items": {"type": "string"}}}, "required": ["name", "condition"]}),
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "condition": {"type": "object"}, "actions": {"type": "array", "items": {"type": "object"}}, "channels": {"type": "array", "items": {"type": "string"}}}, "required": ["name", "condition"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="list_alerts", description="List all configured alerts with their status.",
-         inputSchema={"type": "object", "properties": {"active_only": {"type": "boolean", "default": True}}}),
+         inputSchema={"type": "object", "properties": {"active_only": {"type": "boolean", "default": True}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="delete_alert", description="Delete an alert by ID.",
-         inputSchema={"type": "object", "properties": {"alert_id": {"type": "string"}}, "required": ["alert_id"]}),
+         inputSchema={"type": "object", "properties": {"alert_id": {"type": "string"}}, "required": ["alert_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_alert_history", description="Get alert trigger history.",
-         inputSchema={"type": "object", "properties": {"alert_id": {"type": "string"}, "limit": {"type": "integer", "default": 50}}}),
+         inputSchema={"type": "object", "properties": {"alert_id": {"type": "string"}, "limit": {"type": "integer", "default": 50}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V13: Alternative Data Marketplace (18 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="analyze_sentiment", description="Run NLP sentiment analysis on text or news for a symbol.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "source": {"type": "string", "enum": ["news", "twitter", "reddit", "earnings_call", "custom"]}, "text": {"type": "string"}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "source": {"type": "string", "enum": ["news", "twitter", "reddit", "earnings_call", "custom"]}, "text": {"type": "string"}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_sentiment_history", description="Get historical sentiment scores for a symbol.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "source": {"type": "string"}, "lookback_days": {"type": "integer", "default": 30}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "source": {"type": "string"}, "lookback_days": {"type": "integer", "default": 30}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_sentiment_signal", description="Get aggregated sentiment signal (bullish/bearish/neutral) for a symbol.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="analyze_satellite", description="Analyze satellite imagery data for economic activity signals.",
-         inputSchema={"type": "object", "properties": {"location": {"type": "string"}, "data_type": {"type": "string", "enum": ["parking_lots", "shipping", "agriculture", "construction", "nightlights"]}, "symbol": {"type": "string"}}, "required": ["location", "data_type"]}),
+         inputSchema={"type": "object", "properties": {"location": {"type": "string"}, "data_type": {"type": "string", "enum": ["parking_lots", "shipping", "agriculture", "construction", "nightlights"]}, "symbol": {"type": "string"}}, "required": ["location", "data_type"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_satellite_timeseries", description="Get time series of satellite-derived metrics.",
-         inputSchema={"type": "object", "properties": {"location_id": {"type": "string"}, "metric": {"type": "string"}, "lookback_days": {"type": "integer", "default": 90}}, "required": ["location_id", "metric"]}),
+         inputSchema={"type": "object", "properties": {"location_id": {"type": "string"}, "metric": {"type": "string"}, "lookback_days": {"type": "integer", "default": 90}}, "required": ["location_id", "metric"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="scrape_web_data", description="Scrape structured data from web sources for trading signals.",
-         inputSchema={"type": "object", "properties": {"url": {"type": "string"}, "selectors": {"type": "object"}, "schedule": {"type": "string"}}, "required": ["url"]}),
+         inputSchema={"type": "object", "properties": {"url": {"type": "string"}, "selectors": {"type": "object"}, "schedule": {"type": "string"}}, "required": ["url"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="list_scrape_jobs", description="List all configured web scrape jobs.",
-         inputSchema={"type": "object", "properties": {}}),
+         inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_scrape_results", description="Get results from a web scrape job.",
-         inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}, "limit": {"type": "integer", "default": 100}}, "required": ["job_id"]}),
+         inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}, "limit": {"type": "integer", "default": 100}}, "required": ["job_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="analyze_sec_filing", description="Analyze an SEC filing (10-K, 10-Q, 8-K) for trading signals.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "filing_type": {"type": "string", "enum": ["10-K", "10-Q", "8-K", "13-F", "S-1"]}, "filing_url": {"type": "string"}}, "required": ["symbol", "filing_type"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "filing_type": {"type": "string", "enum": ["10-K", "10-Q", "8-K", "13-F", "S-1"]}, "filing_url": {"type": "string"}}, "required": ["symbol", "filing_type"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_insider_trades", description="Get recent insider trading activity for a symbol.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "days": {"type": "integer", "default": 90}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "days": {"type": "integer", "default": 90}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_institutional_holdings", description="Get institutional holdings changes (13-F) for a symbol.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "quarter": {"type": "string"}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "quarter": {"type": "string"}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="analyze_social_media", description="Analyze social media signals (Twitter, Reddit, StockTwits) for a symbol.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "platform": {"type": "string", "enum": ["twitter", "reddit", "stocktwits", "all"]}, "lookback_hours": {"type": "integer", "default": 24}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "platform": {"type": "string", "enum": ["twitter", "reddit", "stocktwits", "all"]}, "lookback_hours": {"type": "integer", "default": 24}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_social_momentum", description="Get social momentum score for a symbol (trending vs fading).",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]}),
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_social_sentiment_feed", description="Get real-time social sentiment feed for monitored symbols.",
-         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}, "limit": {"type": "integer", "default": 50}}}),
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}, "limit": {"type": "integer", "default": 50}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="browse_alt_datasets", description="Browse available alternative datasets in the marketplace.",
-         inputSchema={"type": "object", "properties": {"category": {"type": "string"}, "min_quality": {"type": "number", "default": 0.7}}}),
+         inputSchema={"type": "object", "properties": {"category": {"type": "string"}, "min_quality": {"type": "number", "default": 0.7}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="subscribe_alt_dataset", description="Subscribe to an alternative dataset for signal generation.",
-         inputSchema={"type": "object", "properties": {"dataset_id": {"type": "string"}, "config": {"type": "object"}}, "required": ["dataset_id"]}),
+         inputSchema={"type": "object", "properties": {"dataset_id": {"type": "string"}, "config": {"type": "object"}}, "required": ["dataset_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_alt_dataset_sample", description="Get a sample of data from an alternative dataset.",
-         inputSchema={"type": "object", "properties": {"dataset_id": {"type": "string"}, "limit": {"type": "integer", "default": 100}}, "required": ["dataset_id"]}),
+         inputSchema={"type": "object", "properties": {"dataset_id": {"type": "string"}, "limit": {"type": "integer", "default": 100}}, "required": ["dataset_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_alt_data_quality", description="Get quality metrics for an alternative dataset.",
-         inputSchema={"type": "object", "properties": {"dataset_id": {"type": "string"}}, "required": ["dataset_id"]}),
+         inputSchema={"type": "object", "properties": {"dataset_id": {"type": "string"}}, "required": ["dataset_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V14: Autonomous Agent Swarm (18 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="spawn_agent", description="Spawn a new autonomous trading agent with a specific role and strategy.",
-         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "role": {"type": "string", "enum": ["researcher", "trader", "risk_manager", "analyst", "executor"]}, "strategy": {"type": "object"}, "capital_allocation": {"type": "number"}}, "required": ["name", "role"]}),
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "role": {"type": "string", "enum": ["researcher", "trader", "risk_manager", "analyst", "executor"]}, "strategy": {"type": "object"}, "capital_allocation": {"type": "number"}}, "required": ["name", "role"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="list_agents", description="List all active agents in the swarm with their status.",
-         inputSchema={"type": "object", "properties": {"role_filter": {"type": "string"}}}),
+         inputSchema={"type": "object", "properties": {"role_filter": {"type": "string"}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_agent_detail", description="Get detailed info about a specific agent: state, P&L, decisions.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="terminate_agent", description="Terminate an agent and close its positions.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "reason": {"type": "string"}}, "required": ["agent_id"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "reason": {"type": "string"}}, "required": ["agent_id"]},
+        annotations=ANNOT_WRITE_DESTRUCTIVE,
+    ),
     Tool(name="create_task_plan", description="Create a task plan that decomposes a trading goal into agent subtasks.",
-         inputSchema={"type": "object", "properties": {"goal": {"type": "string"}, "constraints": {"type": "object"}, "deadline": {"type": "string"}}, "required": ["goal"]}),
+         inputSchema={"type": "object", "properties": {"goal": {"type": "string"}, "constraints": {"type": "object"}, "deadline": {"type": "string"}}, "required": ["goal"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_task_plan", description="Get a task plan and its execution status.",
-         inputSchema={"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]}),
+         inputSchema={"type": "object", "properties": {"plan_id": {"type": "string"}}, "required": ["plan_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="store_agent_memory", description="Store a memory/observation in shared agent memory.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "memory_type": {"type": "string", "enum": ["observation", "decision", "outcome", "insight"]}, "content": {"type": "object"}}, "required": ["agent_id", "memory_type", "content"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "memory_type": {"type": "string", "enum": ["observation", "decision", "outcome", "insight"]}, "content": {"type": "object"}}, "required": ["agent_id", "memory_type", "content"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="query_agent_memory", description="Query shared agent memory for relevant past observations.",
-         inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "memory_type": {"type": "string"}, "agent_id": {"type": "string"}, "limit": {"type": "integer", "default": 20}}, "required": ["query"]}),
+         inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "memory_type": {"type": "string"}, "agent_id": {"type": "string"}, "limit": {"type": "integer", "default": 20}}, "required": ["query"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_memory_stats", description="Get agent memory usage statistics.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="route_tool_call", description="Route a tool call from an agent to the appropriate MCP tool.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "tool_name": {"type": "string"}, "arguments": {"type": "object"}}, "required": ["agent_id", "tool_name", "arguments"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "tool_name": {"type": "string"}, "arguments": {"type": "object"}}, "required": ["agent_id", "tool_name", "arguments"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_tool_permissions", description="Get tool access permissions for an agent.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="request_consensus", description="Request multi-agent consensus on a trading decision.",
-         inputSchema={"type": "object", "properties": {"proposal": {"type": "object"}, "agent_ids": {"type": "array", "items": {"type": "string"}}, "method": {"type": "string", "enum": ["majority", "weighted", "unanimous"], "default": "weighted"}}, "required": ["proposal", "agent_ids"]}),
+         inputSchema={"type": "object", "properties": {"proposal": {"type": "object"}, "agent_ids": {"type": "array", "items": {"type": "string"}}, "method": {"type": "string", "enum": ["majority", "weighted", "unanimous"], "default": "weighted"}}, "required": ["proposal", "agent_ids"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_consensus_result", description="Get the result of a consensus request.",
-         inputSchema={"type": "object", "properties": {"consensus_id": {"type": "string"}}, "required": ["consensus_id"]}),
+         inputSchema={"type": "object", "properties": {"consensus_id": {"type": "string"}}, "required": ["consensus_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_consensus_history", description="Get history of consensus decisions.",
-         inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}}),
+         inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_agent_health", description="Get health metrics for an agent: uptime, error rate, latency.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}}, "required": ["agent_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_swarm_dashboard", description="Get aggregate swarm dashboard: active agents, total P&L, task status.",
-         inputSchema={"type": "object", "properties": {}}),
+         inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_agent_performance", description="Get detailed performance metrics for an agent over time.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "lookback_days": {"type": "integer", "default": 30}}, "required": ["agent_id"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "lookback_days": {"type": "integer", "default": 30}}, "required": ["agent_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="set_agent_parameters", description="Update an agent's strategy parameters at runtime.",
-         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "parameters": {"type": "object"}}, "required": ["agent_id", "parameters"]}),
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "parameters": {"type": "object"}}, "required": ["agent_id", "parameters"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V15: DeFi & Cross-Chain (20 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="get_dex_quote", description="Get best swap quote across decentralized exchanges.",
-         inputSchema={"type": "object", "properties": {"token_in": {"type": "string"}, "token_out": {"type": "string"}, "amount": {"type": "string"}, "chain": {"type": "string", "enum": ["ethereum", "polygon", "arbitrum", "optimism", "base", "solana"]}}, "required": ["token_in", "token_out", "amount"]}),
+         inputSchema={"type": "object", "properties": {"token_in": {"type": "string"}, "token_out": {"type": "string"}, "amount": {"type": "string"}, "chain": {"type": "string", "enum": ["ethereum", "polygon", "arbitrum", "optimism", "base", "solana"]}}, "required": ["token_in", "token_out", "amount"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="execute_swap", description="Execute a token swap on the best DEX route.",
-         inputSchema={"type": "object", "properties": {"quote_id": {"type": "string"}, "slippage_tolerance": {"type": "number", "default": 0.005}, "deadline_minutes": {"type": "integer", "default": 20}}, "required": ["quote_id"]}),
+         inputSchema={"type": "object", "properties": {"quote_id": {"type": "string"}, "slippage_tolerance": {"type": "number", "default": 0.005}, "deadline_minutes": {"type": "integer", "default": 20}}, "required": ["quote_id"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="get_dex_liquidity", description="Get liquidity depth across DEXes for a token pair.",
-         inputSchema={"type": "object", "properties": {"token_in": {"type": "string"}, "token_out": {"type": "string"}, "chain": {"type": "string"}}, "required": ["token_in", "token_out"]}),
+         inputSchema={"type": "object", "properties": {"token_in": {"type": "string"}, "token_out": {"type": "string"}, "chain": {"type": "string"}}, "required": ["token_in", "token_out"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="scan_yield_opportunities", description="Scan DeFi protocols for yield farming opportunities.",
-         inputSchema={"type": "object", "properties": {"min_apy": {"type": "number", "default": 5.0}, "max_risk_score": {"type": "number", "default": 7}, "chains": {"type": "array", "items": {"type": "string"}}}}),
+         inputSchema={"type": "object", "properties": {"min_apy": {"type": "number", "default": 5.0}, "max_risk_score": {"type": "number", "default": 7}, "chains": {"type": "array", "items": {"type": "string"}}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="deploy_yield_strategy", description="Deploy capital to a yield farming strategy.",
-         inputSchema={"type": "object", "properties": {"opportunity_id": {"type": "string"}, "amount": {"type": "string"}, "auto_compound": {"type": "boolean", "default": True}}, "required": ["opportunity_id", "amount"]}),
+         inputSchema={"type": "object", "properties": {"opportunity_id": {"type": "string"}, "amount": {"type": "string"}, "auto_compound": {"type": "boolean", "default": True}}, "required": ["opportunity_id", "amount"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="get_yield_positions", description="Get all active yield farming positions.",
-         inputSchema={"type": "object", "properties": {}}),
+         inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="withdraw_yield", description="Withdraw from a yield farming position.",
-         inputSchema={"type": "object", "properties": {"position_id": {"type": "string"}, "amount": {"type": "string"}}, "required": ["position_id"]}),
+         inputSchema={"type": "object", "properties": {"position_id": {"type": "string"}, "amount": {"type": "string"}}, "required": ["position_id"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="bridge_tokens", description="Bridge tokens across chains via cross-chain bridge.",
-         inputSchema={"type": "object", "properties": {"token": {"type": "string"}, "amount": {"type": "string"}, "from_chain": {"type": "string"}, "to_chain": {"type": "string"}, "bridge_protocol": {"type": "string"}}, "required": ["token", "amount", "from_chain", "to_chain"]}),
+         inputSchema={"type": "object", "properties": {"token": {"type": "string"}, "amount": {"type": "string"}, "from_chain": {"type": "string"}, "to_chain": {"type": "string"}, "bridge_protocol": {"type": "string"}}, "required": ["token", "amount", "from_chain", "to_chain"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="get_bridge_status", description="Get status of a cross-chain bridge transfer.",
-         inputSchema={"type": "object", "properties": {"transfer_id": {"type": "string"}}, "required": ["transfer_id"]}),
+         inputSchema={"type": "object", "properties": {"transfer_id": {"type": "string"}}, "required": ["transfer_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="list_bridge_routes", description="List available bridge routes between chains for a token.",
-         inputSchema={"type": "object", "properties": {"token": {"type": "string"}, "from_chain": {"type": "string"}, "to_chain": {"type": "string"}}, "required": ["token", "from_chain", "to_chain"]}),
+         inputSchema={"type": "object", "properties": {"token": {"type": "string"}, "from_chain": {"type": "string"}, "to_chain": {"type": "string"}}, "required": ["token", "from_chain", "to_chain"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="check_mev_risk", description="Check MEV risk for a pending transaction.",
-         inputSchema={"type": "object", "properties": {"transaction": {"type": "object"}, "chain": {"type": "string"}}, "required": ["transaction"]}),
+         inputSchema={"type": "object", "properties": {"transaction": {"type": "object"}, "chain": {"type": "string"}}, "required": ["transaction"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="submit_protected_tx", description="Submit a transaction with MEV protection (Flashbots/private mempool).",
-         inputSchema={"type": "object", "properties": {"transaction": {"type": "object"}, "protection_type": {"type": "string", "enum": ["flashbots", "private_mempool", "backrun_protection"]}}, "required": ["transaction"]}),
+         inputSchema={"type": "object", "properties": {"transaction": {"type": "object"}, "protection_type": {"type": "string", "enum": ["flashbots", "private_mempool", "backrun_protection"]}}, "required": ["transaction"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="get_mev_analytics", description="Get MEV analytics: sandwich attacks, front-running stats for monitored wallets.",
-         inputSchema={"type": "object", "properties": {"wallet": {"type": "string"}, "lookback_days": {"type": "integer", "default": 7}}}),
+         inputSchema={"type": "object", "properties": {"wallet": {"type": "string"}, "lookback_days": {"type": "integer", "default": 7}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_governance_proposals", description="Get active governance proposals for a DAO/protocol.",
-         inputSchema={"type": "object", "properties": {"protocol": {"type": "string"}, "status": {"type": "string", "enum": ["active", "passed", "rejected", "all"], "default": "active"}}, "required": ["protocol"]}),
+         inputSchema={"type": "object", "properties": {"protocol": {"type": "string"}, "status": {"type": "string", "enum": ["active", "passed", "rejected", "all"], "default": "active"}}, "required": ["protocol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="vote_on_proposal", description="Cast a vote on a DAO governance proposal.",
-         inputSchema={"type": "object", "properties": {"proposal_id": {"type": "string"}, "vote": {"type": "string", "enum": ["for", "against", "abstain"]}, "reason": {"type": "string"}}, "required": ["proposal_id", "vote"]}),
+         inputSchema={"type": "object", "properties": {"proposal_id": {"type": "string"}, "vote": {"type": "string", "enum": ["for", "against", "abstain"]}, "reason": {"type": "string"}}, "required": ["proposal_id", "vote"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="get_governance_power", description="Get voting power and delegation status for a wallet.",
-         inputSchema={"type": "object", "properties": {"protocol": {"type": "string"}, "wallet": {"type": "string"}}, "required": ["protocol"]}),
+         inputSchema={"type": "object", "properties": {"protocol": {"type": "string"}, "wallet": {"type": "string"}}, "required": ["protocol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="assess_defi_risk", description="Assess risk of a DeFi protocol: smart contract, liquidity, governance.",
-         inputSchema={"type": "object", "properties": {"protocol": {"type": "string"}, "chain": {"type": "string"}}, "required": ["protocol"]}),
+         inputSchema={"type": "object", "properties": {"protocol": {"type": "string"}, "chain": {"type": "string"}}, "required": ["protocol"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_defi_portfolio_risk", description="Get aggregate risk assessment for all DeFi positions.",
-         inputSchema={"type": "object", "properties": {}}),
+         inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="monitor_liquidation_risk", description="Monitor liquidation risk for lending/borrowing positions.",
-         inputSchema={"type": "object", "properties": {"position_id": {"type": "string"}}, "required": ["position_id"]}),
+         inputSchema={"type": "object", "properties": {"position_id": {"type": "string"}}, "required": ["position_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_defi_insurance_options", description="Get DeFi insurance options for protocol risk coverage.",
-         inputSchema={"type": "object", "properties": {"protocol": {"type": "string"}, "coverage_amount": {"type": "string"}}, "required": ["protocol"]}),
+         inputSchema={"type": "object", "properties": {"protocol": {"type": "string"}, "coverage_amount": {"type": "string"}}, "required": ["protocol"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     # ═══════════════════════════════════════════════════════════════
     # V16: Cloud SaaS Platform (17 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="create_saas_tenant", description="Create a new SaaS tenant with subscription plan and configuration.",
-         inputSchema={"type": "object", "properties": {"company_name": {"type": "string"}, "admin_email": {"type": "string"}, "plan": {"type": "string", "enum": ["free", "starter", "professional", "enterprise"]}, "config": {"type": "object"}}, "required": ["company_name", "admin_email"]}),
+         inputSchema={"type": "object", "properties": {"company_name": {"type": "string"}, "admin_email": {"type": "string"}, "plan": {"type": "string", "enum": ["free", "starter", "professional", "enterprise"]}, "config": {"type": "object"}}, "required": ["company_name", "admin_email"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_saas_tenant", description="Get SaaS tenant details, usage, and subscription status.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="update_saas_tenant", description="Update SaaS tenant settings, plan, or configuration.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "updates": {"type": "object"}}, "required": ["tenant_id", "updates"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "updates": {"type": "object"}}, "required": ["tenant_id", "updates"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_usage_metrics", description="Get detailed usage metrics for billing (API calls, compute, storage).",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "period": {"type": "string", "default": "current_month"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "period": {"type": "string", "default": "current_month"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_invoice", description="Get invoice details for a billing period.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "invoice_id": {"type": "string"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "invoice_id": {"type": "string"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="list_invoices", description="List all invoices for a tenant.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "status": {"type": "string", "enum": ["paid", "pending", "overdue", "all"]}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "status": {"type": "string", "enum": ["paid", "pending", "overdue", "all"]}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="update_payment_method", description="Update payment method for a tenant.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "payment_method": {"type": "object"}}, "required": ["tenant_id", "payment_method"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "payment_method": {"type": "object"}}, "required": ["tenant_id", "payment_method"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="publish_strategy_to_marketplace", description="Publish a validated strategy to the SaaS marketplace.",
-         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "pricing": {"type": "object"}, "description": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["strategy_id", "pricing"]}),
+         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "pricing": {"type": "object"}, "description": {"type": "string"}, "tags": {"type": "array", "items": {"type": "string"}}}, "required": ["strategy_id", "pricing"]},
+        annotations=ANNOT_TRADE_EXEC,
+    ),
     Tool(name="browse_strategy_marketplace", description="Browse the SaaS strategy marketplace with filters.",
-         inputSchema={"type": "object", "properties": {"category": {"type": "string"}, "min_sharpe": {"type": "number"}, "max_price": {"type": "number"}, "sort_by": {"type": "string", "enum": ["sharpe", "subscribers", "newest", "price"], "default": "sharpe"}}}),
+         inputSchema={"type": "object", "properties": {"category": {"type": "string"}, "min_sharpe": {"type": "number"}, "max_price": {"type": "number"}, "sort_by": {"type": "string", "enum": ["sharpe", "subscribers", "newest", "price"], "default": "sharpe"}}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="subscribe_to_strategy", description="Subscribe a tenant to a marketplace strategy.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "strategy_id": {"type": "string"}, "allocation": {"type": "number"}}, "required": ["tenant_id", "strategy_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "strategy_id": {"type": "string"}, "allocation": {"type": "number"}}, "required": ["tenant_id", "strategy_id"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="configure_white_label", description="Configure white-label branding for a tenant.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "branding": {"type": "object"}}, "required": ["tenant_id", "branding"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "branding": {"type": "object"}}, "required": ["tenant_id", "branding"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="get_white_label_config", description="Get current white-label configuration for a tenant.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="generate_api_key", description="Generate an API key for tenant programmatic access.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "name": {"type": "string"}, "permissions": {"type": "array", "items": {"type": "string"}}, "rate_limit": {"type": "integer", "default": 1000}}, "required": ["tenant_id", "name"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "name": {"type": "string"}, "permissions": {"type": "array", "items": {"type": "string"}}, "rate_limit": {"type": "integer", "default": 1000}}, "required": ["tenant_id", "name"]},
+        annotations=ANNOT_WRITE_SAFE,
+    ),
     Tool(name="list_api_keys", description="List all API keys for a tenant.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="revoke_api_key", description="Revoke an API key.",
-         inputSchema={"type": "object", "properties": {"key_id": {"type": "string"}}, "required": ["key_id"]}),
+         inputSchema={"type": "object", "properties": {"key_id": {"type": "string"}}, "required": ["key_id"]},
+        annotations=ANNOT_WRITE_DESTRUCTIVE,
+    ),
     Tool(name="get_api_usage", description="Get API usage statistics and rate limit status.",
-         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "key_id": {"type": "string"}}, "required": ["tenant_id"]}),
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "key_id": {"type": "string"}}, "required": ["tenant_id"]},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
     Tool(name="get_platform_health", description="Get overall SaaS platform health: uptime, latency, error rates.",
-         inputSchema={"type": "object", "properties": {}}),
+         inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
+    # ═══════════════════════════════════════════════════════════════
+    # V17: Massive White-Label Data (5 tools) + Dynamic Toolsets (3 tools)
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="massive_search_endpoints", description="BM25 search over all Massive market data API endpoints. Use this FIRST to find the right endpoint for stocks, options, futures, forex, crypto, or SEC filings.",
+         inputSchema={"type": "object", "properties": {"query": {"type": "string", "description": "Natural language query (e.g. 'stock price aggregates', 'options chain', 'forex rates')"}, "top_k": {"type": "integer", "default": 5}, "scope": {"type": "string", "enum": ["all", "endpoints", "functions"], "description": "Search scope: endpoints for API, functions for built-in Greeks/returns/technicals"}}, "required": ["query"]},
+         annotations=ANNOT_SEARCH),
+    Tool(name="massive_get_endpoint_docs", description="Get parameter documentation for a Massive API endpoint. Pass the docs_url from massive_search_endpoints results.",
+         inputSchema={"type": "object", "properties": {"docs_url": {"type": "string", "description": "The docs URL from search results"}}, "required": ["docs_url"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="massive_call_api", description="Execute a Massive market data API call. Optionally store results as an in-memory DataFrame for SQL querying. Supports pagination auto-detection — check _next_page in results.",
+         inputSchema={"type": "object", "properties": {"path": {"type": "string", "description": "API path (e.g. /v2/aggs/ticker/AAPL/range/1/day/2024-01-01/2024-12-31)"}, "method": {"type": "string", "default": "GET"}, "params": {"type": "object", "description": "Query parameters"}, "store_as": {"type": "string", "description": "Table name to store as DataFrame (e.g. aapl_daily)"}, "apply": {"type": "array", "items": {"type": "object"}, "description": "Post-processing functions: sma, ema, sharpe_ratio, bs_delta, etc."}, "api_key": {"type": "string", "description": "Override API key for this request (white-label customer isolation)"}, "llm_model": {"type": "string", "description": "LLM model name for usage analytics"}, "llm_provider": {"type": "string", "description": "LLM provider name for usage analytics"}}, "required": ["path"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="massive_query_data", description="SQL queries over stored DataFrames from massive_call_api. Supports SHOW TABLES, DESCRIBE <table>, DROP TABLE <table>, and full SQL with JOIN/GROUP BY/window functions. Use apply for server-side Greeks and technicals.",
+         inputSchema={"type": "object", "properties": {"sql": {"type": "string", "description": "SQL query or special command"}, "apply": {"type": "array", "items": {"type": "object"}, "description": "Post-processing functions to apply to query results"}}, "required": ["sql"]},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="massive_run_pipeline", description="Composable pipeline: search→fetch→store→query→apply in 1 call (saves 4 round-trips). Describe what data you want, optionally filter with SQL and apply Greeks/technicals.",
+         inputSchema={"type": "object", "properties": {"search_query": {"type": "string", "description": "Natural language query to find the right API endpoint"}, "path_override": {"type": "string", "description": "Skip search — use this API path directly"}, "params": {"type": "object", "description": "Query parameters for the API call"}, "store_as": {"type": "string", "description": "Table name (auto-generated if omitted)"}, "sql": {"type": "string", "description": "SQL to run after storing. Use {table} as placeholder for the table name"}, "apply": {"type": "array", "items": {"type": "object"}, "description": "Post-processing: [{\"function\": \"sharpe_ratio\", \"inputs\": {\"column\": \"close\", \"window\": 252}, \"output\": \"sharpe\"}]"}}, "required": ["search_query"]},
+         annotations=ANNOT_COMPUTE),
+    # ═══════════════════════════════════════════════════════════════
+    # V17: Dynamic Toolsets — Meta-Tools (3 tools)
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="discover_tools", description="Search for relevant AlgoChains tools using natural language. Returns the top-K most relevant tools with descriptions. Use this FIRST to find which tools are available for your task — 90%+ context reduction vs listing all 150+ tools.",
+         inputSchema={"type": "object", "properties": {"query": {"type": "string", "description": "Natural language description of what you want to do"}, "top_k": {"type": "integer", "default": 10}, "category": {"type": "string", "description": "Filter: trading, market_data, strategy, ml, analytics, alt_data, defi, cloud"}}, "required": ["query"]},
+         annotations=ANNOT_SEARCH),
+    Tool(name="get_tool_details", description="Get full details for a specific tool including its input schema, parameter types, and usage examples. Call after discover_tools to get the full spec before execution.",
+         inputSchema={"type": "object", "properties": {"tool_name": {"type": "string", "description": "Exact tool name from discover_tools results"}}, "required": ["tool_name"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="execute_dynamic_tool", description="Execute any discovered tool by name with arguments. Use discover_tools first, then get_tool_details for the schema, then call this to execute.",
+         inputSchema={"type": "object", "properties": {"tool_name": {"type": "string", "description": "Tool name to execute"}, "arguments": {"type": "object", "description": "Arguments matching the tool's inputSchema"}}, "required": ["tool_name", "arguments"]},
+         annotations=ANNOT_TRADE_EXEC),
+    # ═══════════════════════════════════════════════════════════════
+    # V18: Intent-Based Trading + Autonomous Intelligence (8 tools)
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="execute_intent", description="Transform a natural language trading intent into a concrete plan and execute it. Example: 'Get me $10K AI exposure, max 2% per stock'. Parses intent → solves constraints → presents plan for approval → executes.",
+         inputSchema={"type": "object", "properties": {"intent": {"type": "string", "description": "Natural language trading intent"}, "dry_run": {"type": "boolean", "default": True, "description": "If true, return the plan without executing (default: true for safety)"}}, "required": ["intent"]},
+         annotations=ANNOT_TRADE_EXEC),
+    Tool(name="get_intent_plan", description="Get details of a previously generated intent plan by ID. Shows all steps, status, estimated cost, and risk impact.",
+         inputSchema={"type": "object", "properties": {"plan_id": {"type": "string", "description": "Plan ID from execute_intent"}}, "required": ["plan_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="approve_intent", description="Approve a pending intent plan for execution. The plan must be in 'pending_approval' status.",
+         inputSchema={"type": "object", "properties": {"plan_id": {"type": "string", "description": "Plan ID to approve and execute"}}, "required": ["plan_id"]},
+         annotations=ANNOT_TRADE_EXEC),
+    Tool(name="get_intent_history", description="Get history of executed intent plans with outcomes and lessons learned.",
+         inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="create_shadow_portfolio", description="Create a shadow (paper) portfolio to forward-test a strategy without risking capital. Track P&L, fills, and metrics alongside your real portfolio.",
+         inputSchema={"type": "object", "properties": {"name": {"type": "string", "description": "Portfolio name (e.g. 'AI Momentum Test')"}, "strategy_id": {"type": "string", "description": "Optional strategy ID to track"}, "broker": {"type": "string", "default": "alpaca"}, "capital": {"type": "number", "default": 100000, "description": "Starting capital"}}, "required": ["name"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_shadow_results", description="Get shadow portfolio results and optionally compare against live performance. Shows P&L, win rate, Sharpe estimate, and promotion recommendation.",
+         inputSchema={"type": "object", "properties": {"shadow_id": {"type": "string", "description": "Shadow portfolio ID"}, "compare_live": {"type": "boolean", "default": False, "description": "Compare against live portfolio metrics"}}, "required": ["shadow_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="evolve_strategies", description="Genetic evolution of trading strategies. Initialize a population, evaluate fitness via backtest, then evolve to breed better strategies. Returns top genomes ranked by fitness (Sharpe-weighted).",
+         inputSchema={"type": "object", "properties": {"action": {"type": "string", "enum": ["initialize", "evaluate", "evolve", "get_top", "get_unevaluated"], "description": "Evolution action"}, "strategy_type": {"type": "string", "enum": ["momentum", "mean_reversion", "breakout", "scalper"], "default": "momentum"}, "seeds": {"type": "array", "items": {"type": "object"}, "description": "Seed strategies with known-good parameters (for initialize)"}, "genome_id": {"type": "string", "description": "Genome ID (for evaluate)"}, "metrics": {"type": "object", "description": "Backtest metrics: sharpe, max_drawdown, win_rate, trade_count (for evaluate)"}, "n": {"type": "integer", "default": 10}}, "required": ["action"]},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="detect_arbitrage", description="Scan for cross-broker arbitrage opportunities. Compares prices across brokers, computes spread in bps, subtracts fees and slippage, and flags profitable opportunities.",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}, "description": "Symbols to scan"}, "brokers": {"type": "array", "items": {"type": "string"}, "description": "Brokers to compare (default: alpaca, ibkr, tradovate)"}, "quotes": {"type": "object", "description": "Pre-fetched quotes as {broker: {symbol: price}} — skips live fetch"}}, "required": ["symbols"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    # ═══════════════════════════════════════════════════════════════
+    # V18 Genius Layer (2 tools)
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="detect_market_regime", description="Detect current market regime from VIX, SPY trend, breadth, and credit signals. Returns regime classification (bull/bear/range/volatile/crisis), recommended strategies, and risk multiplier for position sizing.",
+         inputSchema={"type": "object", "properties": {"vix": {"type": "number"}, "spy_price": {"type": "number"}, "spy_sma_20": {"type": "number"}, "spy_sma_50": {"type": "number"}, "spy_sma_200": {"type": "number"}, "advance_decline_ratio": {"type": "number"}, "put_call_ratio": {"type": "number"}, "credit_spread_bps": {"type": "number"}}, "required": []},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="prefetch_context", description="Predict what data an LLM will need based on user message intent and prefetch it in parallel. Reduces average tool calls from 6.2 to 1.8. Returns pre-loaded context dict.",
+         inputSchema={"type": "object", "properties": {"user_message": {"type": "string", "description": "The user's message to analyze for data needs"}}, "required": ["user_message"]},
+         annotations=ANNOT_READ_ONLY),
+    # ═══════════════════════════════════════════════════════════════
+    # V19: Alpha Engines — institutional-grade alpha analytics (18 tools)
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="compute_vwap", description="Compute real VWAP from intraday minute bars with standard deviation bands. Generates deviation signals (bullish/bearish reversion) when price strays from VWAP. Includes TWAP comparison.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "date": {"type": "string", "description": "Date YYYY-MM-DD (default: today)"}, "interval": {"type": "string", "default": "1", "description": "Bar interval in minutes"}, "anchor": {"type": "string", "default": "day", "enum": ["day", "week", "month"]}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="multi_anchor_vwap", description="Compute VWAP from multiple anchor points (day, week, month) to identify confluence zones where multiple VWAP levels converge.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "anchors": {"type": "array", "items": {"type": "string"}, "default": ["day"]}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="detect_dark_prints", description="Detect dark pool prints — large off-exchange trades indicating institutional activity. Classifies as accumulation or distribution based on buy/sell print analysis.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "date": {"type": "string", "description": "Date YYYY-MM-DD"}, "min_size": {"type": "integer", "default": 10000, "description": "Minimum print size to flag"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="block_trade_scanner", description="Scan multiple symbols for large block trades and dark pool activity. Returns sorted by notional value with institutional signal classification.",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}, "min_notional": {"type": "number", "default": 500000}}, "required": ["symbols"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="compute_gex", description="Compute Gamma Exposure (GEX) from options chain — net dealer gamma, gamma flip point, pin risk strikes, and volatility regime (positive=compressed, negative=expanded). Key institutional-grade signal.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "expiry": {"type": "string", "description": "Optional expiry filter YYYY-MM-DD"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="gex_scanner", description="Scan multiple symbols for gamma exposure signals. Identifies positive/negative gamma regimes, volatility bias, and put/call OI ratios across a watchlist.",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}}, "required": ["symbols"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="analyze_vol_skew", description="Analyze volatility skew — 25-delta risk reversal, butterfly spread, and fear/crash protection signals from options implied volatility across strikes.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "expiry": {"type": "string", "description": "Optional expiry YYYY-MM-DD"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="vol_term_structure", description="Analyze IV term structure across expirations — contango/backwardation, slope, event risk detection, and front-vs-back month vol spread signals.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="correlation_matrix", description="Compute rolling correlation matrix for a basket of assets. Identifies high-correlation pairs (for hedging) and negative-correlation pairs (for diversification).",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}, "lookback_days": {"type": "integer", "default": 60}}, "required": ["symbols"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="pair_trade_signal", description="Compute pair trade z-score signal for two symbols. Uses spread ratio, Ornstein-Uhlenbeck half-life, and configurable entry/exit z-thresholds.",
+         inputSchema={"type": "object", "properties": {"symbol_a": {"type": "string"}, "symbol_b": {"type": "string"}, "lookback_days": {"type": "integer", "default": 60}, "z_entry": {"type": "number", "default": 2.0}, "z_exit": {"type": "number", "default": 0.5}}, "required": ["symbol_a", "symbol_b"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="relative_strength", description="Compute relative strength of a symbol vs benchmark (default SPY). Returns alpha, RS trend direction, and outperformance signal.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "benchmark": {"type": "string", "default": "SPY"}, "lookback_days": {"type": "integer", "default": 20}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="congressional_trades", description="Get congressional and insider stock trades with conviction scoring. Tracks politician/insider buys vs sells and generates smart-money signals.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "default": ""}, "days": {"type": "integer", "default": 30}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="insider_cluster_scan", description="Scan for insider buying clusters — multiple insiders buying the same stock within a window. Strong alpha signal when 3+ insiders cluster-buy.",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}, "days": {"type": "integer", "default": 14}, "min_insiders": {"type": "integer", "default": 2}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="smart_money_composite", description="Composite smart money score (0-100) combining insider filing activity over 30d and 90d. Labels: strong_buy/buy/neutral/sell/strong_sell.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="compute_kelly", description="Compute Kelly criterion optimal position size from win rate, average win/loss. Supports fractional Kelly and max risk cap for practical risk management.",
+         inputSchema={"type": "object", "properties": {"win_rate": {"type": "number", "description": "Historical win rate 0-1"}, "avg_win": {"type": "number", "description": "Average winning trade $"}, "avg_loss": {"type": "number", "description": "Average losing trade $ (positive)"}, "fraction": {"type": "number", "default": 0.5, "description": "Kelly fraction (0.5=half Kelly)"}, "account_equity": {"type": "number", "default": 100000}, "max_risk_pct": {"type": "number", "default": 5.0}}, "required": ["win_rate", "avg_win", "avg_loss"]},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="multi_strategy_kelly", description="Kelly allocation across multiple strategies with total risk budget constraint. Scales individual allocations to fit within max total risk.",
+         inputSchema={"type": "object", "properties": {"strategies": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "win_rate": {"type": "number"}, "avg_win": {"type": "number"}, "avg_loss": {"type": "number"}}}}, "account_equity": {"type": "number", "default": 100000}, "max_total_risk_pct": {"type": "number", "default": 20.0}}, "required": ["strategies"]},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="unusual_options_activity", description="Detect unusual options activity — high volume/OI ratios, large premium flows, and smart money positioning. Returns bullish/bearish net sentiment.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "min_premium": {"type": "number", "default": 50000}, "min_oi_ratio": {"type": "number", "default": 2.0}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="options_flow_scanner", description="Scan multiple symbols for unusual options flow. Identifies stocks with highest institutional options positioning across a watchlist.",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}, "min_premium": {"type": "number", "default": 100000}}, "required": ["symbols"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="read_tape", description="Tick-level tape reading — classify trades as buys/sells, compute tick ratios, detect momentum shifts, large prints, and absorption zones.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "lookback_minutes": {"type": "integer", "default": 5}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="tape_momentum_scanner", description="Scan multiple symbols for tape momentum signals. Identifies strong bullish/bearish momentum, absorption patterns, and large print activity.",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}}, "required": ["symbols"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    # ── V20: Account Protection ──────────────────────────────────
+    Tool(name="check_order_safety", description="Run 13 pre-trade safety checks before placing an order. Checks position sizing, daily loss limits, drawdown, fat fingers, buying power, concentration, VIX killswitch, margin, correlation, and more. Returns ALLOW or BLOCK with reasons.",
+         inputSchema={"type": "object", "properties": {"broker": {"type": "string"}, "symbol": {"type": "string"}, "side": {"type": "string", "enum": ["buy", "sell"]}, "qty": {"type": "number"}, "order_type": {"type": "string", "default": "market"}, "limit_price": {"type": "number"}, "notional_value": {"type": "number"}, "asset_class": {"type": "string", "default": "stock"}}, "required": ["broker", "symbol", "side", "qty"]},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="get_protection_config", description="View current account protection settings including daily loss limits, drawdown thresholds, position size caps, VIX killswitch levels, and max positions.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="set_protection_config", description="Update account protection settings. Available presets: conservative (tight limits for small accounts), moderate (default), aggressive (wider limits for experienced traders). Or set individual parameters.",
+         inputSchema={"type": "object", "properties": {"preset": {"type": "string", "enum": ["conservative", "moderate", "aggressive"]}, "max_daily_loss_pct": {"type": "number"}, "max_drawdown_pct": {"type": "number"}, "max_position_pct": {"type": "number"}, "max_positions": {"type": "integer"}, "vix_block_level": {"type": "number"}, "max_notional": {"type": "number"}, "enabled": {"type": "boolean"}}, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_safety_audit_log", description="View recent pre-trade safety check history. Shows which orders were allowed/blocked and why.",
+         inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    # ── V20: Builder SDK ─────────────────────────────────────────
+    Tool(name="query_data_warehouse", description="Query AlgoChains data warehouses (Builder tier $199/mo). Access 3.09B+ rows: 409M crypto, 1.3B stocks, 1.4B forex minute bars. Returns OHLCV data for backtesting.",
+         inputSchema={"type": "object", "properties": {"asset_class": {"type": "string", "enum": ["crypto", "stocks", "forex"]}, "ticker": {"type": "string"}, "start_date": {"type": "string", "description": "YYYY-MM-DD"}, "end_date": {"type": "string", "description": "YYYY-MM-DD"}, "limit": {"type": "integer", "default": 10000}}, "required": ["asset_class", "ticker"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="list_data_warehouses", description="List available AlgoChains data warehouses with row counts, schemas, and access requirements.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="run_builder_backtest", description="Run a backtest using the Builder SDK. Supports built-in strategies (SMA crossover, RSI, Bollinger Bands, etc.) or custom data. Returns Sharpe, MaxDD, win rate, profit factor, and marketplace readiness check.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "default": "custom"}, "timeframe": {"type": "string", "default": "1d"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "initial_capital": {"type": "number", "default": 100000}}, "required": ["symbol"]},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="submit_to_marketplace", description="Submit a validated strategy to the AlgoChains marketplace. Runs 7-gate validation (schema, performance, overfitting, MCPT, walk-forward, paper trading, decay monitor). Returns tier classification (Platinum/Gold/Silver/Bronze) and next steps.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "enum": ["trend", "mean_reversion", "breakout", "momentum", "scalp", "pairs", "stat_arb"]}, "timeframe": {"type": "string"}, "oos_sharpe": {"type": "number"}, "oos_trades": {"type": "integer"}, "max_drawdown_pct": {"type": "number"}, "is_sharpe": {"type": "number"}, "win_rate": {"type": "number"}, "profit_factor": {"type": "number"}, "mcpt_p_value": {"type": "number"}, "mcpt_permutations": {"type": "integer"}, "wf_folds": {"type": "integer"}, "wf_avg_oos_sharpe": {"type": "number"}, "wf_worst_fold": {"type": "number"}, "description": {"type": "string"}, "asset_class": {"type": "string", "default": "stock"}, "price_monthly": {"type": "number", "default": 29.99}}, "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_submission_guide", description="Get the step-by-step guide for submitting a strategy to the AlgoChains marketplace. Includes gate requirements, pricing guide, IP protection details, and revenue split information.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_builder_capabilities", description="List Builder SDK capabilities including available backtest engines, data sources, and strategy templates.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    # ── V20: Memory Safety ───────────────────────────────────────
+    Tool(name="get_memory_status", description="Check MCP server memory usage, cache stats, and garbage collection state. Helps diagnose memory leaks and OOM issues.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
 ]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Tiered Tool Exposure — solves the "too many tools" problem
+# ═══════════════════════════════════════════════════════════════════
+# Research basis:
+#   - arXiv:2603.20313 — 99.6% token reduction, 97.1% hit rate at K=3
+#   - Claude Code MCP Tool Search — 95% context reduction (39.8K → 5K)
+#   - Cursor hard limit: 80 tools. Windsurf: context-bound.
+#
+# Modes (ALGOCHAINS_TOOL_MODE env var):
+#   "smart"  — Tier 1 only (25 core tools). 210+ discoverable via meta-tools. DEFAULT.
+#   "full"   — All 242 tools exposed. Legacy mode for clients that manage their own filtering.
+#
+# Tier 1 tools are the minimum set to be productive:
+#   - 3 meta-tools (discover, detail, execute) — gateway to everything else
+#   - 4 Massive data tools — market data pipeline
+#   - 6 trading essentials — place/cancel/close/account/positions/orders
+#   - 4 strategy tools — backtest, validate, optimize, deploy
+#   - 2 portfolio tools — portfolio summary, quotes
+#   - 1 connectivity — connect_broker
+# ═══════════════════════════════════════════════════════════════════
+
+TIER1_TOOL_NAMES = {
+    # V17 Meta-tools — gateway to all 130+ hidden tools
+    "discover_tools",
+    "get_tool_details",
+    "execute_dynamic_tool",
+    # V17 Massive data pipeline
+    "massive_search_endpoints",
+    "massive_get_endpoint_docs",
+    "massive_call_api",
+    "massive_query_data",
+    "massive_run_pipeline",
+    # Core trading
+    "place_order",
+    "cancel_order",
+    "close_position",
+    "get_account",
+    "get_positions",
+    "get_orders",
+    # Strategy pipeline
+    "backtest_strategy",
+    "validate_strategy",
+    "optimize_strategy",
+    "deploy_strategy",
+    # Portfolio + market
+    "get_portfolio_summary",
+    "get_quote",
+    # Connectivity
+    "connect_broker",
+    # V18 Intent Engine — natural language trading
+    "execute_intent",
+    "approve_intent",
+    "create_shadow_portfolio",
+    "detect_market_regime",
+    # V20 Account Protection + Builder SDK
+    "check_order_safety",
+    "get_protection_config",
+    "submit_to_marketplace",
+    "query_data_warehouse",
+}
+
+
+def _annotate_tools(tools: list[Tool]) -> list[Tool]:
+    """Apply MCP 2025-06-18 Tool Behavior Annotations to all tools."""
+    annotated = []
+    for t in tools:
+        if t.annotations is not None:
+            annotated.append(t)
+        elif t.name in _TOOL_ANNOTATION_MAP:
+            annotated.append(Tool(
+                name=t.name,
+                description=t.description,
+                inputSchema=t.inputSchema,
+                annotations=_TOOL_ANNOTATION_MAP[t.name],
+            ))
+        else:
+            annotated.append(Tool(
+                name=t.name,
+                description=t.description,
+                inputSchema=t.inputSchema,
+                annotations=ANNOT_READ_ONLY,
+            ))
+    return annotated
+
+
+TOOLS_ANNOTATED = _annotate_tools(TOOLS)
+TOOLS_TIER1 = [t for t in TOOLS_ANNOTATED if t.name in TIER1_TOOL_NAMES]
 
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
-    return TOOLS
+    cfg = _config or load_config()
+    if cfg.tool_mode == "full":
+        return TOOLS_ANNOTATED
+    # Smart mode: expose only Tier 1 (21 tools ≈ 4K tokens vs 40K+ for all)
+    return TOOLS_TIER1
 
 
 @app.call_tool()
@@ -1569,19 +2705,69 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     t0 = time.monotonic()
 
     try:
-        # Rate-limit broker calls
+        # ── 1. Sanitize inputs ───────────────────────────────────
+        arguments = validate_arguments(name, arguments)
+
+        # ── 2. Circuit breaker — fail fast if engine is down ─────
+        check_circuit(name)
+
+        # ── 3. Rate limiting ─────────────────────────────────────
         broker_name = arguments.get("broker", "")
         if broker_name:
             await limiter.acquire(broker_name)
 
-        result = await _dispatch_tool(name, arguments, registry)
+        category = get_tool_category(name)
+        if category:
+            await limiter.acquire(category)
+
+        # ── 4. Concurrency semaphore — bound parallel calls ──────
+        sem = get_tool_semaphore(name)
+        timeout = get_tool_timeout(name)
+
+        async def _guarded_dispatch() -> list[TextContent]:
+            if sem:
+                async with sem:
+                    return await asyncio.wait_for(
+                        _dispatch_tool(name, arguments, registry),
+                        timeout=timeout,
+                    )
+            else:
+                return await asyncio.wait_for(
+                    _dispatch_tool(name, arguments, registry),
+                    timeout=timeout,
+                )
+
+        # ── 5. Execute with timeout ──────────────────────────────
+        result = await _guarded_dispatch()
+
+        # ── 6. Response size guard ───────────────────────────────
+        for content in result:
+            if hasattr(content, "text"):
+                content.text = guard_response_size(content.text, name)
+
+        # ── 7. Record success (circuit breaker) ──────────────────
+        record_success(name)
         tlog.log_call(name, arguments, duration_ms=(time.monotonic() - t0) * 1000)
         return result
 
+    except asyncio.TimeoutError:
+        record_failure(name)
+        elapsed = (time.monotonic() - t0) * 1000
+        logger.error("Tool %s TIMED OUT after %.0fms (limit: %.0fs)", name, elapsed, get_tool_timeout(name))
+        tlog.log_call(name, arguments, error="timeout", duration_ms=elapsed)
+        return _text({"error_type": "TimeoutError", "message": f"Tool '{name}' timed out after {get_tool_timeout(name):.0f}s", "tool": name})
+
+    except CircuitOpenError as e:
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": "CircuitOpenError", "message": str(e), "tool": name, "retry_after_seconds": round(e.retry_after)})
+
     except AlgoChainsError as e:
+        record_failure(name)
         tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
         return _error_text(e)
+
     except Exception as e:
+        record_failure(name)
         logger.error("Tool %s failed: %s", name, e, exc_info=True)
         tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
         return _text({"error_type": type(e).__name__, "message": str(e), "tool": name})
@@ -1608,6 +2794,29 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── Trading ──────────────────────────────────────────────
     if name == "place_order":
+        # MCP 2025-06-18 Elicitation — ask user to confirm trade before execution
+        side = arguments["side"]
+        symbol = arguments["symbol"]
+        qty = arguments["qty"]
+        otype = arguments.get("order_type", "market")
+        limit_px = arguments.get("limit_price")
+        price_hint = f" @ ${limit_px}" if limit_px else " at market"
+        try:
+            ctx = app.request_context
+            confirm = await ctx.session.elicit_form(
+                message=f"Confirm: {side.upper()} {qty} {symbol} ({otype}){price_hint} on {arguments['broker']}?",
+                requestedSchema={
+                    "type": "object",
+                    "properties": {
+                        "confirmed": {"type": "boolean", "title": "Execute this trade?", "default": True},
+                    },
+                },
+            )
+            if confirm.action != "accept" or not (confirm.content or {}).get("confirmed", True):
+                return _text({"status": "cancelled", "reason": "User declined trade confirmation"})
+        except (LookupError, AttributeError, NotImplementedError) as _elicit_err:
+            logger.debug("Elicitation not available, executing trade directly: %s", _elicit_err)
+
         conn = _require_broker(registry, arguments["broker"])
         order = await conn.place_order(
             symbol=arguments["symbol"],
@@ -1627,6 +2836,25 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text({"cancelled": ok, "order_id": arguments["order_id"]})
 
     elif name == "close_position":
+        # MCP 2025-06-18 Elicitation — confirm position close
+        symbol = arguments["symbol"]
+        broker = arguments["broker"]
+        try:
+            ctx = app.request_context
+            confirm = await ctx.session.elicit_form(
+                message=f"Confirm: Close entire {symbol} position on {broker}?",
+                requestedSchema={
+                    "type": "object",
+                    "properties": {
+                        "confirmed": {"type": "boolean", "title": "Close this position?", "default": True},
+                    },
+                },
+            )
+            if confirm.action != "accept" or not (confirm.content or {}).get("confirmed", True):
+                return _text({"status": "cancelled", "reason": "User declined close confirmation"})
+        except (LookupError, AttributeError, NotImplementedError) as _elicit_err:
+            logger.debug("Elicitation not available, closing position directly: %s", _elicit_err)
+
         conn = _require_broker(registry, arguments["broker"])
         order = await conn.close_position(arguments["symbol"])
         return _text(order.to_dict() if order else {"error": f"No position in {arguments['symbol']}"})
@@ -2871,6 +4099,346 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         eng = _get_api_gateway()
         return _text(await eng.get_health())
 
+    # ── V17: Massive White-Label Data ─────────────────────────
+    elif name == "massive_search_endpoints":
+        eng = await _get_massive_provider()
+        return _text(eng.search_endpoints(query=arguments["query"], top_k=arguments.get("top_k", 5), scope=arguments.get("scope", "all")))
+
+    elif name == "massive_get_endpoint_docs":
+        eng = await _get_massive_provider()
+        return _text(await eng.get_endpoint_docs(docs_url=arguments["docs_url"]))
+
+    elif name == "massive_call_api":
+        eng = await _get_massive_provider()
+        return _text(await eng.call_api(path=arguments["path"], method=arguments.get("method", "GET"), params=arguments.get("params"), store_as=arguments.get("store_as"), apply=arguments.get("apply"), api_key=arguments.get("api_key"), llm_model=arguments.get("llm_model"), llm_provider=arguments.get("llm_provider")))
+
+    elif name == "massive_query_data":
+        eng = await _get_massive_provider()
+        return _text(await eng.query_data(sql=arguments["sql"], apply=arguments.get("apply")))
+
+    elif name == "massive_run_pipeline":
+        eng = await _get_massive_provider()
+        return _text(await eng.run_pipeline(search_query=arguments["search_query"], path_override=arguments.get("path_override"), params=arguments.get("params"), store_as=arguments.get("store_as"), sql=arguments.get("sql"), apply=arguments.get("apply")))
+
+    # ── V17: Dynamic Toolsets — Meta-Tools ────────────────────
+    elif name == "discover_tools":
+        gw = _get_dynamic_gateway()
+        return _text(gw.discover(query=arguments["query"], top_k=arguments.get("top_k", 10), category=arguments.get("category")))
+
+    elif name == "get_tool_details":
+        gw = _get_dynamic_gateway()
+        details = gw.get_tool_details(arguments["tool_name"])
+        if details is None:
+            return _text({"error": f"Tool '{arguments['tool_name']}' not found"})
+        return _text(details)
+
+    elif name == "execute_dynamic_tool":
+        inner_name = arguments["tool_name"]
+        inner_args = arguments.get("arguments", {})
+        return await _dispatch_tool(inner_name, inner_args, registry)
+
+    # ── V18: Intent-Based Trading ─────────────────────────────
+    elif name == "execute_intent":
+        parser = _get_intent_parser()
+        solver = _get_constraint_solver()
+        executor = _get_plan_executor()
+        intent = await parser.parse(arguments["intent"])
+        plan = await solver.solve(intent)
+        dry_run = arguments.get("dry_run", True)
+        if not dry_run and plan.status.value == "pending_approval":
+            plan = solver.approve_plan(plan.id)
+            if plan:
+                plan = await executor.execute(plan)
+        return _text({"intent": intent.to_dict(), "plan": plan.to_dict()})
+
+    elif name == "get_intent_plan":
+        solver = _get_constraint_solver()
+        plan = solver.get_plan(arguments["plan_id"])
+        if not plan:
+            return _text({"error": f"Plan '{arguments['plan_id']}' not found"})
+        return _text(plan.to_dict())
+
+    elif name == "approve_intent":
+        solver = _get_constraint_solver()
+        executor = _get_plan_executor()
+        plan = solver.approve_plan(arguments["plan_id"])
+        if not plan:
+            return _text({"error": f"Plan '{arguments['plan_id']}' not found or not pending"})
+        plan = await executor.execute(plan)
+        return _text(plan.to_dict())
+
+    elif name == "get_intent_history":
+        executor = _get_plan_executor()
+        return _text(executor.get_history(limit=arguments.get("limit", 20)))
+
+    elif name == "create_shadow_portfolio":
+        eng = _get_shadow_engine()
+        return _text(await eng.create(
+            name=arguments["name"],
+            strategy_id=arguments.get("strategy_id"),
+            broker=arguments.get("broker", "alpaca"),
+            capital=arguments.get("capital", 100_000.0),
+        ))
+
+    elif name == "get_shadow_results":
+        eng = _get_shadow_engine()
+        shadow_id = arguments["shadow_id"]
+        if arguments.get("compare_live"):
+            return _text(await eng.compare(shadow_id))
+        return _text(await eng.get_results(shadow_id))
+
+    elif name == "evolve_strategies":
+        eng = _get_evolution_engine()
+        action = arguments["action"]
+        if action == "initialize":
+            return _text(await eng.initialize_population(
+                strategy_type=arguments.get("strategy_type", "momentum"),
+                seeds=arguments.get("seeds"),
+            ))
+        elif action == "evaluate":
+            return _text(await eng.evaluate(
+                genome_id=arguments["genome_id"],
+                metrics=arguments["metrics"],
+            ))
+        elif action == "evolve":
+            return _text(await eng.evolve())
+        elif action == "get_top":
+            return _text(await eng.get_top(n=arguments.get("n", 10)))
+        elif action == "get_unevaluated":
+            return _text(await eng.get_unevaluated(n=arguments.get("n", 10)))
+        else:
+            return _text({"error": f"Unknown evolution action: {action}"})
+
+    elif name == "detect_arbitrage":
+        eng = _get_arbitrage_detector()
+        return _text(await eng.scan(
+            symbols=arguments["symbols"],
+            brokers=arguments.get("brokers"),
+            quotes=arguments.get("quotes"),
+        ))
+
+    # ── V18 Genius Layer ──────────────────────────────────────
+    elif name == "detect_market_regime":
+        from .intent_engine.regime_detector import RegimeSignals
+        eng = _get_intent_regime()
+        signals = RegimeSignals(
+            vix=arguments.get("vix"),
+            spy_price=arguments.get("spy_price"),
+            spy_sma_20=arguments.get("spy_sma_20"),
+            spy_sma_50=arguments.get("spy_sma_50"),
+            spy_sma_200=arguments.get("spy_sma_200"),
+            advance_decline_ratio=arguments.get("advance_decline_ratio"),
+            put_call_ratio=arguments.get("put_call_ratio"),
+            credit_spread_bps=arguments.get("credit_spread_bps"),
+        )
+        result = await eng.detect(signals)
+        return _text(result.to_dict())
+
+    elif name == "prefetch_context":
+        eng = _get_predictive_prefetch()
+        context = await eng.prefetch(arguments["user_message"])
+        return _text({"prefetched_keys": list(context.keys()), "data": context, "stats": eng.get_stats()})
+
+    # ── V19: Alpha Engines ────────────────────────────────────
+    elif name == "compute_vwap":
+        eng = _get_vwap_engine()
+        return _text(await eng.compute_vwap(symbol=arguments["symbol"], date=arguments.get("date", ""), interval=arguments.get("interval", "1"), anchor=arguments.get("anchor", "day")))
+
+    elif name == "multi_anchor_vwap":
+        eng = _get_vwap_engine()
+        return _text(await eng.multi_anchor_vwap(symbol=arguments["symbol"], anchors=arguments.get("anchors")))
+
+    elif name == "detect_dark_prints":
+        eng = _get_dark_pool_engine()
+        return _text(await eng.detect_dark_prints(symbol=arguments["symbol"], date=arguments.get("date", ""), min_size=arguments.get("min_size", 10000)))
+
+    elif name == "block_trade_scanner":
+        eng = _get_dark_pool_engine()
+        return _text(await eng.block_trade_scanner(symbols=arguments["symbols"], min_notional=arguments.get("min_notional", 500000)))
+
+    elif name == "compute_gex":
+        eng = _get_gex_engine()
+        return _text(await eng.compute_gex(symbol=arguments["symbol"], expiry=arguments.get("expiry", "")))
+
+    elif name == "gex_scanner":
+        eng = _get_gex_engine()
+        return _text(await eng.gex_scanner(symbols=arguments["symbols"]))
+
+    elif name == "analyze_vol_skew":
+        eng = _get_vol_surface_engine()
+        return _text(await eng.analyze_skew(symbol=arguments["symbol"], expiry=arguments.get("expiry", "")))
+
+    elif name == "vol_term_structure":
+        eng = _get_vol_surface_engine()
+        return _text(await eng.term_structure(symbol=arguments["symbol"]))
+
+    elif name == "correlation_matrix":
+        eng = _get_cross_asset_engine()
+        return _text(await eng.correlation_matrix(symbols=arguments["symbols"], lookback_days=arguments.get("lookback_days", 60)))
+
+    elif name == "pair_trade_signal":
+        eng = _get_cross_asset_engine()
+        return _text(await eng.pair_trade_signal(symbol_a=arguments["symbol_a"], symbol_b=arguments["symbol_b"], lookback_days=arguments.get("lookback_days", 60), z_entry=arguments.get("z_entry", 2.0), z_exit=arguments.get("z_exit", 0.5)))
+
+    elif name == "relative_strength":
+        eng = _get_cross_asset_engine()
+        return _text(await eng.relative_strength(symbol=arguments["symbol"], benchmark=arguments.get("benchmark", "SPY"), lookback_days=arguments.get("lookback_days", 20)))
+
+    elif name == "congressional_trades":
+        eng = _get_congressional_engine()
+        return _text(await eng.get_congressional_trades(symbol=arguments.get("symbol", ""), days=arguments.get("days", 30)))
+
+    elif name == "insider_cluster_scan":
+        eng = _get_congressional_engine()
+        return _text(await eng.insider_cluster_scan(symbols=arguments.get("symbols"), days=arguments.get("days", 14), min_insiders=arguments.get("min_insiders", 2)))
+
+    elif name == "smart_money_composite":
+        eng = _get_congressional_engine()
+        return _text(await eng.smart_money_composite(symbol=arguments["symbol"]))
+
+    elif name == "compute_kelly":
+        eng = _get_kelly_engine()
+        return _text(await eng.compute_kelly(win_rate=arguments["win_rate"], avg_win=arguments["avg_win"], avg_loss=arguments["avg_loss"], fraction=arguments.get("fraction", 0.5), account_equity=arguments.get("account_equity", 100000), max_risk_pct=arguments.get("max_risk_pct", 5.0)))
+
+    elif name == "multi_strategy_kelly":
+        eng = _get_kelly_engine()
+        return _text(await eng.multi_strategy_kelly(strategies=arguments["strategies"], account_equity=arguments.get("account_equity", 100000), max_total_risk_pct=arguments.get("max_total_risk_pct", 20.0)))
+
+    elif name == "unusual_options_activity":
+        eng = _get_options_flow_engine()
+        return _text(await eng.unusual_activity(symbol=arguments["symbol"], min_premium=arguments.get("min_premium", 50000), min_oi_ratio=arguments.get("min_oi_ratio", 2.0)))
+
+    elif name == "options_flow_scanner":
+        eng = _get_options_flow_engine()
+        return _text(await eng.options_flow_scanner(symbols=arguments["symbols"], min_premium=arguments.get("min_premium", 100000)))
+
+    elif name == "read_tape":
+        eng = _get_tape_reader_engine()
+        return _text(await eng.read_tape(symbol=arguments["symbol"], lookback_minutes=arguments.get("lookback_minutes", 5)))
+
+    elif name == "tape_momentum_scanner":
+        eng = _get_tape_reader_engine()
+        return _text(await eng.momentum_scanner(symbols=arguments["symbols"]))
+
+    # ── V20: Account Protection ──────────────────────────────────
+    elif name == "check_order_safety":
+        eng = _get_account_protection()
+        order = OrderIntent(
+            broker=arguments.get("broker", ""),
+            symbol=arguments.get("symbol", ""),
+            side=arguments.get("side", "buy"),
+            qty=arguments.get("qty", 0),
+            order_type=arguments.get("order_type", "market"),
+            limit_price=arguments.get("limit_price"),
+            notional_value=arguments.get("notional_value"),
+            asset_class=arguments.get("asset_class", "stock"),
+        )
+        try:
+            broker = registry.get(arguments.get("broker", ""))
+            if broker:
+                acct = await broker.get_account()
+                positions = await broker.get_positions()
+                snapshot = AccountSnapshot(
+                    equity=getattr(acct, "equity", 0),
+                    cash=getattr(acct, "cash", 0),
+                    buying_power=getattr(acct, "buying_power", 0),
+                    open_positions=[{"symbol": p.symbol, "market_value": getattr(p, "market_value", 0)} for p in positions],
+                )
+            else:
+                snapshot = AccountSnapshot()
+        except Exception:
+            snapshot = AccountSnapshot()
+        report = eng.check_order(order, snapshot)
+        return _text(report.to_dict())
+
+    elif name == "get_protection_config":
+        eng = _get_account_protection()
+        return _text({"config": eng.get_config(), "presets": eng.get_presets()})
+
+    elif name == "set_protection_config":
+        eng = _get_account_protection()
+        preset = arguments.get("preset")
+        if preset:
+            config = eng.apply_preset(preset)
+        else:
+            config = eng.set_config(arguments)
+        return _text({"updated_config": config})
+
+    elif name == "get_safety_audit_log":
+        eng = _get_account_protection()
+        return _text({"audit_log": eng.get_audit_log(arguments.get("limit", 20))})
+
+    # ── V20: Builder SDK ─────────────────────────────────────────
+    elif name == "query_data_warehouse":
+        dw = _get_data_warehouse()
+        query = DataQuery(
+            asset_class=arguments.get("asset_class", ""),
+            ticker=arguments.get("ticker", ""),
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
+            limit=arguments.get("limit", 10000),
+        )
+        result = await dw.query(query)
+        return _text(result)
+
+    elif name == "list_data_warehouses":
+        dw = _get_data_warehouse()
+        return _text(dw.list_warehouses())
+
+    elif name == "run_builder_backtest":
+        runner = _get_strategy_runner()
+        config = BacktestConfig(
+            symbol=arguments.get("symbol", ""),
+            strategy_type=arguments.get("strategy_type", "custom"),
+            timeframe=arguments.get("timeframe", "1d"),
+            start_date=arguments.get("start_date", ""),
+            end_date=arguments.get("end_date", ""),
+            initial_capital=arguments.get("initial_capital", 100000),
+        )
+        result = await runner.run_backtest(config)
+        output = result.to_dict()
+        output["marketplace_readiness"] = result.passes_marketplace_gates()
+        return _text(output)
+
+    elif name == "submit_to_marketplace":
+        pipeline = _get_submission_pipeline()
+        sub = StrategySubmission(
+            symbol=arguments.get("symbol", ""),
+            strategy_type=arguments.get("strategy_type", ""),
+            timeframe=arguments.get("timeframe", ""),
+            oos_sharpe=arguments.get("oos_sharpe", 0),
+            oos_trades=arguments.get("oos_trades", 0),
+            max_drawdown_pct=arguments.get("max_drawdown_pct", 0),
+            is_sharpe=arguments.get("is_sharpe", 0),
+            win_rate=arguments.get("win_rate", 0),
+            profit_factor=arguments.get("profit_factor", 0),
+            mcpt_p_value=arguments.get("mcpt_p_value", 1.0),
+            mcpt_permutations=arguments.get("mcpt_permutations", 0),
+            wf_folds=arguments.get("wf_folds", 0),
+            wf_avg_oos_sharpe=arguments.get("wf_avg_oos_sharpe", 0),
+            wf_worst_fold=arguments.get("wf_worst_fold", 0),
+            description=arguments.get("description", ""),
+            asset_class=arguments.get("asset_class", "stock"),
+            price_monthly=arguments.get("price_monthly", 29.99),
+        )
+        result = await pipeline.submit(sub)
+        return _text(result.to_dict())
+
+    elif name == "get_submission_guide":
+        pipeline = _get_submission_pipeline()
+        return _text(pipeline.get_submission_guide())
+
+    elif name == "get_builder_capabilities":
+        runner = _get_strategy_runner()
+        return _text(runner.get_capabilities())
+
+    # ── V20: Memory Safety ───────────────────────────────────────
+    elif name == "get_memory_status":
+        mon = get_memory_monitor()
+        report = mon.get_report()
+        report["check"] = mon.check()
+        return _text(report)
+
     else:
         return _text({"error": f"Unknown tool: {name}"})
 
@@ -2880,6 +4448,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 # ═══════════════════════════════════════════════════════════════════
 
 RESOURCES = [
+    Resource(
+        uri="algochains://tools/status",
+        name="V17 Tool Mode Status",
+        description="Current tool exposure mode (smart/full), Tier 1 tool count, total tool count, and index stats.",
+        mimeType="application/json",
+    ),
     Resource(
         uri="algochains://brokers/status",
         name="Broker Connection Status",
@@ -2898,6 +4472,108 @@ RESOURCES = [
         description="Tool call statistics, error rates, and recent call history.",
         mimeType="application/json",
     ),
+    Resource(
+        uri="algochains://ml/models",
+        name="V10 ML Model Registry",
+        description="Registered ML models, their stages, and metrics.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://ml/feature-sets",
+        name="V10 Feature Sets",
+        description="Defined feature sets for ML training pipelines.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://ml/rl-agents",
+        name="V10 RL Agents",
+        description="Reinforcement learning agents, training state, and metrics.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://execution/orders",
+        name="V11 Order State",
+        description="Institutional order manager state — active orders and history.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://execution/algos",
+        name="V11 Algo Executors",
+        description="Active algorithmic execution engines and their status.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://analytics/regimes",
+        name="V12 Market Regimes",
+        description="Detected market regimes and transition probabilities.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://analytics/alerts",
+        name="V12 Active Alerts",
+        description="Configured market alerts and their trigger history.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://alt-data/scrape-jobs",
+        name="V13 Scrape Jobs",
+        description="Web scraping jobs and their status.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://agents/swarms",
+        name="V14 Agent Swarms",
+        description="Active agent swarms, members, and task status.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://defi/positions",
+        name="V15 DeFi Positions",
+        description="DeFi protocol positions, yields, and risk status.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://cloud/tenants",
+        name="V16 SaaS Tenants",
+        description="Multi-tenant SaaS platform tenants and subscription status.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://rate-limits/status",
+        name="Rate Limit Status",
+        description="Current rate limit bucket status for all categories.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://circuit-breakers/status",
+        name="Circuit Breaker Status",
+        description="Circuit breaker state for each engine category — failures, open/closed, cooldown.",
+        mimeType="application/json",
+    ),
+]
+
+# ═══════════════════════════════════════════════════════════════════
+# MCP Resource Templates — dynamic URI-based resources (MCP v2)
+# ═══════════════════════════════════════════════════════════════════
+RESOURCE_TEMPLATES = [
+    ResourceTemplate(
+        uriTemplate="algochains://market/{ticker}/snapshot",
+        name="Market Snapshot",
+        description="Live market snapshot for a ticker — price, volume, change, bid/ask. Supports stocks, crypto, forex.",
+        mimeType="application/json",
+    ),
+    ResourceTemplate(
+        uriTemplate="algochains://portfolio/{broker}/summary",
+        name="Portfolio Summary",
+        description="Portfolio summary for a connected broker — positions, P&L, buying power, margin.",
+        mimeType="application/json",
+    ),
+    ResourceTemplate(
+        uriTemplate="algochains://massive/tables/{table_name}",
+        name="Massive DataFrame",
+        description="Inspect a stored Massive DataFrame — schema, row count, sample data, age.",
+        mimeType="application/json",
+    ),
 ]
 
 
@@ -2906,9 +4582,33 @@ async def list_resources() -> list[Resource]:
     return RESOURCES
 
 
+@app.list_resource_templates()
+async def list_resource_templates() -> list[ResourceTemplate]:
+    return RESOURCE_TEMPLATES
+
+
 @app.read_resource()
 async def read_resource(uri: str) -> str:
-    if uri == "algochains://brokers/status":
+    if uri == "algochains://tools/status":
+        cfg = _config or load_config()
+        return json.dumps({
+            "tool_mode": cfg.tool_mode,
+            "tier1_tools_exposed": len(TOOLS_TIER1),
+            "total_tools_registered": len(TOOLS),
+            "tier2_tools_discoverable": len(TOOLS) - len(TOOLS_TIER1),
+            "tier1_tool_names": sorted(TIER1_TOOL_NAMES),
+            "estimated_tokens_smart": "~4,000",
+            "estimated_tokens_full": "~40,000+",
+            "token_savings_pct": round((1 - len(TOOLS_TIER1) / len(TOOLS)) * 100, 1),
+            "env_var": "ALGOCHAINS_TOOL_MODE",
+            "research": {
+                "arxiv_paper": "2603.20313 — 99.6% token reduction with semantic tool discovery",
+                "claude_code": "MCP Tool Search — 95% context savings via lazy loading",
+                "cursor_limit": "80 tools (was 40)",
+            },
+        }, indent=2)
+
+    elif uri == "algochains://brokers/status":
         registry = _get_registry()
         configured = registry.list_configured()
         connected = registry.list_available()
@@ -2944,6 +4644,126 @@ async def read_resource(uri: str) -> str:
         return json.dumps({
             "stats": tlog.stats(),
             "recent": tlog.recent(10),
+        }, indent=2, default=str)
+
+    # ── V10: ML Resources ────────────────────────────────────
+    elif uri == "algochains://ml/models":
+        reg = _get_model_registry()
+        return json.dumps({"models": list(reg._registry.values()), "count": len(reg._registry)}, indent=2, default=str)
+
+    elif uri == "algochains://ml/feature-sets":
+        eng = _get_feature_engine()
+        return json.dumps({"feature_sets": list(eng._sets.values()), "count": len(eng._sets)}, indent=2, default=str)
+
+    elif uri == "algochains://ml/rl-agents":
+        rl = _get_rl_agent()
+        return json.dumps({"agents": list(rl._agents.values()), "count": len(rl._agents)}, indent=2, default=str)
+
+    # ── V11: Execution Resources ─────────────────────────────
+    elif uri == "algochains://execution/orders":
+        mgr = _get_inst_order_mgr()
+        return json.dumps({"orders": list(mgr._orders.values()), "count": len(mgr._orders)}, indent=2, default=str)
+
+    elif uri == "algochains://execution/algos":
+        algo = _get_algo_executor()
+        return json.dumps({"algos": list(algo._algos.values()), "count": len(algo._algos)}, indent=2, default=str)
+
+    # ── V12: Analytics Resources ─────────────────────────────
+    elif uri == "algochains://analytics/regimes":
+        regime = _get_regime_detector()
+        return json.dumps({"regimes": list(regime._history), "count": len(regime._history)}, indent=2, default=str)
+
+    elif uri == "algochains://analytics/alerts":
+        alerts = _get_alert_engine()
+        return json.dumps({"alerts": list(alerts._alerts.values()), "count": len(alerts._alerts)}, indent=2, default=str)
+
+    # ── V13: Alt Data Resources ──────────────────────────────
+    elif uri == "algochains://alt-data/scrape-jobs":
+        scraper = _get_web_scraper()
+        return json.dumps({"jobs": list(scraper._jobs.values()), "count": len(scraper._jobs)}, indent=2, default=str)
+
+    # ── V14: Agent Swarm Resources ───────────────────────────
+    elif uri == "algochains://agents/swarms":
+        swarm = _get_swarm_mgr()
+        return json.dumps({"swarms": list(swarm._swarms.values()), "count": len(swarm._swarms)}, indent=2, default=str)
+
+    # ── V15: DeFi Resources ──────────────────────────────────
+    elif uri == "algochains://defi/positions":
+        defi = _get_defi_portfolio()
+        return json.dumps({"positions": list(defi._positions.values()), "count": len(defi._positions)}, indent=2, default=str)
+
+    # ── V16: Cloud SaaS Resources ────────────────────────────
+    elif uri == "algochains://cloud/tenants":
+        tenant = _get_tenant_engine()
+        return json.dumps({"tenants": list(tenant._tenants.values()), "count": len(tenant._tenants)}, indent=2, default=str)
+
+    # ── Rate Limit Status ────────────────────────────────────
+    elif uri == "algochains://rate-limits/status":
+        limiter = get_rate_limiter()
+        buckets = {}
+        for key, bucket in limiter._buckets.items():
+            buckets[key] = {"tokens": round(bucket.tokens, 1), "capacity": bucket.capacity, "refill_rate": bucket.refill_rate}
+        return json.dumps({"buckets": buckets}, indent=2)
+
+    # ── Circuit Breaker Status ────────────────────────────────
+    elif uri == "algochains://circuit-breakers/status":
+        from .middleware import _circuits, CIRCUIT_FAILURE_THRESHOLD, CIRCUIT_COOLDOWN_SECONDS
+        now = time.monotonic()
+        cb_status = {}
+        for cat, state in _circuits.items():
+            is_open = state.open_until > now
+            cb_status[cat] = {
+                "state": "OPEN" if is_open else "CLOSED",
+                "consecutive_failures": state.failures,
+                "threshold": CIRCUIT_FAILURE_THRESHOLD,
+                "cooldown_seconds": CIRCUIT_COOLDOWN_SECONDS,
+                "retry_after_seconds": round(state.open_until - now, 1) if is_open else 0,
+            }
+        return json.dumps({"circuit_breakers": cb_status}, indent=2)
+
+    # ── V17: Resource Template handlers (dynamic URIs) ──────────
+    elif uri.startswith("algochains://market/") and uri.endswith("/snapshot"):
+        ticker = uri.replace("algochains://market/", "").replace("/snapshot", "").upper()
+        registry = _get_registry()
+        brokers = registry.list_available()
+        quote_data = {"ticker": ticker, "error": "No broker connected"}
+        for broker_name in brokers:
+            try:
+                conn = registry.get(broker_name)
+                if conn:
+                    q = await conn.get_quote(ticker)
+                    quote_data = {"ticker": ticker, "broker": broker_name, "quote": q}
+                    break
+            except Exception:
+                continue
+        return json.dumps(quote_data, indent=2, default=str)
+
+    elif uri.startswith("algochains://portfolio/") and uri.endswith("/summary"):
+        broker_name = uri.replace("algochains://portfolio/", "").replace("/summary", "")
+        registry = _get_registry()
+        conn = registry.get(broker_name)
+        if conn is None:
+            return json.dumps({"error": f"Broker '{broker_name}' not connected"}, indent=2)
+        try:
+            acct = await conn.get_account()
+            positions = await conn.get_positions()
+            return json.dumps({"broker": broker_name, "account": acct, "positions": positions, "position_count": len(positions)}, indent=2, default=str)
+        except Exception as e:
+            return json.dumps({"broker": broker_name, "error": str(e)}, indent=2)
+
+    elif uri.startswith("algochains://massive/tables/"):
+        table_name = uri.replace("algochains://massive/tables/", "")
+        eng = await _get_massive_provider()
+        df = eng.get_table(table_name)
+        if df is None:
+            return json.dumps({"error": f"Table '{table_name}' not found", "available_tables": eng.list_tables()}, indent=2)
+        sample = df.head(5).to_dict(orient="records") if len(df) > 0 else []
+        return json.dumps({
+            "table": table_name,
+            "rows": len(df),
+            "columns": [{"name": col, "dtype": str(df[col].dtype)} for col in df.columns],
+            "sample": sample,
+            "age_seconds": round(time.monotonic() - eng._table_timestamps.get(table_name, 0), 1),
         }, indent=2, default=str)
 
     raise ValueError(f"Unknown resource: {uri}")
@@ -3230,7 +5050,7 @@ async def _run():
 
 
 def main():
-    logger.info("Starting AlgoChains MCP Server v16.0.0")
+    logger.info("Starting AlgoChains MCP Server v20.0.0")
     asyncio.run(_run())
 
 

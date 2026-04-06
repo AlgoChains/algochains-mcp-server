@@ -52,6 +52,32 @@ class QuantConnectConfig:
 
 
 @dataclass
+class TradovateConfig:
+    cid: str = field(default_factory=lambda: _env("TRADOVATE_CID"))
+    secret: str = field(default_factory=lambda: _env("TRADOVATE_SECRET"))
+    env: str = field(default_factory=lambda: _env("TRADOVATE_ENV", "live"))
+
+    @property
+    def base_url(self) -> str:
+        return "https://live.tradovateapi.com" if self.env == "live" \
+            else "https://demo.tradovateapi.com"
+
+    @property
+    def ws_url(self) -> str:
+        return "wss://live.tradovateapi.com/v1/websocket" if self.env == "live" \
+            else "wss://demo.tradovateapi.com/v1/websocket"
+
+
+@dataclass
+class MassiveConfig:
+    api_key: str = field(default_factory=lambda: _env("MASSIVE_API_KEY"))
+    base_url: str = field(default_factory=lambda: _env("MASSIVE_API_BASE_URL", "https://api.massive.com"))
+    llms_txt_url: str = field(default_factory=lambda: _env("MASSIVE_LLMS_TXT_URL", "https://massive.com/docs/rest/llms.txt"))
+    max_tables: int = field(default_factory=lambda: int(_env("MASSIVE_MAX_TABLES", "50")))
+    max_rows: int = field(default_factory=lambda: int(_env("MASSIVE_MAX_ROWS", "50000")))
+
+
+@dataclass
 class MarketplaceConfig:
     django_url: str = field(default_factory=lambda: _env("ALGOCHAINS_DJANGO_URL", "https://algochains.ai"))
     listing_api_key: str = field(default_factory=lambda: _env("LISTING_API_KEY"))
@@ -80,8 +106,11 @@ class ServerConfig:
     oanda: OandaConfig = field(default_factory=OandaConfig)
     traderspost: TradersPostConfig = field(default_factory=TradersPostConfig)
     quantconnect: QuantConnectConfig = field(default_factory=QuantConnectConfig)
+    tradovate: TradovateConfig = field(default_factory=TradovateConfig)
+    massive: MassiveConfig = field(default_factory=MassiveConfig)
     marketplace: MarketplaceConfig = field(default_factory=MarketplaceConfig)
     gating: GatingConfig = field(default_factory=GatingConfig)
+    tool_mode: str = field(default_factory=lambda: _env("ALGOCHAINS_TOOL_MODE", "smart"))
 
     def available_brokers(self) -> list[str]:
         brokers = []
@@ -95,6 +124,8 @@ class ServerConfig:
             brokers.append("traderspost")
         if self.quantconnect.api_token:
             brokers.append("quantconnect")
+        if self.tradovate.cid:
+            brokers.append("tradovate")
         return brokers
 
 

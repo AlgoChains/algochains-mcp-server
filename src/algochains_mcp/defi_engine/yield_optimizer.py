@@ -11,29 +11,29 @@ class YieldOptimizer:
 
     def __init__(self) -> None:
         self._positions: dict[str, dict] = {}
+        self._opportunities: dict[str, dict] = {}
 
-    async def find_opportunities(self, token: str, min_apy: float = 5.0, chain: str | None = None) -> dict:
+    async def scan(self, min_apy: float = 5.0, max_risk_score: int = 7, chains: list[str] | None = None) -> dict:
         try:
             return {
                 "status": "ok",
-                "token": token,
                 "min_apy": min_apy,
-                "chain": chain or "all",
-                "opportunities": [],
+                "max_risk_score": max_risk_score,
+                "chains": chains or ["ethereum", "arbitrum", "polygon"],
+                "opportunities": list(self._opportunities.values()),
                 "as_of": datetime.now(timezone.utc).isoformat(),
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def deposit(self, protocol: str, pool: str, amount: float, token: str) -> dict:
+    async def deploy(self, opportunity_id: str, amount: float, auto_compound: bool = True) -> dict:
         try:
             pos_id = uuid.uuid4().hex[:12]
             pos = {
                 "id": pos_id,
-                "protocol": protocol,
-                "pool": pool,
+                "opportunity_id": opportunity_id,
                 "amount": amount,
-                "token": token,
+                "auto_compound": auto_compound,
                 "status": "active",
                 "deposited_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -45,5 +45,15 @@ class YieldOptimizer:
     async def get_positions(self) -> dict:
         try:
             return {"status": "ok", "positions": list(self._positions.values()), "count": len(self._positions)}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def withdraw(self, position_id: str, amount: float | None = None) -> dict:
+        try:
+            pos = self._positions.get(position_id)
+            if not pos:
+                return {"status": "error", "error": f"Position {position_id} not found"}
+            pos["status"] = "withdrawn"
+            return {"status": "ok", "position_id": position_id, "amount_withdrawn": amount or pos.get("amount", 0)}
         except Exception as e:
             return {"status": "error", "error": str(e)}

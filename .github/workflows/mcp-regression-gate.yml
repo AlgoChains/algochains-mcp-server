@@ -1,0 +1,112 @@
+name: MCP Tool Regression Gate
+on: [push, pull_request]
+
+jobs:
+  tool-schema-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install AlgoChains MCP + MCPorter
+        run: |
+          pip install -e ".[dev]"
+          npm install -g mcporter
+
+      - name: Configure MCPorter
+        run: |
+          mkdir -p config
+          cat > config/mcporter.json << 'EOF'
+          {
+            "mcpServers": {
+              "algochains": {
+                "command": "algochains-mcp",
+                "env": {
+                  "ALGOCHAINS_TOOL_MODE": "full"
+                }
+              }
+            }
+          }
+          EOF
+
+      # Gate 1: Tool count must not decrease
+      - name: "Gate 1: Tool Count (≥242)"
+        run: |
+          TOOLS=$(npx mcporter list algochains --json | jq '.tools | length')
+          echo "Tool count: $TOOLS"
+          [ "$TOOLS" -ge 242 ] || (echo "❌ FAIL: Expected ≥242 tools, got $TOOLS" && exit 1)
+          echo "✅ Tool count: $TOOLS"
+
+      # Gate 2: All Tier 1 tools must be present in smart mode
+      - name: "Gate 2: Tier 1 Tools Present"
+        env:
+          ALGOCHAINS_TOOL_MODE: smart
+        run: |
+          TIER1_EXPECTED="discover_tools get_tool_details execute_dynamic_tool massive_search_endpoints massive_call_api massive_query_data massive_run_pipeline place_order cancel_order close_position get_positions get_account portfolio_summary connect_broker run_backtest validate_strategy optimize_strategy deploy_strategy browse_strategy_marketplace execute_intent approve_intent create_shadow_portfolio detect_market_regime"
+          TOOLS_JSON=$(npx mcporter list algochains --json)
+          for tool in $TIER1_EXPECTED; do
+            echo "$TOOLS_JSON" | jq -e ".tools[] | select(.name == \"$tool\")" > /dev/null 2>&1 \
+              || (echo "❌ Missing Tier 1 tool: $tool" && exit 1)
+          done
+          echo "✅ All Tier 1 tools present (including V18 intent tools)"
+
+      # Gate 3: BM25 Smart Discovery returns relevant results
+      - name: "Gate 3: Smart Discovery BM25"
+        run: |
+          # Sentiment query should find V13 tools
+          RESULT=$(npx mcporter call algochains.discover_tools query="sentiment analysis" --json 2>/dev/null)
+          echo "$RESULT" | jq -e '.[] | select(.name | contains("sentiment"))' > /dev/null \
+            || (echo "❌ BM25 failed: 'sentiment analysis' didn't find sentiment tools" && exit 1)
+
+          # Portfolio query should find portfolio tools
+          RESULT=$(npx mcporter call algochains.discover_tools query="portfolio positions" --json 2>/dev/null)
+          echo "$RESULT" | jq -e '.[] | select(.name | contains("portfolio") or contains("position"))' > /dev/null \
+            || (echo "❌ BM25 failed: 'portfolio positions' didn't find position tools" && exit 1)
+
+          echo "✅ BM25 index returning relevant results"
+
+      # Gate 4: V18 Intent Engine tools present and callable
+      - name: "Gate 4: V18 Intent Engine Tools"
+        run: |
+          V18_TOOLS="execute_intent get_intent_plan approve_intent get_intent_history create_shadow_portfolio get_shadow_results evolve_strategies detect_arbitrage detect_market_regime prefetch_context"
+          TOOLS_JSON=$(npx mcporter list algochains --json)
+          COUNT=0
+          for tool in $V18_TOOLS; do
+            if echo "$TOOLS_JSON" | jq -e ".tools[] | select(.name == \"$tool\")" > /dev/null 2>&1; then
+              COUNT=$((COUNT + 1))
+            else
+              echo "❌ Missing V18 tool: $tool"
+              exit 1
+            fi
+          done
+          echo "✅ All $COUNT V18 Intent Engine + Genius Layer tools present"
+
+      # Gate 5: detect_market_regime returns valid JSON
+      - name: "Gate 5: V18 Smoke Test"
+        run: |
+          RESULT=$(npx mcporter call algochains.detect_market_regime --json 2>/dev/null)
+          echo "$RESULT" | jq -e '.regime' > /dev/null \
+            || (echo "❌ detect_market_regime didn't return valid regime data" && exit 1)
+          echo "✅ V18 detect_market_regime returns valid regime: $(echo $RESULT | jq -r '.regime')"
+
+      # Gate 6: Python AST parse (no syntax errors in server.py)
+      - name: "Gate 6: Python AST Validation"
+        run: |
+          python3 -c "
+          import ast
+          with open('src/algochains_mcp/server.py') as f:
+              tree = ast.parse(f.read())
+          print('✅ server.py AST parse OK')
+          "
+          python3 -c "
+          import ast, glob
+          for f in glob.glob('src/algochains_mcp/intent_engine/*.py'):
+              with open(f) as fh:
+                  ast.parse(fh.read())
+              print(f'✅ {f} OK')
+          "

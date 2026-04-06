@@ -11,7 +11,20 @@ class AgentMonitor:
     def __init__(self, orchestrator: Any = None) -> None:
         self._orchestrator = orchestrator
 
-    async def get_swarm_status(self) -> dict:
+    async def get_health(self, agent_id: str) -> dict:
+        try:
+            return {
+                "status": "ok",
+                "agent_id": agent_id,
+                "health": "healthy",
+                "cpu_pct": 0.0,
+                "memory_mb": 0.0,
+                "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_dashboard(self) -> dict:
         try:
             agents = []
             if self._orchestrator:
@@ -28,11 +41,12 @@ class AgentMonitor:
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
-    async def get_agent_metrics(self, agent_id: str) -> dict:
+    async def get_performance(self, agent_id: str, lookback_days: int = 7) -> dict:
         try:
             return {
                 "status": "ok",
                 "agent_id": agent_id,
+                "lookback_days": lookback_days,
                 "tasks_completed": 0,
                 "avg_latency_ms": 0.0,
                 "error_rate": 0.0,
