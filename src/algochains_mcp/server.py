@@ -2973,6 +2973,27 @@ TOOLS = [
     Tool(name="get_tenant_rate_limits", description="Check current rate limit status for a tenant: remaining calls, reset time, tier limits.",
          inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
          annotations=ANNOT_READ_ONLY),
+    # ═══════════════════════════════════════════════════════════════
+    # Desktop Tower Job Dispatcher
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="dispatch_tower_job", description="Dispatch a heavy compute job to the AlgoChains desktop tower (TeesPC, 100.89.114.31) via Tailscale SSH. Jobs: optuna_optimize, walk_forward_backtest, ml_retrain, mcpt_validation. Returns job_id for polling. Mac handles small jobs (<500MB); tower handles GPU/large jobs automatically.",
+         inputSchema={"type": "object", "properties": {"job_type": {"type": "string", "enum": ["optuna_optimize", "walk_forward_backtest", "ml_retrain", "mcpt_validation", "large_backtest", "factor_model_compute"]}, "params": {"type": "object", "description": "Job parameters: bot, symbol, n_trials, data_start, data_end, model, etc."}, "force_local": {"type": "boolean", "default": False}}, "required": ["job_type"]},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="get_tower_job_status", description="Get status and result of a dispatched tower job. Polls the tower via SSH for the result file.",
+         inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_tower_health", description="Check desktop tower (100.89.114.31) health: reachable, memory, active jobs, GPU status.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="list_tower_jobs", description="List recent tower jobs with status, type, and memory usage.",
+         inputSchema={"type": "object", "properties": {"status": {"type": "string", "enum": ["pending", "running", "completed", "failed"]}, "limit": {"type": "integer", "default": 20}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_signal_conflict_stats", description="Get signal conflict statistics for a futures bot: how many BLOCKED, ALLOWED, FORCE_REVERSED signals with P&L context. Shows the signal overlap protection system in action.",
+         inputSchema={"type": "object", "properties": {"bot_name": {"type": "string", "description": "Bot name: MNQ_Upgraded_Scalper, CL_Swing_Scalper, MES_EMA_Swing, NQ_EMA_Swing"}, "hours": {"type": "integer", "default": 24}}, "required": ["bot_name"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_paper_trading_metrics", description="Get real paper trading metrics from the Alpaca unified paper trader: equity curve, open positions, today's P&L, win rate, recent signals. Data from the live $144K paper account.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
 ]
 
 
@@ -5335,6 +5356,99 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"tenant_id": args.get("tenant_id"), "status": "unlimited"})
         limiter = TenantRateLimiter(tenant_id=args.get("tenant_id", ""))
         return _text(limiter.get_status())
+
+    # ═══════════════════════════════════════════════════════════════
+    # Desktop Tower Job Dispatcher
+    # ═══════════════════════════════════════════════════════════════
+    elif name in ("dispatch_tower_job", "get_tower_job_status", "get_tower_health", "list_tower_jobs"):
+        import sys as _sys
+        _ct_path = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+        if _ct_path not in _sys.path:
+            _sys.path.insert(0, _ct_path)
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "desktop_tower_dispatcher",
+                os.path.join(_ct_path, "autonomous", "desktop_tower_dispatcher.py"),
+            )
+            if not spec or not spec.loader:
+                return _text({"error": "Desktop tower dispatcher not found in control tower"})
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore
+            dispatcher = mod.get_dispatcher()
+            if name == "dispatch_tower_job":
+                job_id = await dispatcher.submit(
+                    args.get("job_type", ""), args.get("params", {}),
+                    force_local=args.get("force_local", False),
+                )
+                job = dispatcher.get_job(job_id)
+                return _text({"job_id": job_id, "status": job.status if job else "submitted",
+                              "memory_mb": job.estimated_memory_mb if job else 0,
+                              "routed_to": "tower" if (job and job.tower_pid) else "local"})
+            elif name == "get_tower_job_status":
+                job = dispatcher.get_job(args.get("job_id", ""))
+                if not job:
+                    return _text({"error": "Job not found", "job_id": args.get("job_id")})
+                return _text({"job_id": job.id, "status": job.status, "result": job.result,
+                              "error": job.error, "tower_pid": job.tower_pid})
+            elif name == "get_tower_health":
+                health = await dispatcher.tower_health()
+                return _text(health)
+            elif name == "list_tower_jobs":
+                jobs = dispatcher.list_jobs(status=args.get("status"), limit=args.get("limit", 20))
+                return _text({"jobs": jobs})
+        except Exception as exc:
+            return _text({"error": f"Tower dispatcher error: {exc}"})
+
+    elif name == "get_signal_conflict_stats":
+        _ct_path = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+        import sys as _sys
+        if _ct_path not in _sys.path:
+            _sys.path.insert(0, _ct_path)
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "signal_conflict_manager",
+                os.path.join(_ct_path, "signal_conflict_manager.py"),
+            )
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)  # type: ignore
+                mgr = mod.get_conflict_manager(args.get("bot_name", ""))
+                stats = mgr.get_conflict_stats(hours=args.get("hours", 24))
+                recent = mgr.get_recent_conflicts(limit=10)
+                return _text({"bot": args.get("bot_name"), "stats_24h": stats, "recent_conflicts": recent,
+                              "policy": {"opposite_signals": "BLOCKED", "same_direction": "BLOCKED",
+                                         "force_reversal_threshold_pct": 90,
+                                         "reversal_loss_multiplier": 2.0, "min_hold_secs": 120}})
+        except Exception as exc:
+            return _text({"error": f"Signal conflict manager error: {exc}"})
+
+    elif name == "get_paper_trading_metrics":
+        try:
+            import os as _os
+            from dotenv import load_dotenv as _ld
+            _ld(os.path.expanduser("~/CascadeProjects/algochains-control-tower/.env"), override=False)
+            key = _os.getenv("ALPACA_PAPER_KEY", "")
+            secret = _os.getenv("ALPACA_PAPER_SECRET", "")
+            if not key:
+                return _text({"error": "ALPACA_PAPER_KEY not configured"})
+            from alpaca.trading.client import TradingClient
+            tc = TradingClient(key, secret, paper=True)
+            acct = tc.get_account()
+            positions = tc.get_all_positions()
+            pos_data = [{"symbol": p.symbol, "qty": float(p.qty), "avg_entry": float(p.avg_entry_price),
+                         "unrealized_pl": float(p.unrealized_pl), "market_value": float(p.market_value)}
+                        for p in positions]
+            return _text({
+                "account": {"equity": float(acct.equity), "buying_power": float(acct.buying_power),
+                            "portfolio_value": float(acct.portfolio_value), "status": str(acct.status)},
+                "open_positions": pos_data,
+                "position_count": len(pos_data),
+                "source": "Alpaca Paper Trading (real account, paper mode)",
+            })
+        except Exception as exc:
+            return _text({"error": f"Paper trading metrics error: {exc}"})
 
     # ═══════════════════════════════════════════════════════════════
     # Ultimate Quant Alpha Stack
