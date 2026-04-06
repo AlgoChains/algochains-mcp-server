@@ -1,0 +1,36 @@
+{
+  "name": "@algochains/sdk",
+  "version": "18.0.0",
+  "description": "Auto-generated TypeScript SDK for AlgoChains MCP Server — 242 tools across trading, ML, analytics, DeFi, and intent-based execution.",
+  "main": "src/index.js",
+  "types": "src/types.d.ts",
+  "files": [
+    "src/types.d.ts",
+    "src/client.d.ts",
+    "src/index.js",
+    "src/index.d.ts"
+  ],
+  "scripts": {
+    "regenerate": "npx mcporter emit-ts algochains --mode types --out src/types.d.ts && npx mcporter emit-ts algochains --mode client --out src/client.d.ts",
+    "prepublishOnly": "npm run regenerate"
+  },
+  "keywords": [
+    "algochains",
+    "mcp",
+    "trading",
+    "sdk",
+    "typescript",
+    "mcporter",
+    "algorithmic-trading"
+  ],
+  "author": "AlgoChains <team@algochains.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AlgoChains/algochains-mcp-server.git",
+    "directory": "packages/sdk"
+  },
+  "peerDependencies": {
+    "mcporter": ">=0.8.0"
+  }
+}

@@ -63,9 +63,11 @@ notifications = ["firebase-admin>=6.0.0"]
 datasets = ["pandas>=2.0.0", "pyarrow>=14.0.0"]
 backtrader = ["backtrader>=1.9.78"]
 supabase = ["supabase>=2.0.0"]
+http = ["fastapi>=0.111.0", "uvicorn[standard]>=0.30.0"]
 
 [project.scripts]
 algochains-mcp = "algochains_mcp.server:main"
+algochains-mcp-http = "algochains_mcp.http_transport:run_http_server"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/algochains_mcp"]

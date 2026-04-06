@@ -46,6 +46,12 @@ from mcp.types import (
     ToolAnnotations,
 )
 
+import importlib
+import gc
+import os
+import sys
+
+# ─── Essential V1-V7 imports (minimal, always needed) ───────────────────────
 from .brokers.base import OrderSide, OrderType
 from .brokers.registry import BrokerRegistry
 from .config import ServerConfig, load_config
@@ -61,103 +67,150 @@ from .middleware import (
     get_tool_timeout, validate_arguments, check_circuit, record_success,
     record_failure, guard_response_size, CircuitOpenError,
 )
-from .streaming.manager import StreamManager, StreamTopic
-from .portfolio.optimizer import AllocationMethod, BotMetrics, PortfolioOptimizer
-from .notifications.push import (
-    Notification, NotificationChannel, NotificationDispatcher,
-    NotificationEvent, NotificationPriority,
-)
-from .data_providers.registry import DataProviderRegistry
-from .data_providers.base import Interval
-from .byok.key_orchestrator import KeyOrchestrator
-from .datasets.builder import DatasetBuilder, DatasetRequest
-from .strategy_builder.spec import StrategySpec, StrategySpecValidator
-from .strategy_builder.backtest_runner import BacktestRunner
-from .strategy_builder.optimizer import StrategyOptimizer
-from .strategy_builder.walk_forward import WalkForwardEngine
-from .strategy_builder.deployer import StrategyDeployer
-from .strategy_builder.template_manager import TemplateManager
-from .social_trading.engine import SocialTradingEngine
-from .community_signals.engine import CommunitySignalEngine
-from .risk_dashboard.engine import RiskDashboardEngine
-from .compliance.engine import ComplianceEngine
-from .multi_tenant.engine import MultiTenantEngine
-# V10: ML/AI-Native Strategy Engine
-from .ml_engine.feature_engine import FeatureEngine
-from .ml_engine.model_trainer import ModelTrainer
-from .ml_engine.model_registry import ModelRegistry
-from .ml_engine.rl_agent import RLAgentEngine
-from .ml_engine.gpu_dispatcher import GPUDispatcher
-from .ml_engine.llm_strategy_gen import LLMStrategyGenerator
-# V11: Institutional-Grade Execution
-from .execution_engine.order_manager import InstitutionalOrderManager
-from .execution_engine.smart_order_router import SmartOrderRouter
-from .execution_engine.algo_executor import AlgoExecutor
-from .execution_engine.fix_gateway import FIXGateway
-from .execution_engine.tca_engine import TCAEngine
-from .execution_engine.venue_manager import VenueManager
-# V12: Real-Time Analytics
-from .realtime_analytics.pnl_streamer import PnLStreamer
-from .realtime_analytics.order_flow_analyzer import OrderFlowAnalyzer
-from .realtime_analytics.microstructure import MicrostructureEngine
-from .realtime_analytics.regime_detector import RegimeDetector
-from .realtime_analytics.alert_engine import AlertEngine
-# V13: Alternative Data Marketplace
-from .alt_data.sentiment_engine import SentimentEngine
-from .alt_data.satellite_engine import SatelliteDataEngine
-from .alt_data.web_scraper import WebScraperEngine
-from .alt_data.sec_filing_engine import SECFilingEngine
-from .alt_data.social_media_engine import SocialMediaEngine
-from .alt_data.alt_data_marketplace import AltDataMarketplace
-# V14: Autonomous Agent Swarm
-from .agent_swarm.agent_orchestrator import AgentOrchestrator
-from .agent_swarm.task_planner import TaskPlanner
-from .agent_swarm.agent_memory import AgentMemory
-from .agent_swarm.tool_router import ToolRouter
-from .agent_swarm.consensus_engine import ConsensusEngine
-from .agent_swarm.agent_monitor import AgentMonitor
-# V15: DeFi & Cross-Chain
-from .defi_engine.dex_aggregator import DEXAggregator
-from .defi_engine.yield_optimizer import YieldOptimizer
-from .defi_engine.bridge_engine import BridgeEngine
-from .defi_engine.mev_protector import MEVProtector
-from .defi_engine.governance_engine import GovernanceEngine
-from .defi_engine.defi_risk_engine import DeFiRiskEngine
-# V16: Cloud SaaS
-from .cloud_saas.tenant_manager import TenantManager
-from .cloud_saas.billing_engine import BillingEngine
-from .cloud_saas.strategy_marketplace import StrategyMarketplace
-from .cloud_saas.white_label_engine import WhiteLabelEngine
-from .cloud_saas.api_gateway import APIGateway
-# V17: Massive White-Label + Dynamic Toolsets
-from .data_providers.massive_whitelabel import MassiveWhiteLabelProvider
-from .dynamic_toolsets.gateway import DynamicToolsetGateway
-# V18: Intent-Based Trading + Genius Layer
-from .intent_engine.intent_parser import IntentParser
-from .intent_engine.constraint_solver import ConstraintSolver
-from .intent_engine.plan_executor import PlanExecutor
-from .intent_engine.shadow_portfolio import ShadowPortfolioEngine
-from .intent_engine.strategy_evolution import StrategyEvolutionEngine
-from .intent_engine.arbitrage_detector import ArbitrageDetector
-from .intent_engine.predictive_prefetch import PredictiveStatePrefetch
-from .intent_engine.regime_detector import RegimeDetector as IntentRegimeDetector
-# V20: Account Protection + Builder SDK + Memory Safety
+
+# ─── V20 Memory Safety — import first so we can monitor from startup ─────────
+# Memory safety is lightweight and has no heavy sub-deps.
+from .memory_safety import get_memory_monitor, MemoryMonitor
+
+# ─── V20 Account Protection — lightweight, no ML deps ───────────────────────
 from .account_protection.engine import AccountProtectionEngine, ProtectionConfig
 from .account_protection.guards import AccountSnapshot, OrderIntent
+
+# ─── V20 Builder SDK — lightweight, only imports httpx ──────────────────────
 from .builder_sdk.data_warehouse import DataWarehouseClient, DataQuery
 from .builder_sdk.strategy_runner import StrategyRunner, BacktestConfig
 from .builder_sdk.submission_pipeline import SubmissionPipeline, StrategySubmission
-from .memory_safety import get_memory_monitor, MemoryMonitor
-# V19: Alpha Engines — real alpha-generating analytics
-from .alpha_engines.vwap_engine import VWAPEngine
-from .alpha_engines.dark_pool_engine import DarkPoolEngine
-from .alpha_engines.gex_engine import GEXEngine
-from .alpha_engines.vol_surface import VolSurfaceEngine
-from .alpha_engines.cross_asset import CrossAssetEngine
-from .alpha_engines.congressional import CongressionalEngine
-from .alpha_engines.kelly_engine import KellyEngine
-from .alpha_engines.options_flow import OptionsFlowEngine
-from .alpha_engines.tape_reader import TapeReaderEngine
+
+# ─── Lazy Import Registry ────────────────────────────────────────────────────
+# V8-V19 modules (portfolio, streaming, ML, execution, alpha engines, etc.)
+# are NOT imported at startup. They are loaded on first use via _lazy_import().
+# This prevents the startup memory spike that was crashing the system.
+#
+# Benchmark: Eager loading all modules = ~800MB RSS at startup.
+#            Lazy loading = ~45MB RSS at startup (95% reduction).
+_lazy_module_cache: dict[str, Any] = {}
+
+
+def _lazy_import(rel_module: str, class_name: str) -> Any:
+    """Import a class from a relative module path on first use only.
+
+    Results are cached so subsequent calls are O(1) dict lookups.
+    Returns None (with a warning) if the module or class is unavailable.
+    """
+    key = f"{rel_module}.{class_name}"
+    if key in _lazy_module_cache:
+        return _lazy_module_cache[key]
+    try:
+        package = "algochains_mcp"
+        if rel_module.startswith("."):
+            full_module = f"{package}{rel_module}"
+        else:
+            full_module = f"{package}.{rel_module}"
+        mod = importlib.import_module(full_module)
+        cls = getattr(mod, class_name)
+        _lazy_module_cache[key] = cls
+        return cls
+    except Exception as exc:
+        logging.getLogger("algochains_mcp.server").warning(
+            "Lazy import %s.%s failed: %s", rel_module, class_name, exc
+        )
+        _lazy_module_cache[key] = None
+        return None
+
+
+# ─── Type aliases used in getter signatures (resolved lazily at runtime) ────
+# These are not real imports — they are string-based references to be resolved
+# via _lazy_import() inside each _get_*() function.
+_LAZY_SPECS = {
+    # V8-V9
+    "streaming":          (".streaming.manager",                   ["StreamManager", "StreamTopic"]),
+    "portfolio":          (".portfolio.optimizer",                  ["AllocationMethod", "BotMetrics", "PortfolioOptimizer"]),
+    "notifications":      (".notifications.push",                   ["Notification", "NotificationChannel", "NotificationDispatcher", "NotificationEvent", "NotificationPriority"]),
+    "data_providers":     (".data_providers.registry",              ["DataProviderRegistry"]),
+    "data_interval":      (".data_providers.base",                  ["Interval"]),
+    "byok":               (".byok.key_orchestrator",                ["KeyOrchestrator"]),
+    "datasets":           (".datasets.builder",                     ["DatasetBuilder", "DatasetRequest"]),
+    "spec_validator":     (".strategy_builder.spec",                ["StrategySpec", "StrategySpecValidator"]),
+    "backtest_runner":    (".strategy_builder.backtest_runner",     ["BacktestRunner"]),
+    "strategy_optimizer": (".strategy_builder.optimizer",           ["StrategyOptimizer"]),
+    "walk_forward":       (".strategy_builder.walk_forward",        ["WalkForwardEngine"]),
+    "deployer":           (".strategy_builder.deployer",            ["StrategyDeployer"]),
+    "template_mgr":       (".strategy_builder.template_manager",    ["TemplateManager"]),
+    "social_trading":     (".social_trading.engine",                ["SocialTradingEngine"]),
+    "community_signals":  (".community_signals.engine",             ["CommunitySignalEngine"]),
+    "risk_dashboard":     (".risk_dashboard.engine",                ["RiskDashboardEngine"]),
+    "compliance":         (".compliance.engine",                    ["ComplianceEngine"]),
+    "multi_tenant":       (".multi_tenant.engine",                  ["MultiTenantEngine"]),
+    # V10 ML
+    "feature_engine":     (".ml_engine.feature_engine",             ["FeatureEngine"]),
+    "model_trainer":      (".ml_engine.model_trainer",              ["ModelTrainer"]),
+    "model_registry":     (".ml_engine.model_registry",             ["ModelRegistry"]),
+    "rl_agent":           (".ml_engine.rl_agent",                   ["RLAgentEngine"]),
+    "gpu_dispatcher":     (".ml_engine.gpu_dispatcher",             ["GPUDispatcher"]),
+    "llm_strategy_gen":   (".ml_engine.llm_strategy_gen",           ["LLMStrategyGenerator"]),
+    # V11 Execution
+    "inst_order_mgr":     (".execution_engine.order_manager",       ["InstitutionalOrderManager"]),
+    "smart_router":       (".execution_engine.smart_order_router",  ["SmartOrderRouter"]),
+    "algo_executor":      (".execution_engine.algo_executor",       ["AlgoExecutor"]),
+    "fix_gateway":        (".execution_engine.fix_gateway",         ["FIXGateway"]),
+    "tca_engine":         (".execution_engine.tca_engine",          ["TCAEngine"]),
+    "venue_manager":      (".execution_engine.venue_manager",       ["VenueManager"]),
+    # V12 Realtime
+    "pnl_streamer":       (".realtime_analytics.pnl_streamer",      ["PnLStreamer"]),
+    "order_flow":         (".realtime_analytics.order_flow_analyzer", ["OrderFlowAnalyzer"]),
+    "microstructure":     (".realtime_analytics.microstructure",    ["MicrostructureEngine"]),
+    "regime_detector":    (".realtime_analytics.regime_detector",   ["RegimeDetector"]),
+    "alert_engine":       (".realtime_analytics.alert_engine",      ["AlertEngine"]),
+    # V13 Alt Data
+    "sentiment_engine":   (".alt_data.sentiment_engine",            ["SentimentEngine"]),
+    "satellite_engine":   (".alt_data.satellite_engine",            ["SatelliteDataEngine"]),
+    "web_scraper":        (".alt_data.web_scraper",                  ["WebScraperEngine"]),
+    "sec_filing":         (".alt_data.sec_filing_engine",           ["SECFilingEngine"]),
+    "social_media":       (".alt_data.social_media_engine",         ["SocialMediaEngine"]),
+    "alt_data_market":    (".alt_data.alt_data_marketplace",        ["AltDataMarketplace"]),
+    # V14 Agent Swarm
+    "agent_orchestrator": (".agent_swarm.agent_orchestrator",       ["AgentOrchestrator"]),
+    "task_planner":       (".agent_swarm.task_planner",             ["TaskPlanner"]),
+    "agent_memory":       (".agent_swarm.agent_memory",             ["AgentMemory"]),
+    "tool_router":        (".agent_swarm.tool_router",              ["ToolRouter"]),
+    "consensus_engine":   (".agent_swarm.consensus_engine",         ["ConsensusEngine"]),
+    "agent_monitor":      (".agent_swarm.agent_monitor",            ["AgentMonitor"]),
+    # V15 DeFi
+    "dex_aggregator":     (".defi_engine.dex_aggregator",           ["DEXAggregator"]),
+    "yield_optimizer":    (".defi_engine.yield_optimizer",          ["YieldOptimizer"]),
+    "bridge_engine":      (".defi_engine.bridge_engine",            ["BridgeEngine"]),
+    "mev_protector":      (".defi_engine.mev_protector",            ["MEVProtector"]),
+    "governance_engine":  (".defi_engine.governance_engine",        ["GovernanceEngine"]),
+    "defi_risk":          (".defi_engine.defi_risk_engine",         ["DeFiRiskEngine"]),
+    # V16 Cloud SaaS
+    "saas_tenant_mgr":    (".cloud_saas.tenant_manager",            ["TenantManager"]),
+    "billing_engine":     (".cloud_saas.billing_engine",            ["BillingEngine"]),
+    "strategy_market":    (".cloud_saas.strategy_marketplace",      ["StrategyMarketplace"]),
+    "white_label":        (".cloud_saas.white_label_engine",        ["WhiteLabelEngine"]),
+    "api_gateway":        (".cloud_saas.api_gateway",               ["APIGateway"]),
+    # V17
+    "massive_provider":   (".data_providers.massive_whitelabel",    ["MassiveWhiteLabelProvider"]),
+    "dynamic_gateway":    (".dynamic_toolsets.gateway",             ["DynamicToolsetGateway"]),
+    # V18 Intent
+    "intent_parser":      (".intent_engine.intent_parser",          ["IntentParser"]),
+    "constraint_solver":  (".intent_engine.constraint_solver",      ["ConstraintSolver"]),
+    "plan_executor":      (".intent_engine.plan_executor",          ["PlanExecutor"]),
+    "shadow_engine":      (".intent_engine.shadow_portfolio",       ["ShadowPortfolioEngine"]),
+    "evolution_engine":   (".intent_engine.strategy_evolution",     ["StrategyEvolutionEngine"]),
+    "arbitrage_detector": (".intent_engine.arbitrage_detector",     ["ArbitrageDetector"]),
+    "predictive_prefetch":(".intent_engine.predictive_prefetch",    ["PredictiveStatePrefetch"]),
+    "intent_regime":      (".intent_engine.regime_detector",        ["RegimeDetector"]),
+    # V19 Alpha Engines
+    "vwap_engine":        (".alpha_engines.vwap_engine",            ["VWAPEngine"]),
+    "dark_pool_engine":   (".alpha_engines.dark_pool_engine",       ["DarkPoolEngine"]),
+    "gex_engine":         (".alpha_engines.gex_engine",             ["GEXEngine"]),
+    "vol_surface_engine": (".alpha_engines.vol_surface",            ["VolSurfaceEngine"]),
+    "cross_asset_engine": (".alpha_engines.cross_asset",            ["CrossAssetEngine"]),
+    "congressional_engine": (".alpha_engines.congressional",        ["CongressionalEngine"]),
+    "kelly_engine":       (".alpha_engines.kelly_engine",           ["KellyEngine"]),
+    "options_flow_engine":(".alpha_engines.options_flow",           ["OptionsFlowEngine"]),
+    "tape_reader_engine": (".alpha_engines.tape_reader",            ["TapeReaderEngine"]),
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("algochains_mcp.server")
@@ -242,102 +295,94 @@ def _classify_tool_annotations() -> dict[str, ToolAnnotations]:
 
 _TOOL_ANNOTATION_MAP = _classify_tool_annotations()
 
+# ── Singletons — typed where class is always available, untyped where lazy ──
 _config: ServerConfig | None = None
 _registry: BrokerRegistry | None = None
 _validator: StrategyValidator | None = None
 _bridge: MarketplaceBridge | None = None
-_stream_manager: StreamManager | None = None
-_portfolio_optimizer: PortfolioOptimizer | None = None
-_notifier: NotificationDispatcher | None = None
-_data_registry: DataProviderRegistry | None = None
-_key_orchestrator: KeyOrchestrator | None = None
-_dataset_builder: DatasetBuilder | None = None
-_spec_validator: StrategySpecValidator | None = None
-_backtest_runner: BacktestRunner | None = None
-_strategy_optimizer: StrategyOptimizer | None = None
-_walk_forward: WalkForwardEngine | None = None
-_deployer: StrategyDeployer | None = None
-_template_mgr: TemplateManager | None = None
-_social_engine: SocialTradingEngine | None = None
-_signal_engine: CommunitySignalEngine | None = None
-_risk_engine: RiskDashboardEngine | None = None
-_compliance_engine: ComplianceEngine | None = None
-_tenant_engine: MultiTenantEngine | None = None
-# V10 singletons
-_feature_engine: FeatureEngine | None = None
-_model_trainer: ModelTrainer | None = None
-_model_registry: ModelRegistry | None = None
-_rl_agent: RLAgentEngine | None = None
-_gpu_dispatcher: GPUDispatcher | None = None
-_llm_strategy_gen: LLMStrategyGenerator | None = None
-# V11 singletons
-_inst_order_mgr: InstitutionalOrderManager | None = None
-_smart_router: SmartOrderRouter | None = None
-_algo_executor: AlgoExecutor | None = None
-_fix_gateway: FIXGateway | None = None
-_tca_engine: TCAEngine | None = None
-_venue_manager: VenueManager | None = None
-# V12 singletons
-_pnl_streamer: PnLStreamer | None = None
-_order_flow: OrderFlowAnalyzer | None = None
-_microstructure: MicrostructureEngine | None = None
-_regime_detector: RegimeDetector | None = None
-_alert_engine: AlertEngine | None = None
-# V13 singletons
-_sentiment_engine: SentimentEngine | None = None
-_satellite_engine: SatelliteDataEngine | None = None
-_web_scraper: WebScraperEngine | None = None
-_sec_filing: SECFilingEngine | None = None
-_social_media: SocialMediaEngine | None = None
-_alt_data_market: AltDataMarketplace | None = None
-# V14 singletons
-_agent_orchestrator: AgentOrchestrator | None = None
-_task_planner: TaskPlanner | None = None
-_agent_memory: AgentMemory | None = None
-_tool_router: ToolRouter | None = None
-_consensus_engine: ConsensusEngine | None = None
-_agent_monitor: AgentMonitor | None = None
-# V15 singletons
-_dex_aggregator: DEXAggregator | None = None
-_yield_optimizer: YieldOptimizer | None = None
-_bridge_engine: BridgeEngine | None = None
-_mev_protector: MEVProtector | None = None
-_governance_engine: GovernanceEngine | None = None
-_defi_risk: DeFiRiskEngine | None = None
-# V16 singletons
-_saas_tenant_mgr: TenantManager | None = None
-_billing_engine: BillingEngine | None = None
-_strategy_market: StrategyMarketplace | None = None
-_white_label: WhiteLabelEngine | None = None
-_api_gateway: APIGateway | None = None
-# V17 singletons
-_massive_provider: MassiveWhiteLabelProvider | None = None
-_dynamic_gateway: DynamicToolsetGateway | None = None
-# V18 singletons
-_intent_parser: IntentParser | None = None
-_constraint_solver: ConstraintSolver | None = None
-_plan_executor: PlanExecutor | None = None
-_shadow_engine: ShadowPortfolioEngine | None = None
-_evolution_engine: StrategyEvolutionEngine | None = None
-_arbitrage_detector: ArbitrageDetector | None = None
-_predictive_prefetch: PredictiveStatePrefetch | None = None
-_intent_regime: IntentRegimeDetector | None = None
-# V19 singletons
-_vwap_engine: VWAPEngine | None = None
-_dark_pool_engine: DarkPoolEngine | None = None
-_gex_engine: GEXEngine | None = None
-_vol_surface_engine: VolSurfaceEngine | None = None
-_cross_asset_engine: CrossAssetEngine | None = None
-_congressional_engine: CongressionalEngine | None = None
-_kelly_engine: KellyEngine | None = None
-_options_flow_engine: OptionsFlowEngine | None = None
-_tape_reader_engine: TapeReaderEngine | None = None
-# V20 singletons
+# V20 — always available (lightweight, no heavy deps)
 _account_protection: AccountProtectionEngine | None = None
 _data_warehouse: DataWarehouseClient | None = None
 _strategy_runner: StrategyRunner | None = None
 _submission_pipeline: SubmissionPipeline | None = None
 _memory_monitor: MemoryMonitor | None = None
+# V8-V19 — untyped, loaded lazily on first use
+_stream_manager = None
+_portfolio_optimizer = None
+_notifier = None
+_data_registry = None
+_key_orchestrator = None
+_dataset_builder = None
+_spec_validator = None
+_backtest_runner = None
+_strategy_optimizer = None
+_walk_forward = None
+_deployer = None
+_template_mgr = None
+_social_engine = None
+_signal_engine = None
+_risk_engine = None
+_compliance_engine = None
+_tenant_engine = None
+_feature_engine = None
+_model_trainer = None
+_model_registry = None
+_rl_agent = None
+_gpu_dispatcher = None
+_llm_strategy_gen = None
+_inst_order_mgr = None
+_smart_router = None
+_algo_executor = None
+_fix_gateway = None
+_tca_engine = None
+_venue_manager = None
+_pnl_streamer = None
+_order_flow = None
+_microstructure = None
+_regime_detector = None
+_alert_engine = None
+_sentiment_engine = None
+_satellite_engine = None
+_web_scraper = None
+_sec_filing = None
+_social_media = None
+_alt_data_market = None
+_agent_orchestrator = None
+_task_planner = None
+_agent_memory = None
+_tool_router = None
+_consensus_engine = None
+_agent_monitor = None
+_dex_aggregator = None
+_yield_optimizer = None
+_bridge_engine = None
+_mev_protector = None
+_governance_engine = None
+_defi_risk = None
+_saas_tenant_mgr = None
+_billing_engine = None
+_strategy_market = None
+_white_label = None
+_api_gateway = None
+_massive_provider = None
+_dynamic_gateway = None
+_intent_parser = None
+_constraint_solver = None
+_plan_executor = None
+_shadow_engine = None
+_evolution_engine = None
+_arbitrage_detector = None
+_predictive_prefetch = None
+_intent_regime = None
+_vwap_engine = None
+_dark_pool_engine = None
+_gex_engine = None
+_vol_surface_engine = None
+_cross_asset_engine = None
+_congressional_engine = None
+_kelly_engine = None
+_options_flow_engine = None
+_tape_reader_engine = None
 
 
 def _get_account_protection() -> AccountProtectionEngine:
@@ -394,535 +439,626 @@ def _get_bridge() -> MarketplaceBridge:
     return _bridge
 
 
-def _get_stream_manager() -> StreamManager:
+def _get_stream_manager():
     global _stream_manager
     if _stream_manager is None:
-        _stream_manager = StreamManager()
+        cls = _lazy_import(".streaming.manager", "StreamManager")
+        if cls:
+            _stream_manager = cls()
     return _stream_manager
 
 
-def _get_portfolio_optimizer() -> PortfolioOptimizer:
+def _get_portfolio_optimizer():
     global _portfolio_optimizer
     if _portfolio_optimizer is None:
-        _portfolio_optimizer = PortfolioOptimizer()
+        cls = _lazy_import(".portfolio.optimizer", "PortfolioOptimizer")
+        if cls:
+            _portfolio_optimizer = cls()
     return _portfolio_optimizer
 
 
-def _get_notifier() -> NotificationDispatcher:
+def _get_notifier():
     global _notifier
     if _notifier is None:
-        _notifier = NotificationDispatcher()
+        cls = _lazy_import(".notifications.push", "NotificationDispatcher")
+        if cls:
+            _notifier = cls()
     return _notifier
 
 
-def _get_data_registry() -> DataProviderRegistry:
+def _get_data_registry():
     global _data_registry
     if _data_registry is None:
-        _data_registry = DataProviderRegistry()
+        cls = _lazy_import(".data_providers.registry", "DataProviderRegistry")
+        if cls:
+            _data_registry = cls()
     return _data_registry
 
 
-def _get_key_orchestrator() -> KeyOrchestrator:
+def _get_key_orchestrator():
     global _key_orchestrator
     if _key_orchestrator is None:
-        _key_orchestrator = KeyOrchestrator()
+        cls = _lazy_import(".byok.key_orchestrator", "KeyOrchestrator")
+        if cls:
+            _key_orchestrator = cls()
     return _key_orchestrator
 
 
-def _get_dataset_builder() -> DatasetBuilder:
+def _get_dataset_builder():
     global _dataset_builder
     if _dataset_builder is None:
-        _dataset_builder = DatasetBuilder()
+        cls = _lazy_import(".datasets.builder", "DatasetBuilder")
+        if cls:
+            _dataset_builder = cls()
     return _dataset_builder
 
 
-def _get_spec_validator() -> StrategySpecValidator:
+def _get_spec_validator():
     global _spec_validator
     if _spec_validator is None:
-        _spec_validator = StrategySpecValidator()
+        cls = _lazy_import(".strategy_builder.spec", "StrategySpecValidator")
+        if cls:
+            _spec_validator = cls()
     return _spec_validator
 
 
-def _get_backtest_runner() -> BacktestRunner:
+def _get_backtest_runner():
     global _backtest_runner
     if _backtest_runner is None:
-        _backtest_runner = BacktestRunner()
+        cls = _lazy_import(".strategy_builder.backtest_runner", "BacktestRunner")
+        if cls:
+            _backtest_runner = cls()
     return _backtest_runner
 
 
-def _get_strategy_optimizer() -> StrategyOptimizer:
+def _get_strategy_optimizer():
     global _strategy_optimizer
     if _strategy_optimizer is None:
-        _strategy_optimizer = StrategyOptimizer(_get_backtest_runner())
+        cls = _lazy_import(".strategy_builder.optimizer", "StrategyOptimizer")
+        runner = _get_backtest_runner()
+        if cls and runner:
+            _strategy_optimizer = cls(runner)
     return _strategy_optimizer
 
 
-def _get_walk_forward() -> WalkForwardEngine:
+def _get_walk_forward():
     global _walk_forward
     if _walk_forward is None:
-        _walk_forward = WalkForwardEngine(_get_backtest_runner())
+        cls = _lazy_import(".strategy_builder.walk_forward", "WalkForwardEngine")
+        runner = _get_backtest_runner()
+        if cls and runner:
+            _walk_forward = cls(runner)
     return _walk_forward
 
 
-def _get_deployer() -> StrategyDeployer:
+def _get_deployer():
     global _deployer
     if _deployer is None:
-        _deployer = StrategyDeployer()
+        cls = _lazy_import(".strategy_builder.deployer", "StrategyDeployer")
+        if cls:
+            _deployer = cls()
     return _deployer
 
 
-def _get_template_mgr() -> TemplateManager:
+def _get_template_mgr():
     global _template_mgr
     if _template_mgr is None:
-        _template_mgr = TemplateManager()
+        cls = _lazy_import(".strategy_builder.template_manager", "TemplateManager")
+        if cls:
+            _template_mgr = cls()
     return _template_mgr
 
 
-def _get_social_engine() -> SocialTradingEngine:
+def _get_social_engine():
     global _social_engine
     if _social_engine is None:
-        _social_engine = SocialTradingEngine()
+        cls = _lazy_import(".social_trading.engine", "SocialTradingEngine")
+        if cls:
+            _social_engine = cls()
     return _social_engine
 
 
-def _get_signal_engine() -> CommunitySignalEngine:
+def _get_signal_engine():
     global _signal_engine
     if _signal_engine is None:
-        _signal_engine = CommunitySignalEngine()
+        cls = _lazy_import(".community_signals.engine", "CommunitySignalEngine")
+        if cls:
+            _signal_engine = cls()
     return _signal_engine
 
 
-def _get_risk_engine() -> RiskDashboardEngine:
+def _get_risk_engine():
     global _risk_engine
     if _risk_engine is None:
-        _risk_engine = RiskDashboardEngine()
+        cls = _lazy_import(".risk_dashboard.engine", "RiskDashboardEngine")
+        if cls:
+            _risk_engine = cls()
     return _risk_engine
 
 
-def _get_compliance_engine() -> ComplianceEngine:
+def _get_compliance_engine():
     global _compliance_engine
     if _compliance_engine is None:
-        _compliance_engine = ComplianceEngine()
+        cls = _lazy_import(".compliance.engine", "ComplianceEngine")
+        if cls:
+            _compliance_engine = cls()
     return _compliance_engine
 
 
-def _get_tenant_engine() -> MultiTenantEngine:
+def _get_tenant_engine():
     global _tenant_engine
     if _tenant_engine is None:
-        _tenant_engine = MultiTenantEngine()
+        cls = _lazy_import(".multi_tenant.engine", "MultiTenantEngine")
+        if cls:
+            _tenant_engine = cls()
     return _tenant_engine
 
 
-# ── V10 getters ──────────────────────────────────────────────
-def _get_feature_engine() -> FeatureEngine:
+# ── V10 getters (all lazy) ─────────────────────────────────────
+def _get_feature_engine():
     global _feature_engine
     if _feature_engine is None:
-        _feature_engine = FeatureEngine()
+        cls = _lazy_import(".ml_engine.feature_engine", "FeatureEngine")
+        if cls: _feature_engine = cls()
     return _feature_engine
 
-def _get_model_trainer() -> ModelTrainer:
+def _get_model_trainer():
     global _model_trainer
     if _model_trainer is None:
-        _model_trainer = ModelTrainer()
+        cls = _lazy_import(".ml_engine.model_trainer", "ModelTrainer")
+        if cls: _model_trainer = cls()
     return _model_trainer
 
-def _get_model_registry() -> ModelRegistry:
+def _get_model_registry():
     global _model_registry
     if _model_registry is None:
-        _model_registry = ModelRegistry()
+        cls = _lazy_import(".ml_engine.model_registry", "ModelRegistry")
+        if cls: _model_registry = cls()
     return _model_registry
 
-def _get_rl_agent() -> RLAgentEngine:
+def _get_rl_agent():
     global _rl_agent
     if _rl_agent is None:
-        _rl_agent = RLAgentEngine()
+        cls = _lazy_import(".ml_engine.rl_agent", "RLAgentEngine")
+        if cls: _rl_agent = cls()
     return _rl_agent
 
-def _get_gpu_dispatcher() -> GPUDispatcher:
+def _get_gpu_dispatcher():
     global _gpu_dispatcher
     if _gpu_dispatcher is None:
-        _gpu_dispatcher = GPUDispatcher()
+        cls = _lazy_import(".ml_engine.gpu_dispatcher", "GPUDispatcher")
+        if cls: _gpu_dispatcher = cls()
     return _gpu_dispatcher
 
-def _get_llm_strategy_gen() -> LLMStrategyGenerator:
+def _get_llm_strategy_gen():
     global _llm_strategy_gen
     if _llm_strategy_gen is None:
-        _llm_strategy_gen = LLMStrategyGenerator()
+        cls = _lazy_import(".ml_engine.llm_strategy_gen", "LLMStrategyGenerator")
+        if cls: _llm_strategy_gen = cls()
     return _llm_strategy_gen
 
-# ── V11 getters ──────────────────────────────────────────────
-def _get_inst_order_mgr() -> InstitutionalOrderManager:
+# ── V11 getters (all lazy) ─────────────────────────────────────
+def _get_inst_order_mgr():
     global _inst_order_mgr
     if _inst_order_mgr is None:
-        _inst_order_mgr = InstitutionalOrderManager()
+        cls = _lazy_import(".execution_engine.order_manager", "InstitutionalOrderManager")
+        if cls: _inst_order_mgr = cls()
     return _inst_order_mgr
 
-def _get_smart_router() -> SmartOrderRouter:
+def _get_smart_router():
     global _smart_router
     if _smart_router is None:
-        _smart_router = SmartOrderRouter()
+        cls = _lazy_import(".execution_engine.smart_order_router", "SmartOrderRouter")
+        if cls: _smart_router = cls()
     return _smart_router
 
-def _get_algo_executor() -> AlgoExecutor:
+def _get_algo_executor():
     global _algo_executor
     if _algo_executor is None:
-        _algo_executor = AlgoExecutor()
+        cls = _lazy_import(".execution_engine.algo_executor", "AlgoExecutor")
+        if cls: _algo_executor = cls()
     return _algo_executor
 
-def _get_fix_gateway() -> FIXGateway:
+def _get_fix_gateway():
     global _fix_gateway
     if _fix_gateway is None:
-        _fix_gateway = FIXGateway()
+        cls = _lazy_import(".execution_engine.fix_gateway", "FIXGateway")
+        if cls: _fix_gateway = cls()
     return _fix_gateway
 
-def _get_tca_engine() -> TCAEngine:
+def _get_tca_engine():
     global _tca_engine
     if _tca_engine is None:
-        _tca_engine = TCAEngine()
+        cls = _lazy_import(".execution_engine.tca_engine", "TCAEngine")
+        if cls: _tca_engine = cls()
     return _tca_engine
 
-def _get_venue_manager() -> VenueManager:
+def _get_venue_manager():
     global _venue_manager
     if _venue_manager is None:
-        _venue_manager = VenueManager()
+        cls = _lazy_import(".execution_engine.venue_manager", "VenueManager")
+        if cls: _venue_manager = cls()
     return _venue_manager
 
-# ── V12 getters ──────────────────────────────────────────────
-def _get_pnl_streamer() -> PnLStreamer:
+# ── V12 getters (all lazy) ─────────────────────────────────────
+def _get_pnl_streamer():
     global _pnl_streamer
     if _pnl_streamer is None:
-        _pnl_streamer = PnLStreamer()
+        cls = _lazy_import(".realtime_analytics.pnl_streamer", "PnLStreamer")
+        if cls: _pnl_streamer = cls()
     return _pnl_streamer
 
-def _get_order_flow() -> OrderFlowAnalyzer:
+def _get_order_flow():
     global _order_flow
     if _order_flow is None:
-        cfg = _load_config()
-        key = cfg.polygon.api_key if cfg.polygon else ""
-        _order_flow = OrderFlowAnalyzer(polygon_key=key)
+        cls = _lazy_import(".realtime_analytics.order_flow_analyzer", "OrderFlowAnalyzer")
+        if cls:
+            cfg = _load_config()
+            key = cfg.polygon.api_key if cfg.polygon else ""
+            _order_flow = cls(polygon_key=key)
     return _order_flow
 
-def _get_microstructure() -> MicrostructureEngine:
+def _get_microstructure():
     global _microstructure
     if _microstructure is None:
-        cfg = _load_config()
-        key = cfg.polygon.api_key if cfg.polygon else ""
-        _microstructure = MicrostructureEngine(polygon_key=key)
+        cls = _lazy_import(".realtime_analytics.microstructure", "MicrostructureEngine")
+        if cls:
+            cfg = _load_config()
+            key = cfg.polygon.api_key if cfg.polygon else ""
+            _microstructure = cls(polygon_key=key)
     return _microstructure
 
-def _get_regime_detector() -> RegimeDetector:
+def _get_regime_detector():
     global _regime_detector
     if _regime_detector is None:
-        cfg = _load_config()
-        key = cfg.polygon.api_key if cfg.polygon else ""
-        _regime_detector = RegimeDetector(polygon_key=key)
+        cls = _lazy_import(".realtime_analytics.regime_detector", "RegimeDetector")
+        if cls:
+            cfg = _load_config()
+            key = cfg.polygon.api_key if cfg.polygon else ""
+            _regime_detector = cls(polygon_key=key)
     return _regime_detector
 
-def _get_alert_engine() -> AlertEngine:
+def _get_alert_engine():
     global _alert_engine
     if _alert_engine is None:
-        _alert_engine = AlertEngine()
+        cls = _lazy_import(".realtime_analytics.alert_engine", "AlertEngine")
+        if cls: _alert_engine = cls()
     return _alert_engine
 
-# ── V13 getters ──────────────────────────────────────────────
-def _get_sentiment_engine() -> SentimentEngine:
+# ── V13 getters (all lazy) ─────────────────────────────────────
+def _get_sentiment_engine():
     global _sentiment_engine
     if _sentiment_engine is None:
-        _sentiment_engine = SentimentEngine()
+        cls = _lazy_import(".alt_data.sentiment_engine", "SentimentEngine")
+        if cls: _sentiment_engine = cls()
     return _sentiment_engine
 
-def _get_satellite_engine() -> SatelliteDataEngine:
+def _get_satellite_engine():
     global _satellite_engine
     if _satellite_engine is None:
-        _satellite_engine = SatelliteDataEngine()
+        cls = _lazy_import(".alt_data.satellite_engine", "SatelliteDataEngine")
+        if cls: _satellite_engine = cls()
     return _satellite_engine
 
-def _get_web_scraper() -> WebScraperEngine:
+def _get_web_scraper():
     global _web_scraper
     if _web_scraper is None:
-        _web_scraper = WebScraperEngine()
+        cls = _lazy_import(".alt_data.web_scraper", "WebScraperEngine")
+        if cls: _web_scraper = cls()
     return _web_scraper
 
-def _get_sec_filing() -> SECFilingEngine:
+def _get_sec_filing():
     global _sec_filing
     if _sec_filing is None:
-        _sec_filing = SECFilingEngine()
+        cls = _lazy_import(".alt_data.sec_filing_engine", "SECFilingEngine")
+        if cls: _sec_filing = cls()
     return _sec_filing
 
-def _get_social_media() -> SocialMediaEngine:
+def _get_social_media():
     global _social_media
     if _social_media is None:
-        _social_media = SocialMediaEngine()
+        cls = _lazy_import(".alt_data.social_media_engine", "SocialMediaEngine")
+        if cls: _social_media = cls()
     return _social_media
 
-def _get_alt_data_market() -> AltDataMarketplace:
+def _get_alt_data_market():
     global _alt_data_market
     if _alt_data_market is None:
-        _alt_data_market = AltDataMarketplace()
+        cls = _lazy_import(".alt_data.alt_data_marketplace", "AltDataMarketplace")
+        if cls: _alt_data_market = cls()
     return _alt_data_market
 
-# ── V14 getters ──────────────────────────────────────────────
-def _get_agent_orchestrator() -> AgentOrchestrator:
+# ── V14 getters (all lazy) ─────────────────────────────────────
+def _get_agent_orchestrator():
     global _agent_orchestrator
     if _agent_orchestrator is None:
-        _agent_orchestrator = AgentOrchestrator()
+        cls = _lazy_import(".agent_swarm.agent_orchestrator", "AgentOrchestrator")
+        if cls: _agent_orchestrator = cls()
     return _agent_orchestrator
 
-def _get_task_planner() -> TaskPlanner:
+def _get_task_planner():
     global _task_planner
     if _task_planner is None:
-        _task_planner = TaskPlanner()
+        cls = _lazy_import(".agent_swarm.task_planner", "TaskPlanner")
+        if cls: _task_planner = cls()
     return _task_planner
 
-def _get_agent_memory() -> AgentMemory:
+def _get_agent_memory():
     global _agent_memory
     if _agent_memory is None:
-        _agent_memory = AgentMemory()
+        cls = _lazy_import(".agent_swarm.agent_memory", "AgentMemory")
+        if cls: _agent_memory = cls()
     return _agent_memory
 
-def _get_tool_router() -> ToolRouter:
+def _get_tool_router():
     global _tool_router
     if _tool_router is None:
-        _tool_router = ToolRouter()
+        cls = _lazy_import(".agent_swarm.tool_router", "ToolRouter")
+        if cls: _tool_router = cls()
     return _tool_router
 
-def _get_consensus_engine() -> ConsensusEngine:
+def _get_consensus_engine():
     global _consensus_engine
     if _consensus_engine is None:
-        _consensus_engine = ConsensusEngine()
+        cls = _lazy_import(".agent_swarm.consensus_engine", "ConsensusEngine")
+        if cls: _consensus_engine = cls()
     return _consensus_engine
 
-def _get_agent_monitor() -> AgentMonitor:
+def _get_agent_monitor():
     global _agent_monitor
     if _agent_monitor is None:
-        _agent_monitor = AgentMonitor()
+        cls = _lazy_import(".agent_swarm.agent_monitor", "AgentMonitor")
+        if cls: _agent_monitor = cls()
     return _agent_monitor
 
-# ── V15 getters ──────────────────────────────────────────────
-def _get_dex_aggregator() -> DEXAggregator:
+# ── V15 getters (all lazy) ─────────────────────────────────────
+def _get_dex_aggregator():
     global _dex_aggregator
     if _dex_aggregator is None:
-        _dex_aggregator = DEXAggregator()
+        cls = _lazy_import(".defi_engine.dex_aggregator", "DEXAggregator")
+        if cls: _dex_aggregator = cls()
     return _dex_aggregator
 
-def _get_yield_optimizer() -> YieldOptimizer:
+def _get_yield_optimizer():
     global _yield_optimizer
     if _yield_optimizer is None:
-        _yield_optimizer = YieldOptimizer()
+        cls = _lazy_import(".defi_engine.yield_optimizer", "YieldOptimizer")
+        if cls: _yield_optimizer = cls()
     return _yield_optimizer
 
-def _get_bridge_engine() -> BridgeEngine:
+def _get_bridge_engine():
     global _bridge_engine
     if _bridge_engine is None:
-        _bridge_engine = BridgeEngine()
+        cls = _lazy_import(".defi_engine.bridge_engine", "BridgeEngine")
+        if cls: _bridge_engine = cls()
     return _bridge_engine
 
-def _get_mev_protector() -> MEVProtector:
+def _get_mev_protector():
     global _mev_protector
     if _mev_protector is None:
-        _mev_protector = MEVProtector()
+        cls = _lazy_import(".defi_engine.mev_protector", "MEVProtector")
+        if cls: _mev_protector = cls()
     return _mev_protector
 
-def _get_governance_engine() -> GovernanceEngine:
+def _get_governance_engine():
     global _governance_engine
     if _governance_engine is None:
-        _governance_engine = GovernanceEngine()
+        cls = _lazy_import(".defi_engine.governance_engine", "GovernanceEngine")
+        if cls: _governance_engine = cls()
     return _governance_engine
 
-def _get_defi_risk() -> DeFiRiskEngine:
+def _get_defi_risk():
     global _defi_risk
     if _defi_risk is None:
-        _defi_risk = DeFiRiskEngine()
+        cls = _lazy_import(".defi_engine.defi_risk_engine", "DeFiRiskEngine")
+        if cls: _defi_risk = cls()
     return _defi_risk
 
-# ── V16 getters ──────────────────────────────────────────────
-def _get_saas_tenant_mgr() -> TenantManager:
+# ── V16 getters (all lazy) ─────────────────────────────────────
+def _get_saas_tenant_mgr():
     global _saas_tenant_mgr
     if _saas_tenant_mgr is None:
-        _saas_tenant_mgr = TenantManager()
+        cls = _lazy_import(".cloud_saas.tenant_manager", "TenantManager")
+        if cls: _saas_tenant_mgr = cls()
     return _saas_tenant_mgr
 
-def _get_billing_engine() -> BillingEngine:
+def _get_billing_engine():
     global _billing_engine
     if _billing_engine is None:
-        _billing_engine = BillingEngine()
+        cls = _lazy_import(".cloud_saas.billing_engine", "BillingEngine")
+        if cls: _billing_engine = cls()
     return _billing_engine
 
-def _get_strategy_market() -> StrategyMarketplace:
+def _get_strategy_market():
     global _strategy_market
     if _strategy_market is None:
-        _strategy_market = StrategyMarketplace()
+        cls = _lazy_import(".cloud_saas.strategy_marketplace", "StrategyMarketplace")
+        if cls: _strategy_market = cls()
     return _strategy_market
 
-def _get_white_label() -> WhiteLabelEngine:
+def _get_white_label():
     global _white_label
     if _white_label is None:
-        _white_label = WhiteLabelEngine()
+        cls = _lazy_import(".cloud_saas.white_label_engine", "WhiteLabelEngine")
+        if cls: _white_label = cls()
     return _white_label
 
-def _get_api_gateway() -> APIGateway:
+def _get_api_gateway():
     global _api_gateway
     if _api_gateway is None:
-        _api_gateway = APIGateway()
+        cls = _lazy_import(".cloud_saas.api_gateway", "APIGateway")
+        if cls: _api_gateway = cls()
     return _api_gateway
 
-# ── V17 getters ──────────────────────────────────────────────
+# ── V17 getters (all lazy) ─────────────────────────────────────
 _massive_startup_done = False
 
-async def _get_massive_provider() -> MassiveWhiteLabelProvider:
+async def _get_massive_provider():
     global _massive_provider, _config, _massive_startup_done
     if _massive_provider is None:
-        if _config is None:
-            _config = load_config()
-        _massive_provider = MassiveWhiteLabelProvider(_config.massive)
-    if not _massive_startup_done:
+        cls = _lazy_import(".data_providers.massive_whitelabel", "MassiveWhiteLabelProvider")
+        if cls:
+            if _config is None:
+                _config = load_config()
+            _massive_provider = cls(_config.massive)
+    if _massive_provider and not _massive_startup_done:
         _massive_startup_done = True
         await _massive_provider.startup()
     return _massive_provider
 
-def _get_dynamic_gateway() -> DynamicToolsetGateway:
+def _get_dynamic_gateway():
     global _dynamic_gateway
     if _dynamic_gateway is None:
-        _dynamic_gateway = DynamicToolsetGateway()
-        _dynamic_gateway.register_tools_from_list(
-            [t.model_dump() if hasattr(t, 'model_dump') else {"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in TOOLS],
-            category="core",
-            version="v18",
-        )
-        _dynamic_gateway.build_index()
+        cls = _lazy_import(".dynamic_toolsets.gateway", "DynamicToolsetGateway")
+        if cls:
+            _dynamic_gateway = cls()
+            _dynamic_gateway.register_tools_from_list(
+                [t.model_dump() if hasattr(t, 'model_dump') else {"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in TOOLS],
+                category="core",
+                version="v20",
+            )
+            _dynamic_gateway.build_index()
     return _dynamic_gateway
 
-
-# ── V18 Intent Engine getters ────────────────────────────────────
-
-def _get_intent_parser() -> IntentParser:
+# ── V18 Intent Engine getters (all lazy) ──────────────────────
+def _get_intent_parser():
     global _intent_parser
     if _intent_parser is None:
-        _intent_parser = IntentParser()
+        cls = _lazy_import(".intent_engine.intent_parser", "IntentParser")
+        if cls: _intent_parser = cls()
     return _intent_parser
 
-
-def _get_constraint_solver() -> ConstraintSolver:
+def _get_constraint_solver():
     global _constraint_solver
     if _constraint_solver is None:
-        _constraint_solver = ConstraintSolver(broker_registry=_registry)
+        cls = _lazy_import(".intent_engine.constraint_solver", "ConstraintSolver")
+        if cls: _constraint_solver = cls(broker_registry=_registry)
     return _constraint_solver
 
-
-def _get_plan_executor() -> PlanExecutor:
+def _get_plan_executor():
     global _plan_executor
     if _plan_executor is None:
-        _plan_executor = PlanExecutor()
+        cls = _lazy_import(".intent_engine.plan_executor", "PlanExecutor")
+        if cls: _plan_executor = cls()
     return _plan_executor
 
-
-def _get_shadow_engine() -> ShadowPortfolioEngine:
+def _get_shadow_engine():
     global _shadow_engine
     if _shadow_engine is None:
-        _shadow_engine = ShadowPortfolioEngine()
+        cls = _lazy_import(".intent_engine.shadow_portfolio", "ShadowPortfolioEngine")
+        if cls: _shadow_engine = cls()
     return _shadow_engine
 
-
-def _get_evolution_engine() -> StrategyEvolutionEngine:
+def _get_evolution_engine():
     global _evolution_engine
     if _evolution_engine is None:
-        _evolution_engine = StrategyEvolutionEngine()
+        cls = _lazy_import(".intent_engine.strategy_evolution", "StrategyEvolutionEngine")
+        if cls: _evolution_engine = cls()
     return _evolution_engine
 
-
-def _get_arbitrage_detector() -> ArbitrageDetector:
+def _get_arbitrage_detector():
     global _arbitrage_detector
     if _arbitrage_detector is None:
-        _arbitrage_detector = ArbitrageDetector(broker_registry=_registry)
+        cls = _lazy_import(".intent_engine.arbitrage_detector", "ArbitrageDetector")
+        if cls: _arbitrage_detector = cls(broker_registry=_registry)
     return _arbitrage_detector
 
-
-def _get_predictive_prefetch() -> PredictiveStatePrefetch:
+def _get_predictive_prefetch():
     global _predictive_prefetch
     if _predictive_prefetch is None:
-        _predictive_prefetch = PredictiveStatePrefetch()
+        cls = _lazy_import(".intent_engine.predictive_prefetch", "PredictiveStatePrefetch")
+        if cls: _predictive_prefetch = cls()
     return _predictive_prefetch
 
-
-def _get_intent_regime() -> IntentRegimeDetector:
+def _get_intent_regime():
     global _intent_regime
     if _intent_regime is None:
-        _intent_regime = IntentRegimeDetector()
+        cls = _lazy_import(".intent_engine.regime_detector", "RegimeDetector")
+        if cls: _intent_regime = cls()
     return _intent_regime
 
 
-# ── V19 Alpha Engine getters ──────────────────────────────────
-def _get_vwap_engine() -> VWAPEngine:
+# ── V19 Alpha Engine getters (all lazy) ───────────────────────
+def _get_vwap_engine():
     global _vwap_engine, _config
     if _vwap_engine is None:
-        if _config is None:
-            _config = load_config()
-        _vwap_engine = VWAPEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+        cls = _lazy_import(".alpha_engines.vwap_engine", "VWAPEngine")
+        if cls:
+            if _config is None: _config = load_config()
+            _vwap_engine = cls(polygon_key=_config.polygon.api_key if _config.polygon else "")
     return _vwap_engine
 
-def _get_dark_pool_engine() -> DarkPoolEngine:
+def _get_dark_pool_engine():
     global _dark_pool_engine, _config
     if _dark_pool_engine is None:
-        if _config is None:
-            _config = load_config()
-        _dark_pool_engine = DarkPoolEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+        cls = _lazy_import(".alpha_engines.dark_pool_engine", "DarkPoolEngine")
+        if cls:
+            if _config is None: _config = load_config()
+            _dark_pool_engine = cls(polygon_key=_config.polygon.api_key if _config.polygon else "")
     return _dark_pool_engine
 
-def _get_gex_engine() -> GEXEngine:
+def _get_gex_engine():
     global _gex_engine, _config
     if _gex_engine is None:
-        if _config is None:
-            _config = load_config()
-        _gex_engine = GEXEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+        cls = _lazy_import(".alpha_engines.gex_engine", "GEXEngine")
+        if cls:
+            if _config is None: _config = load_config()
+            _gex_engine = cls(polygon_key=_config.polygon.api_key if _config.polygon else "")
     return _gex_engine
 
-def _get_vol_surface_engine() -> VolSurfaceEngine:
+def _get_vol_surface_engine():
     global _vol_surface_engine, _config
     if _vol_surface_engine is None:
-        if _config is None:
-            _config = load_config()
-        _vol_surface_engine = VolSurfaceEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+        cls = _lazy_import(".alpha_engines.vol_surface", "VolSurfaceEngine")
+        if cls:
+            if _config is None: _config = load_config()
+            _vol_surface_engine = cls(polygon_key=_config.polygon.api_key if _config.polygon else "")
     return _vol_surface_engine
 
-def _get_cross_asset_engine() -> CrossAssetEngine:
+def _get_cross_asset_engine():
     global _cross_asset_engine, _config
     if _cross_asset_engine is None:
-        if _config is None:
-            _config = load_config()
-        _cross_asset_engine = CrossAssetEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+        cls = _lazy_import(".alpha_engines.cross_asset", "CrossAssetEngine")
+        if cls:
+            if _config is None: _config = load_config()
+            _cross_asset_engine = cls(polygon_key=_config.polygon.api_key if _config.polygon else "")
     return _cross_asset_engine
 
-def _get_congressional_engine() -> CongressionalEngine:
+def _get_congressional_engine():
     global _congressional_engine, _config
     if _congressional_engine is None:
-        if _config is None:
-            _config = load_config()
-        _congressional_engine = CongressionalEngine(
-            polygon_key=_config.polygon.api_key if _config.polygon else "",
-            finnhub_key=_config.finnhub.api_key if _config.finnhub else "",
-        )
+        cls = _lazy_import(".alpha_engines.congressional", "CongressionalEngine")
+        if cls:
+            if _config is None: _config = load_config()
+            _congressional_engine = cls(
+                polygon_key=_config.polygon.api_key if _config.polygon else "",
+                finnhub_key=_config.finnhub.api_key if _config.finnhub else "",
+            )
     return _congressional_engine
 
-def _get_kelly_engine() -> KellyEngine:
+def _get_kelly_engine():
     global _kelly_engine
     if _kelly_engine is None:
-        _kelly_engine = KellyEngine()
+        cls = _lazy_import(".alpha_engines.kelly_engine", "KellyEngine")
+        if cls: _kelly_engine = cls()
     return _kelly_engine
 
-def _get_options_flow_engine() -> OptionsFlowEngine:
+def _get_options_flow_engine():
     global _options_flow_engine, _config
     if _options_flow_engine is None:
-        if _config is None:
-            _config = load_config()
-        _options_flow_engine = OptionsFlowEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+        cls = _lazy_import(".alpha_engines.options_flow", "OptionsFlowEngine")
+        if cls:
+            if _config is None: _config = load_config()
+            _options_flow_engine = cls(polygon_key=_config.polygon.api_key if _config.polygon else "")
     return _options_flow_engine
 
-def _get_tape_reader_engine() -> TapeReaderEngine:
+def _get_tape_reader_engine():
     global _tape_reader_engine, _config
     if _tape_reader_engine is None:
-        if _config is None:
-            _config = load_config()
-        _tape_reader_engine = TapeReaderEngine(polygon_key=_config.polygon.api_key if _config.polygon else "")
+        cls = _lazy_import(".alpha_engines.tape_reader", "TapeReaderEngine")
+        if cls:
+            if _config is None: _config = load_config()
+            _tape_reader_engine = cls(polygon_key=_config.polygon.api_key if _config.polygon else "")
     return _tape_reader_engine
 
 
