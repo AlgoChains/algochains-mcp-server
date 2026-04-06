@@ -49,7 +49,7 @@ GRADUATION_GATES = {
     "min_sharpe": 0.8,           # Paper Sharpe >= 0.8 (relaxed vs backtest)
     "max_drawdown_pct": 30.0,    # Max drawdown <= 30%
     "min_win_rate": 35.0,        # Win rate >= 35%
-    "max_anomaly_score": 0.3,    # Signal anomaly score (fake metric detector)
+    "max_anomaly_score": 0.3,    # From Django API: signal-pattern integrity score (lower is better)
 }
 
 # Decay gates — live listing auto-paused if these trigger

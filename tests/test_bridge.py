@@ -3,7 +3,13 @@ import pytest
 import httpx
 
 from algochains_mcp.config import MarketplaceConfig
-from algochains_mcp.errors import ListingNotFoundError, MarketplaceError, RateLimitError, SubscriptionError
+from algochains_mcp.errors import (
+    ListingNotFoundError,
+    MarketplaceError,
+    MarketplaceNotConfiguredError,
+    RateLimitError,
+    SubscriptionError,
+)
 from algochains_mcp.marketplace.bridge import MarketplaceBridge
 
 
@@ -68,3 +74,33 @@ class TestCheckResponse:
         )
         with pytest.raises(MarketplaceError, match="Invalid slug"):
             bridge._check_response(resp)
+
+
+@pytest.mark.asyncio
+async def test_browse_fails_fast_without_listing_key(monkeypatch):
+    monkeypatch.delenv("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", raising=False)
+    bridge = MarketplaceBridge(
+        MarketplaceConfig(
+            django_url="https://test.algochains.ai",
+            listing_api_key="",
+            ingest_api_key="x",
+            creator_username="u",
+        )
+    )
+    with pytest.raises(MarketplaceNotConfiguredError, match="LISTING_API_KEY"):
+        await bridge.browse_listings()
+
+
+@pytest.mark.asyncio
+async def test_ingest_fails_fast_without_ingest_key(monkeypatch):
+    monkeypatch.delenv("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", raising=False)
+    bridge = MarketplaceBridge(
+        MarketplaceConfig(
+            django_url="https://test.algochains.ai",
+            listing_api_key="listing",
+            ingest_api_key="",
+            creator_username="u",
+        )
+    )
+    with pytest.raises(MarketplaceNotConfiguredError, match="METRICS_INGEST_API_KEY"):
+        await bridge.ingest_metrics("slug", {})

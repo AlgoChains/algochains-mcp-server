@@ -129,6 +129,12 @@ class MarketplaceError(AlgoChainsError):
     pass
 
 
+class MarketplaceNotConfiguredError(MarketplaceError):
+    """LISTING_API_KEY / METRICS_INGEST_API_KEY missing — refuse silent failure."""
+
+    pass
+
+
 class ListingNotFoundError(MarketplaceError):
     """Requested marketplace listing does not exist."""
     pass

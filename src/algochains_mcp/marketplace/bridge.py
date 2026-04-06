@@ -11,12 +11,24 @@ from typing import Any, Optional
 
 import httpx
 
+import os
+
 from ..config import MarketplaceConfig
-from ..errors import ListingNotFoundError, MarketplaceError, RateLimitError, SubscriptionError
+from ..errors import (
+    ListingNotFoundError,
+    MarketplaceError,
+    MarketplaceNotConfiguredError,
+    RateLimitError,
+    SubscriptionError,
+)
 
 logger = logging.getLogger("algochains_mcp.marketplace.bridge")
 
 _DEFAULT_TIMEOUT = 30.0
+
+
+def _skip_marketplace_key_check() -> bool:
+    return os.environ.get("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", "").lower() in ("1", "true", "yes")
 
 
 class MarketplaceBridge:
@@ -25,6 +37,28 @@ class MarketplaceBridge:
     def __init__(self, config: MarketplaceConfig):
         self.cfg = config
         self._client: Optional[httpx.AsyncClient] = None
+
+    def _require_listing_key(self) -> None:
+        if _skip_marketplace_key_check():
+            return
+        key = (self.cfg.listing_api_key or "").strip()
+        if not key:
+            raise MarketplaceNotConfiguredError(
+                "LISTING_API_KEY is empty. Generate an API key in Django admin and set LISTING_API_KEY. "
+                "Dev-only bypass: ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK=1",
+                details={"missing": "LISTING_API_KEY"},
+            )
+
+    def _require_ingest_key(self) -> None:
+        if _skip_marketplace_key_check():
+            return
+        key = (self.cfg.ingest_api_key or "").strip()
+        if not key:
+            raise MarketplaceNotConfiguredError(
+                "METRICS_INGEST_API_KEY is empty. Required for metrics ingestion. "
+                "Dev-only bypass: ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK=1",
+                details={"missing": "METRICS_INGEST_API_KEY"},
+            )
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -53,6 +87,7 @@ class MarketplaceBridge:
         min_sharpe: float | None = None,
         limit: int = 20,
     ) -> list[dict]:
+        self._require_listing_key()
         client = await self._ensure_client()
         params: dict[str, Any] = {"limit": limit}
         if asset_class:
@@ -67,6 +102,7 @@ class MarketplaceBridge:
         return resp.json().get("results", [])
 
     async def get_listing(self, slug: str) -> dict:
+        self._require_listing_key()
         client = await self._ensure_client()
         resp = await client.get(f"/api/v1/listings/{slug}/")
         if resp.status_code == 404:
@@ -75,12 +111,14 @@ class MarketplaceBridge:
         return resp.json()
 
     async def publish_listing(self, data: dict) -> dict:
+        self._require_listing_key()
         client = await self._ensure_client()
         resp = await client.post("/api/v1/listings/", json=data)
         self._check_response(resp)
         return resp.json()
 
     async def update_listing(self, slug: str, data: dict) -> dict:
+        self._require_listing_key()
         client = await self._ensure_client()
         resp = await client.patch(f"/api/v1/listings/{slug}/", json=data)
         if resp.status_code == 404:
@@ -91,6 +129,7 @@ class MarketplaceBridge:
     # ── Subscriptions ─────────────────────────────────────────────
 
     async def subscribe(self, slug: str, broker: str, mode: str = "paper") -> dict:
+        self._require_listing_key()
         client = await self._ensure_client()
         resp = await client.post(
             f"/api/v1/listings/{slug}/subscribe/",
@@ -104,6 +143,7 @@ class MarketplaceBridge:
         return resp.json()
 
     async def unsubscribe(self, slug: str) -> bool:
+        self._require_listing_key()
         client = await self._ensure_client()
         resp = await client.post(f"/api/v1/listings/{slug}/unsubscribe/")
         if resp.status_code == 404:
@@ -111,6 +151,7 @@ class MarketplaceBridge:
         return resp.status_code in (200, 204)
 
     async def list_subscriptions(self) -> list[dict]:
+        self._require_listing_key()
         client = await self._ensure_client()
         resp = await client.get("/api/v1/subscriptions/")
         self._check_response(resp)
@@ -119,6 +160,8 @@ class MarketplaceBridge:
     # ── Metrics Ingestion ─────────────────────────────────────────
 
     async def ingest_metrics(self, slug: str, metrics: dict) -> bool:
+        self._require_listing_key()
+        self._require_ingest_key()
         client = await self._ensure_client()
         resp = await client.post(
             f"/api/v1/listings/{slug}/metrics/",

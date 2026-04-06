@@ -97,6 +97,10 @@ class GatingConfig:
     mcpt_permutations: int = 1000
     mcpt_max_p_value: float = 0.05
     require_walk_forward: bool = True
+    # Marketplace integrity: when True, MCPT must pass (not just warn) for validate() to return passed.
+    require_mcpt: bool = True
+    # When True, paper_trading gate must pass (Django-verified paper phase) before publish-tier validation.
+    require_paper_graduation: bool = False
 
 
 @dataclass

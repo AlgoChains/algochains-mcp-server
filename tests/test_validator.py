@@ -69,6 +69,38 @@ def test_mcpt_not_significant():
         "mcpt": {"p_value": 0.15, "permutations": 500},
     })
     assert result.gate_results["mcpt"]["passed"] is False
+    assert result.passed is False
+
+
+def test_missing_mcpt_rejected_when_required():
+    v = StrategyValidator(GatingConfig(require_walk_forward=False, require_mcpt=True))
+    result = v.validate({
+        "symbol": "AAPL",
+        "strategy_type": "momentum",
+        "timeframe": "day",
+        "oos_sharpe": 2.0,
+        "oos_trades": 100,
+        "is_sharpe": 2.5,
+        "max_drawdown_pct": 12.0,
+    })
+    assert result.gate_results["mcpt"]["passed"] is False
+    assert result.passed is False
+    assert any("MCPT" in e for e in result.errors)
+
+
+def test_require_mcpt_off_allows_exploratory_validation():
+    v = StrategyValidator(GatingConfig(require_walk_forward=False, require_mcpt=False))
+    result = v.validate({
+        "symbol": "AAPL",
+        "strategy_type": "momentum",
+        "timeframe": "day",
+        "oos_sharpe": 2.0,
+        "oos_trades": 100,
+        "is_sharpe": 2.5,
+        "max_drawdown_pct": 12.0,
+    })
+    assert result.gate_results["mcpt"]["passed"] is False
+    assert result.passed is True
 
 
 def test_schema_missing_fields():
@@ -101,6 +133,8 @@ if __name__ == "__main__":
     test_low_sharpe_rejected()
     test_overfit_detected()
     test_mcpt_not_significant()
+    test_missing_mcpt_rejected_when_required()
+    test_require_mcpt_off_allows_exploratory_validation()
     test_schema_missing_fields()
     test_tier_classification()
-    print("All 6 tests passed!")
+    print("All tests passed!")

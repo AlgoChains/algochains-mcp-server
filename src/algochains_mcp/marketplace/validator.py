@@ -78,6 +78,9 @@ class StrategyValidator:
         result.gate_results["mcpt"] = g4
         if not g4["passed"]:
             result.warnings.extend(g4.get("warnings", []))
+            if self.cfg.require_mcpt:
+                result.passed = False
+                result.errors.extend(g4.get("errors", []))
 
         # Gate 5: Walk-forward consistency
         g5 = self._gate_walk_forward(submission)
@@ -90,7 +93,10 @@ class StrategyValidator:
         g6 = self._gate_paper_trading(submission)
         result.gate_results["paper_trading"] = g6
         if not g6["passed"]:
-            result.warnings.append("Paper trading graduation pending")
+            result.warnings.extend(g6.get("warnings", []))
+            if self.cfg.require_paper_graduation:
+                result.passed = False
+                result.errors.extend(g6.get("warnings", []))
 
         # Compute composite score
         result.score = self._compute_score(result)
@@ -162,13 +168,15 @@ class StrategyValidator:
     def _gate_mcpt(self, s: dict) -> dict:
         mcpt = s.get("mcpt", {})
         if not mcpt:
-            return {"passed": False, "warnings": ["No MCPT data provided — cannot verify statistical significance"]}
+            msg = "No MCPT data provided — cannot verify statistical significance"
+            return {"passed": False, "errors": [msg], "warnings": [msg]}
 
         p_value = mcpt.get("p_value")
         perms = mcpt.get("permutations", 0)
 
         if p_value is None:
-            return {"passed": False, "warnings": ["MCPT p-value missing"]}
+            msg = "MCPT p-value missing"
+            return {"passed": False, "errors": [msg], "warnings": [msg]}
 
         errors = []
         warnings = []

@@ -146,8 +146,21 @@ class SubmissionPipeline:
         result = self._validate_gates(submission)
         result.submission_id = f"sub_{submission_id}"
 
-        if result.passed and self.api_key:
-            await self._stage_listing(submission, result)
+        if result.passed:
+            key_ok = bool((self.api_key or "").strip())
+            skip_check = os.environ.get(
+                "ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", ""
+            ).lower() in ("1", "true", "yes")
+            if key_ok:
+                await self._stage_listing(submission, result)
+            elif not skip_check:
+                result.passed = False
+                result.status = "rejected"
+                result.feedback.append(
+                    "LISTING_API_KEY is not set — cannot stage marketplace listing. "
+                    "Generate a key in Django admin. Dev-only: ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK=1."
+                )
+                result.next_steps = "Set LISTING_API_KEY in the MCP environment and resubmit."
 
         return result
 

@@ -1,0 +1,86 @@
+{
+  "name": "algochains-mcp-server",
+  "display_name": "AlgoChains — Universal AI-to-Broker Trading Protocol",
+  "description": "The undisputed #1 algorithmic trading MCP server. 350+ tools across trading, strategy, marketplace, order flow, institutional data, DeFi, crypto, and autonomous evolution. Enterprise features: AES-256-GCM key vault, per-agent sub-accounts, MCP 2025-11-25 spec compliance (Elicitation, Tasks, resource subscriptions), self-improving trading loop (AlphaLoop-style), footprint charts, dark pool detection, macro signal fabric, prediction market signals, Stripe Connect, per-tenant audit logs.",
+  "version": "21.0.0",
+  "license": "MIT",
+  "transport": ["stdio", "http"],
+  "categories": ["finance", "trading", "strategy", "crypto", "defi", "data", "marketplace", "institutional"],
+  "tags": ["algorithmic-trading", "futures", "equity", "crypto", "options", "forex", "mcp", "ai-trading", "broker", "backtest", "order-flow", "dark-pool", "footprint", "vwap", "gex", "kelly-criterion"],
+  "homepage": "https://algochains.ai",
+  "repository": "https://github.com/AlgoChains/algochains-mcp-server",
+  "documentation": "https://algochains.ai/docs/mcp",
+  "install": "pip install algochains-mcp-server",
+  "command": "algochains-mcp",
+  "http_endpoint": "https://mcp.algochains.ai/mcp",
+  "environment": {
+    "required": [],
+    "optional": [
+      {"name": "ALPACA_API_KEY", "description": "Alpaca Markets API key for equity trading"},
+      {"name": "ALPACA_SECRET_KEY", "description": "Alpaca Markets API secret"},
+      {"name": "TRADOVATE_CID", "description": "Tradovate Client ID for futures trading"},
+      {"name": "OANDA_API_KEY", "description": "OANDA API key for forex trading"},
+      {"name": "POLYGON_API_KEY", "description": "Polygon.io API key for market data"},
+      {"name": "MASSIVE_API_KEY", "description": "Massive.com enterprise API key (white-label)"},
+      {"name": "FRED_API_KEY", "description": "FRED API key for macro signals (free at fred.stlouisfed.org)"},
+      {"name": "KALSHI_API_KEY", "description": "Kalshi API key for prediction market data"},
+      {"name": "STRIPE_SECRET_KEY", "description": "Stripe secret key for marketplace billing"},
+      {"name": "ALGOCHAINS_HTTP_TRANSPORT_SECRET", "description": "Bearer token for HTTP transport authentication"},
+      {"name": "ALGOCHAINS_EVOLUTION_MODE", "description": "Set to 'enabled' to activate autonomous strategy evolution daemon"}
+    ]
+  },
+  "capabilities": {
+    "trading": {
+      "brokers": ["alpaca", "tradovate", "oanda", "ibkr", "traderspost", "quantconnect"],
+      "asset_classes": ["equities", "futures", "forex", "crypto", "options", "etf"],
+      "order_types": ["market", "limit", "stop", "stop_limit", "trailing_stop", "oco", "bracket"]
+    },
+    "strategy": {
+      "backtest_engines": ["rust_tick_engine", "python_vectorized", "quantconnect_lean"],
+      "optimization": "optuna_bayesian",
+      "walk_forward": true,
+      "mcpt_validation": true
+    },
+    "marketplace": {
+      "listing": true,
+      "copy_trading": true,
+      "revenue_split": "70/30",
+      "billing": "stripe_connect"
+    },
+    "order_flow": {
+      "footprint_charts": true,
+      "cumulative_delta": true,
+      "volume_profile": true,
+      "dark_pool_detection": true,
+      "absorption_detection": true
+    },
+    "institutional_data": {
+      "earnings_nlp": true,
+      "prediction_markets": ["polymarket", "kalshi"],
+      "macro_signals": ["yield_curve", "credit_spread", "vix", "pmi", "recession_probability"],
+      "dark_pool_source": ["polygon_io", "finra_ats"]
+    },
+    "autonomous": {
+      "evolution_daemon": true,
+      "episodic_memory": true,
+      "rl_reward_model": true,
+      "lessons_injection": true
+    },
+    "security": {
+      "key_vault": "aes256_gcm_scrypt",
+      "per_agent_isolation": true,
+      "account_protection_guards": 12,
+      "circuit_breakers": true
+    },
+    "mcp_spec": {
+      "version": "2025-11-25",
+      "elicitation": true,
+      "tasks_durable": true,
+      "resource_subscriptions": true,
+      "sampling_with_tools": true
+    }
+  },
+  "tool_count": 350,
+  "prompt_count": 9,
+  "resource_count": 17
+}

@@ -282,7 +282,39 @@ class HealthChecker:
             print(f"  {_info('HTTP transport not installed. pip install algochains-mcp[http]')}")
             self._add("http_transport", passed=True, critical=False, message="HTTP transport not installed (optional)")
 
-    # ── 8. Strategy Templates ─────────────────────────────────────────────────
+    # ── 8. Marketplace keys (strict mode) ───────────────────────────────────
+    def check_marketplace_keys_strict(self) -> None:
+        print(f"\n{BOLD}── Marketplace API Keys (strict) ──{RESET}")
+        strict = os.environ.get("ALGOCHAINS_MARKETPLACE_STRICT", "").lower() in ("1", "true", "yes")
+        skip = os.environ.get("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", "").lower() in ("1", "true", "yes")
+        if not strict:
+            print(f"  {_info('ALGOCHAINS_MARKETPLACE_STRICT not set — listing/ingest keys optional for health exit code')}")
+            print(f"  {_info('Set ALGOCHAINS_MARKETPLACE_STRICT=1 in CI before publish/ingest jobs')}")
+            self._add("marketplace_keys_strict", passed=True, critical=False, message="Strict check disabled")
+            return
+        if skip:
+            print(f"  {_warn('ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK set — bypassing strict key check')}")
+            self._add("marketplace_keys_strict", passed=True, critical=False, message="Skipped (dev bypass)")
+            return
+        listing = (os.environ.get("LISTING_API_KEY") or "").strip()
+        ingest = (os.environ.get("METRICS_INGEST_API_KEY") or "").strip()
+        ok = bool(listing) and bool(ingest)
+        if listing:
+            print(f"  {_ok('LISTING_API_KEY is set')}")
+        else:
+            print(f"  {_fail('LISTING_API_KEY missing (required when ALGOCHAINS_MARKETPLACE_STRICT=1)')}")
+        if ingest:
+            print(f"  {_ok('METRICS_INGEST_API_KEY is set')}")
+        else:
+            print(f"  {_fail('METRICS_INGEST_API_KEY missing (required when ALGOCHAINS_MARKETPLACE_STRICT=1)')}")
+        self._add(
+            "marketplace_keys_strict",
+            passed=ok,
+            critical=True,
+            message="Both marketplace keys present" if ok else "Set LISTING_API_KEY and METRICS_INGEST_API_KEY",
+        )
+
+    # ── 9. Strategy Templates ─────────────────────────────────────────────────
     def check_strategy_templates(self) -> None:
         print(f"\n{BOLD}── Strategy Templates ──{RESET}")
         try:
@@ -343,6 +375,7 @@ class HealthChecker:
         await self.check_django_api()
         self.check_http_transport()
         self.check_strategy_templates()
+        self.check_marketplace_keys_strict()
 
         return self.print_summary()
 

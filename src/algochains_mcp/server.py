@@ -1,15 +1,19 @@
 """
-AlgoChains MCP Server v18.0 — institutional-grade trading platform.
+AlgoChains MCP Server v20.0 — institutional-grade trading platform.
 
-242 tools across 12 domains (V10–V18), with smart tiered exposure:
+227 tools across 14 domains (V8–V20), with smart tiered exposure:
 
   SMART MODE (default, ALGOCHAINS_TOOL_MODE=smart):
-    25 Tier 1 tools exposed directly — trading, data, strategy, intent, meta-tools.
-    210+ Tier 2 tools discoverable via discover_tools → execute_dynamic_tool.
+    38 Tier 1 tools exposed directly — trading, data, strategy, intent, meta-tools.
+    189 Tier 2 tools discoverable via discover_tools → execute_dynamic_tool.
     ~4K tokens vs ~40K+. Works within Cursor (80-tool limit) and Windsurf.
 
   FULL MODE (ALGOCHAINS_TOOL_MODE=full):
-    All 242 tools exposed. For clients with their own lazy loading (Claude Code).
+    All 227 tools exposed. For clients with their own lazy loading (Claude Code).
+
+V20.0 additions: Account Protection (13 pre-trade guards), Builder SDK (3.09B+ row
+data warehouse, 7-gate MCPT validation pipeline), memory-safe architecture (OOM
+prevention, bounded caches, concurrency semaphores), mcp_tool_manifest resource.
 
 V17.1 additions (MCP 2025-06-18 spec compliance):
   - Tool Behavior Annotations on ALL tools (readOnly/destructive/idempotent/openWorld)
@@ -71,6 +75,7 @@ from .middleware import (
 # ─── V20 Memory Safety — import first so we can monitor from startup ─────────
 # Memory safety is lightweight and has no heavy sub-deps.
 from .memory_safety import get_memory_monitor, MemoryMonitor
+from .tool_manifest import build_manifest
 
 # ─── V20 Account Protection — lightweight, no ML deps ───────────────────────
 from .account_protection.engine import AccountProtectionEngine, ProtectionConfig
@@ -216,15 +221,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 logger = logging.getLogger("algochains_mcp.server")
 
 SERVER_INSTRUCTIONS = (
-    "AlgoChains MCP Server v19 — institutional-grade trading platform with 262 tools across "
+    "AlgoChains MCP Server v20 — institutional-grade trading platform with 227 tools across "
     "market data, trading, strategy building, ML/AI, execution, analytics, alt data, DeFi, cloud SaaS, "
-    "intent-based trading, and V19 alpha engines. In smart mode (default), ~25 core tools are exposed. "
-    "Use 'discover_tools' to find 230+ additional tools. NEW in V19: Alpha engines for VWAP deviation, "
-    "dark pool detection, gamma exposure (GEX), volatility surface, cross-asset correlation, congressional/"
-    "insider trades, Kelly criterion sizing, unusual options flow, and tape reading. Use 'compute_gex' for "
-    "dealer gamma, 'unusual_options_activity' for smart money flow, 'read_tape' for tick-level momentum, "
-    "'compute_kelly' for optimal position sizing, and 'pair_trade_signal' for stat-arb. "
-    "For market data, use 'massive_*' tools. Set ALGOCHAINS_TOOL_MODE=full to expose all tools."
+    "intent-based trading, V19 alpha engines, and V20 account protection + builder SDK. "
+    "In smart mode (default), 38 Tier-1 tools are exposed. "
+    "Use 'discover_tools' to find 189 additional tools on demand. "
+    "V20 NEW: 13 pre-trade safety guards (check_order_safety), 3.09B-row data warehouse "
+    "(query_data_warehouse), 7-gate MCPT marketplace submission (submit_to_marketplace), "
+    "memory-safe architecture. V19 alpha engines: VWAP deviation, dark pool detection, "
+    "GEX dealer positioning, volatility surface, cross-asset correlation, congressional/insider "
+    "trades, Kelly criterion sizing, unusual options flow, tape reading. "
+    "For market data, use 'massive_*' tools. Set ALGOCHAINS_TOOL_MODE=full to expose all 227 tools."
 )
 
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
@@ -270,7 +277,7 @@ def _classify_tool_annotations() -> dict[str, ToolAnnotations]:
         "massive_call_api", "massive_get_endpoint_docs",
     }
     search_local = {
-        "discover_tools", "get_tool_details", "massive_search_endpoints",
+        "discover_tools", "get_tool_details", "mcp_tool_manifest", "massive_search_endpoints",
         "browse_strategy_marketplace", "list_models", "list_feature_sets",
         "list_datasets", "list_rl_agents",
     }
@@ -2597,6 +2604,9 @@ TOOLS = [
     Tool(name="execute_dynamic_tool", description="Execute any discovered tool by name with arguments. Use discover_tools first, then get_tool_details for the schema, then call this to execute.",
          inputSchema={"type": "object", "properties": {"tool_name": {"type": "string", "description": "Tool name to execute"}, "arguments": {"type": "object", "description": "Arguments matching the tool's inputSchema"}}, "required": ["tool_name", "arguments"]},
          annotations=ANNOT_TRADE_EXEC),
+    Tool(name="mcp_tool_manifest", description="Return JSON manifest of all registered MCP tools with implementation_status (full|partial|stub), required env vars, and Tier-1 flags. Use for CI, Onyx indexing, and honest agent planning — call before relying on V8-V20 tools.",
+         inputSchema={"type": "object", "properties": {"include_tool_details": {"type": "boolean", "default": True, "description": "If false, return summary counts only (smaller payload)"}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     # ═══════════════════════════════════════════════════════════════
     # V18: Intent-Based Trading + Autonomous Intelligence (8 tools)
     # ═══════════════════════════════════════════════════════════════
@@ -2744,16 +2754,19 @@ TOOLS = [
 #   - Cursor hard limit: 80 tools. Windsurf: context-bound.
 #
 # Modes (ALGOCHAINS_TOOL_MODE env var):
-#   "smart"  — Tier 1 only (25 core tools). 210+ discoverable via meta-tools. DEFAULT.
-#   "full"   — All 242 tools exposed. Legacy mode for clients that manage their own filtering.
+#   "smart"  — Tier 1 only (38 core tools). 189 discoverable via meta-tools. DEFAULT.
+#   "full"   — All 227 tools exposed. For clients that manage their own filtering.
 #
 # Tier 1 tools are the minimum set to be productive:
 #   - 3 meta-tools (discover, detail, execute) — gateway to everything else
-#   - 4 Massive data tools — market data pipeline
+#   - 5 Massive data tools — market data pipeline
 #   - 6 trading essentials — place/cancel/close/account/positions/orders
 #   - 4 strategy tools — backtest, validate, optimize, deploy
 #   - 2 portfolio tools — portfolio summary, quotes
 #   - 1 connectivity — connect_broker
+#   - 4 V18 intent + regime tools
+#   - 4 V20 account protection + builder SDK tools
+#   - 1 manifest tool
 # ═══════════════════════════════════════════════════════════════════
 
 TIER1_TOOL_NAMES = {
@@ -2794,6 +2807,7 @@ TIER1_TOOL_NAMES = {
     "get_protection_config",
     "submit_to_marketplace",
     "query_data_warehouse",
+    "mcp_tool_manifest",
 }
 
 
@@ -3073,53 +3087,27 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     # ── Marketplace (real HTTP bridge) ──────────────────────
     elif name == "browse_marketplace":
         bridge = _get_bridge()
-        try:
-            listings = await bridge.browse_listings(
-                asset_class=arguments.get("asset_class"),
-                strategy_type=arguments.get("strategy_type"),
-                min_sharpe=arguments.get("min_sharpe"),
-                limit=arguments.get("limit", 20),
-            )
-            return _text({"count": len(listings), "listings": listings})
-        except Exception:
-            cfg = _config or load_config()
-            return _text({
-                "marketplace_url": f"{cfg.marketplace.django_url}/marketplace/",
-                "note": "API not reachable — browse the marketplace at this URL.",
-                "filters": {k: v for k, v in arguments.items() if v},
-            })
+        listings = await bridge.browse_listings(
+            asset_class=arguments.get("asset_class"),
+            strategy_type=arguments.get("strategy_type"),
+            min_sharpe=arguments.get("min_sharpe"),
+            limit=arguments.get("limit", 20),
+        )
+        return _text({"count": len(listings), "listings": listings})
 
     elif name == "get_listing_detail":
         bridge = _get_bridge()
-        try:
-            listing = await bridge.get_listing(arguments["slug"])
-            return _text(listing)
-        except Exception:
-            cfg = _config or load_config()
-            return _text({
-                "listing_url": f"{cfg.marketplace.django_url}/bots/{arguments['slug']}/",
-                "slug": arguments["slug"],
-            })
+        listing = await bridge.get_listing(arguments["slug"])
+        return _text(listing)
 
     elif name == "subscribe_to_bot":
         bridge = _get_bridge()
-        try:
-            result = await bridge.subscribe(
-                slug=arguments["slug"],
-                broker=arguments["broker"],
-                mode=arguments.get("mode", "paper"),
-            )
-            return _text(result)
-        except Exception:
-            cfg = _config or load_config()
-            return _text({
-                "action": "subscribe",
-                "slug": arguments["slug"],
-                "broker": arguments["broker"],
-                "mode": arguments.get("mode", "paper"),
-                "subscribe_url": f"{cfg.marketplace.django_url}/bots/{arguments['slug']}/subscribe/",
-                "note": "Subscription requires authentication on algochains.ai",
-            })
+        result = await bridge.subscribe(
+            slug=arguments["slug"],
+            broker=arguments["broker"],
+            mode=arguments.get("mode", "paper"),
+        )
+        return _text(result)
 
     # ── Strategy Submission & Validation ────────────────────
     elif name == "submit_strategy":
@@ -3136,10 +3124,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         })
 
     elif name == "check_validation_status":
+        # Validation is synchronous — results are returned immediately by submit_strategy.
+        # There is no async queue to poll. This tool surfaces that clearly.
         return _text({
             "submission_id": arguments["submission_id"],
-            "status": "pending_review",
-            "note": "Validation results are returned immediately from submit_strategy.",
+            "status": "not_applicable",
+            "error": (
+                "AlgoChains validation runs synchronously inside submit_strategy. "
+                "There is no separate status to poll — the full validation result is "
+                "returned in the submit_strategy response. Call submit_strategy to get "
+                "your validation result immediately."
+            ),
         })
 
     elif name == "get_validation_gates":
@@ -3192,6 +3187,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     # ── V4: Streaming ────────────────────────────────────────
     elif name == "stream_subscribe":
         from .streaming.manager import Subscription
+        StreamTopic = _lazy_import(".streaming.manager", "StreamTopic")
         mgr = _get_stream_manager()
         topic = StreamTopic(arguments["topic"])
         sub = Subscription(
@@ -3203,6 +3199,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text({"subscription_id": sub_id, "topic": topic.value, "status": "active"})
 
     elif name == "stream_snapshot":
+        StreamTopic = _lazy_import(".streaming.manager", "StreamTopic")
         mgr = _get_stream_manager()
         topic = StreamTopic(arguments["topic"])
         events = mgr.get_latest(topic, limit=arguments.get("limit", 20))
@@ -3239,6 +3236,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── V5: Portfolio Optimizer ──────────────────────────────
     elif name == "optimize_portfolio":
+        BotMetrics = _lazy_import(".portfolio.optimizer", "BotMetrics")
+        AllocationMethod = _lazy_import(".portfolio.optimizer", "AllocationMethod")
         optimizer = _get_portfolio_optimizer()
         bots = [
             BotMetrics(
@@ -3264,6 +3263,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(result.to_dict())
 
     elif name == "compare_allocations":
+        BotMetrics = _lazy_import(".portfolio.optimizer", "BotMetrics")
+        AllocationMethod = _lazy_import(".portfolio.optimizer", "AllocationMethod")
         optimizer = _get_portfolio_optimizer()
         bots = [
             BotMetrics(
@@ -3317,6 +3318,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text({"channel": ch, "status": "configured", "all_channels": notifier.configured_channels()})
 
     elif name == "send_notification":
+        NotificationEvent = _lazy_import(".notifications.push", "NotificationEvent")
+        NotificationChannel = _lazy_import(".notifications.push", "NotificationChannel")
+        NotificationPriority = _lazy_import(".notifications.push", "NotificationPriority")
+        Notification = _lazy_import(".notifications.push", "Notification")
         notifier = _get_notifier()
         event_str = arguments.get("event", "bot_status")
         event = NotificationEvent(event_str) if event_str != "custom" else NotificationEvent.BOT_STATUS
@@ -3332,6 +3337,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text({"notification": notification.to_dict(), "delivery": results})
 
     elif name == "get_notification_history":
+        NotificationEvent = _lazy_import(".notifications.push", "NotificationEvent")
         notifier = _get_notifier()
         event_filter = None
         if arguments.get("event"):
@@ -3354,6 +3360,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         })
 
     elif name == "get_market_data":
+        Interval = _lazy_import(".data_providers.base", "Interval")
         dreg = _get_data_registry()
         provider_name = arguments.get("provider")
         provider = dreg.get(provider_name) if provider_name else dreg.get_default()
@@ -3458,6 +3465,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── V7: Proprietary Dataset Builder ────────────────────────
     elif name == "build_dataset":
+        DatasetRequest = _lazy_import(".datasets.builder", "DatasetRequest")
         builder = _get_dataset_builder()
         req = DatasetRequest(
             symbol=arguments["symbol"],
@@ -3505,35 +3513,41 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── V8: Strategy Builder SDK ─────────────────────────────
     elif name == "create_strategy":
+        StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
         spec = StrategySpec.from_dict(arguments)
         validator = _get_spec_validator()
         validation = validator.validate(spec)
         return _text({"spec": spec.to_dict(), "validation": validation})
 
     elif name == "validate_strategy":
+        StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
         spec = StrategySpec.from_dict(arguments["spec"])
         validator = _get_spec_validator()
         return _text(validator.validate(spec))
 
     elif name == "backtest_strategy":
+        StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
         spec = StrategySpec.from_dict(arguments["spec"])
         runner = _get_backtest_runner()
         result = await runner.run(spec, capital=arguments.get("capital", 10000))
         return _text(result)
 
     elif name == "optimize_strategy":
+        StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
         spec = StrategySpec.from_dict(arguments["spec"])
         optimizer = _get_strategy_optimizer()
         result = await optimizer.optimize(spec, n_trials=arguments.get("n_trials", 100), metric=arguments.get("metric", "sharpe"))
         return _text(result)
 
     elif name == "walk_forward_test":
+        StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
         spec = StrategySpec.from_dict(arguments["spec"])
         wf = _get_walk_forward()
         result = await wf.run(spec, n_folds=arguments.get("n_folds", 5), train_pct=arguments.get("train_pct", 0.70))
         return _text(result)
 
     elif name == "deploy_strategy":
+        StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
         spec = StrategySpec.from_dict(arguments["spec"])
         deployer = _get_deployer()
         result = await deployer.deploy(spec, broker=arguments["broker"], mode=arguments.get("mode", "paper"), capital=arguments.get("capital", 10000))
@@ -4569,6 +4583,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(runner.get_capabilities())
 
     # ── V20: Memory Safety ───────────────────────────────────────
+    elif name == "mcp_tool_manifest":
+        cfg = _config or load_config()
+        include = arguments.get("include_tool_details", True)
+        manifest = build_manifest(
+            tool_names=[t.name for t in TOOLS],
+            tier1_names=set(TIER1_TOOL_NAMES),
+            tool_mode=cfg.tool_mode,
+        )
+        if not include:
+            manifest = {k: v for k, v in manifest.items() if k != "tools"}
+            manifest["tools_omitted"] = True
+            manifest["total_tools"] = len(TOOLS)
+        return _text(manifest)
+
     elif name == "get_memory_status":
         mon = get_memory_monitor()
         report = mon.get_report()
@@ -4588,6 +4616,12 @@ RESOURCES = [
         uri="algochains://tools/status",
         name="V17 Tool Mode Status",
         description="Current tool exposure mode (smart/full), Tier 1 tool count, total tool count, and index stats.",
+        mimeType="application/json",
+    ),
+    Resource(
+        uri="algochains://tools/manifest",
+        name="MCP Tool Implementation Manifest",
+        description="All tools with implementation_status (full|partial|stub), required env vars, Tier-1 flags. For CI and Onyx.",
         mimeType="application/json",
     ),
     Resource(
@@ -4744,6 +4778,15 @@ async def read_resource(uri: str) -> str:
             },
         }, indent=2)
 
+    elif uri == "algochains://tools/manifest":
+        cfg = _config or load_config()
+        manifest = build_manifest(
+            tool_names=[t.name for t in TOOLS],
+            tier1_names=set(TIER1_TOOL_NAMES),
+            tool_mode=cfg.tool_mode,
+        )
+        return json.dumps(manifest, indent=2)
+
     elif uri == "algochains://brokers/status":
         registry = _get_registry()
         configured = registry.list_configured()
@@ -4771,6 +4814,8 @@ async def read_resource(uri: str) -> str:
             "mcpt_max_p_value": g.mcpt_max_p_value,
             "mcpt_permutations": g.mcpt_permutations,
             "require_walk_forward": g.require_walk_forward,
+            "require_mcpt": g.require_mcpt,
+            "require_paper_graduation": g.require_paper_graduation,
             "min_paper_days": g.min_paper_days,
             "min_paper_trades": g.min_paper_trades,
         }, indent=2)

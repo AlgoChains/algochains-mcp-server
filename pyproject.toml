@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "algochains-mcp-server"
 version = "20.0.0"
-description = "AlgoChains MCP Server — Universal AI-to-broker trading protocol with 275+ tools, account protection (13 pre-trade safety guards), Builder SDK ($199/mo data warehouse + strategy submission), MCPT marketplace, BYOK keys, streaming, portfolio optimization, and memory-safe architecture"
+description = "AlgoChains MCP Server — Universal AI-to-broker trading protocol with 227 tools, account protection (13 pre-trade safety guards), Builder SDK (data warehouse + strategy submission), MCPT marketplace, BYOK keys, streaming, portfolio optimization, and memory-safe architecture"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -64,6 +64,7 @@ datasets = ["pandas>=2.0.0", "pyarrow>=14.0.0"]
 backtrader = ["backtrader>=1.9.78"]
 supabase = ["supabase>=2.0.0"]
 http = ["fastapi>=0.111.0", "uvicorn[standard]>=0.30.0"]
+optimize = ["optuna>=3.0.0"]
 
 [project.scripts]
 algochains-mcp = "algochains_mcp.server:main"
