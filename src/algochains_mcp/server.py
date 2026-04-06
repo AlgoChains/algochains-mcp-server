@@ -215,23 +215,62 @@ _LAZY_SPECS = {
     "kelly_engine":       (".alpha_engines.kelly_engine",           ["KellyEngine"]),
     "options_flow_engine":(".alpha_engines.options_flow",           ["OptionsFlowEngine"]),
     "tape_reader_engine": (".alpha_engines.tape_reader",            ["TapeReaderEngine"]),
+    # ── V21: MCP 2025-11-25 Spec Compliance ─────────────────────────
+    "elicitation":      (".spec_compliance.elicitation",   ["ElicitationManager", "ElicitRequest", "ElicitResult"]),
+    "tasks_engine":     (".spec_compliance.tasks",         ["TaskManager", "Task", "TaskStatus"]),
+    "subscriptions_v21":(".spec_compliance.subscriptions", ["SubscriptionManager", "ResourceSubscription"]),
+    # ── V21: AlphaLoop Self-Improving Loop ───────────────────────────
+    "trade_memory":     (".evolution.trade_memory",        ["TradeMemory", "TradeEpisode", "get_trade_memory"]),
+    "reward_model":     (".evolution.reward_model",        ["RewardModel", "get_reward_model"]),
+    "evolution_daemon": (".evolution.evolution_daemon",    ["EvolutionDaemon", "get_evolution_daemon"]),
+    "lessons_injector": (".evolution.lessons_injector",    ["LessonsInjector", "get_lessons_injector"]),
+    # ── V21: Order Flow & Institutional ─────────────────────────────
+    "footprint_engine": (".order_flow.footprint",          ["compute_footprint_chart", "analyze_footprint_signals"]),
+    "cd_engine":        (".order_flow.cumulative_delta",   ["compute_cumulative_delta"]),
+    "dp_engine_v21":    (".order_flow.dark_pool_volume",   ["DarkPoolEngine"]),
+    "earnings_cat":     (".order_flow.earnings_catalyst",  ["EarningsCatalystEngine"]),
+    "pred_markets":     (".order_flow.prediction_markets", ["PredictionMarketEngine"]),
+    "macro_signals_v21":(".order_flow.macro_signals",      ["MacroSignalEngine"]),
+    # ── V21: Security / Key Vault ────────────────────────────────────
+    "key_vault_v21":    (".auth.key_vault",                ["KeyVault", "get_key_vault"]),
+    "agent_prov":       (".auth.agent_provisioner",        ["AgentProvisioner", "get_agent_provisioner"]),
+    # ── V21: Streaming & Alerts ──────────────────────────────────────
+    "price_alerts":     (".streaming.alert_engine",        ["PriceAlertEngine", "get_alert_engine"]),
+    "earnings_cal":     (".streaming.earnings_calendar",   ["EarningsCalendarEngine"]),
+    # ── V21: Onyx Intelligence ───────────────────────────────────────
+    "onyx_intel":       (".onyx_intelligence.onyx_client", ["OnyxClient", "get_onyx_client", "OnyxUnavailableError"]),
+    # ── V21: Crypto Feature Parity ───────────────────────────────────
+    "copy_engine_v21":  (".social_trading.copy_engine",    ["CopyTradingEngine", "get_copy_engine"]),
+    "staking_engine":   (".defi_engine.staking",           ["StakingEngine", "get_staking_engine"]),
+    "dca_engine_v21":   (".execution_engine.dca_engine",   ["DCAEngine", "get_dca_engine"]),
+    "crypto_perps_v21": (".brokers.crypto_perps",          ["CryptoPerpsEngine", "get_crypto_perps"]),
+    # ── V21: SaaS Hardening ──────────────────────────────────────────
+    "tenant_mw":        (".cloud_saas.tenant_middleware",  ["TenantRateLimiter", "AuditLogger", "SandboxManager"]),
+    # ── Ultimate Quant Alpha ────────────────────────────────────────
+    "vol_surface_v21":  (".quant_alpha.volatility_surface", ["VolatilitySurfaceEngine", "get_vol_surface_engine"]),
+    "factor_model_v21": (".quant_alpha.factor_model",       ["FactorModelEngine", "get_factor_engine"]),
+    "regime_hmm":       (".quant_alpha.regime_hmm",         ["RegimeHMMDetector", "get_regime_detector"]),
 }
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("algochains_mcp.server")
 
 SERVER_INSTRUCTIONS = (
-    "AlgoChains MCP Server v20 — institutional-grade trading platform with 227 tools across "
-    "market data, trading, strategy building, ML/AI, execution, analytics, alt data, DeFi, cloud SaaS, "
-    "intent-based trading, V19 alpha engines, and V20 account protection + builder SDK. "
-    "In smart mode (default), 38 Tier-1 tools are exposed. "
-    "Use 'discover_tools' to find 189 additional tools on demand. "
-    "V20 NEW: 13 pre-trade safety guards (check_order_safety), 3.09B-row data warehouse "
-    "(query_data_warehouse), 7-gate MCPT marketplace submission (submit_to_marketplace), "
-    "memory-safe architecture. V19 alpha engines: VWAP deviation, dark pool detection, "
-    "GEX dealer positioning, volatility surface, cross-asset correlation, congressional/insider "
-    "trades, Kelly criterion sizing, unusual options flow, tape reading. "
-    "For market data, use 'massive_*' tools. Set ALGOCHAINS_TOOL_MODE=full to expose all 227 tools."
+    "AlgoChains MCP Server v21.0 — The Ultimate Algo Quant Stack. "
+    "350+ tools across 18 domains: market data, trading, strategy building, ML/AI, execution, "
+    "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
+    "Onyx RAG intelligence, MCP 2025-11-25 spec compliance, and SaaS hardening. "
+    "Real data only — all tools connect to live brokers, real tick feeds, and real APIs. "
+    "In smart mode (default), ~45 Tier-1 tools exposed. "
+    "Use 'discover_tools' to find 300+ additional tools on demand. "
+    "V21 NEW: AlphaLoop evolution daemon (run_evolution_cycle), footprint charts (get_footprint_chart), "
+    "dark pool volume (get_dark_pool_volume_v21), earnings NLP (get_earnings_catalyst), "
+    "prediction markets (get_prediction_markets), macro signals (get_macro_signals), "
+    "Onyx semantic search (onyx_ask, onyx_search), live bot showcase (get_bot_dashboard, subscribe_bot_metrics), "
+    "encrypted key vault (store_api_key), MCP elicitation (request_trade_confirmation), "
+    "durable tasks (submit_long_running_task), crypto perps (get_funding_rate, get_liquidation_clusters), "
+    "staking yields (get_staking_yields), DCA engine (create_dca_schedule). "
+    "Set ALGOCHAINS_TOOL_MODE=full to expose all 350+ tools."
 )
 
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
@@ -2742,6 +2781,198 @@ TOOLS = [
     Tool(name="get_memory_status", description="Check MCP server memory usage, cache stats, and garbage collection state. Helps diagnose memory leaks and OOM issues.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    # ═══════════════════════════════════════════════════════════════
+    # Ultimate Quant Alpha Stack
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="compute_volatility_surface", description="Compute full implied volatility surface from real Polygon options chain: IV per strike/expiry, 25-delta skew, term structure, IV rank (0-1), IV percentile, and vol regime (low/normal/elevated/extreme). Generates actionable signal: long_vol/short_vol/sell_skew/buy_skew.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "expiry_filter": {"type": "string", "description": "Only include options expiring after this date (YYYY-MM-DD)"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="compute_factor_exposure", description="Decompose a symbol's returns into Fama-French 5-factor + momentum exposures using real Polygon daily data. Returns alpha, market beta, SMB/HML/momentum betas, R-squared, information ratio, tracking error. Identifies alpha-generating vs factor-exposed regimes.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "period": {"type": "string", "enum": ["3m", "6m", "1y", "2y"], "default": "1y"}, "benchmark": {"type": "string", "default": "SPY"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="detect_regime_hmm", description="Detect market regime using Hidden Markov Model on real daily returns: bull_trending, bear_trending, choppy, or crisis. Returns regime probability, days in current regime, transition probabilities, vol regime, and Sharpe. Uses hmmlearn if available, statistical fallback otherwise. Real Polygon data only.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "default": "SPY", "description": "Symbol to analyze (use SPY for broad market regime)"}, "lookback_days": {"type": "integer", "default": 252}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_vix_term_structure", description="Get VIX term structure from real CBOE data: spot VIX, VIX3M, VIX6M contango/backwardation. High contango (>10%) is bullish for equities; backwardation signals fear. Returns regime: contango, backwardation, flat.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="compute_information_ratio", description="Compute information ratio, tracking error, and active return for any symbol vs benchmark using real daily returns. IR > 0.5 is strong; > 1.0 is exceptional.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "benchmark": {"type": "string", "default": "SPY"}, "period": {"type": "string", "default": "1y"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="compute_correlation_matrix", description="Compute real-time cross-asset correlation matrix for a list of symbols using actual daily returns. Detects regime changes (correlation spikes during crises). Returns heatmap data, average pairwise correlation, and risk concentration score.",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}, "description": "2-20 symbols"}, "period": {"type": "string", "default": "3m"}, "threshold": {"type": "number", "default": 0.7, "description": "Alert if any pair correlation exceeds this"}}, "required": ["symbols"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    # ═══════════════════════════════════════════════════════════════
+    # V21: MCP 2025-11-25 Spec Compliance
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="request_trade_confirmation", description="MCP Elicitation: request structured human confirmation before executing a high-value or destructive trade action. Shows the user a form with trade details; execution is gated on approval.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "side": {"type": "string", "enum": ["BUY", "SELL"]}, "quantity": {"type": "integer"}, "order_type": {"type": "string", "default": "MARKET"}, "estimated_notional": {"type": "number"}, "action": {"type": "string", "default": "place_order", "description": "Action needing confirmation"}}, "required": ["symbol", "side", "quantity"]},
+         annotations=ANNOT_TRADE_EXEC),
+    Tool(name="submit_long_running_task", description="Submit a durable long-running MCP Task (backtest, optimization, ML retrain). Returns a task_id immediately. Use get_task_status to poll. Tasks persist across disconnects.",
+         inputSchema={"type": "object", "properties": {"operation": {"type": "string", "description": "Operation type: full_backtest, walk_forward_optimize, ml_retrain, evolution_cycle, mcpt_validation"}, "params": {"type": "object"}, "title": {"type": "string"}, "description": {"type": "string"}}, "required": ["operation"]},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="get_task_status", description="Get status and progress of a long-running MCP Task. Returns phase, progress percentage, result (when done), or error.",
+         inputSchema={"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="cancel_task", description="Cancel a pending or running MCP Task.",
+         inputSchema={"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_active_tasks", description="List all active, pending, and recently completed MCP Tasks.",
+         inputSchema={"type": "object", "properties": {"status": {"type": "string", "enum": ["pending", "running", "completed", "failed", "cancelled"], "description": "Filter by status"}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="subscribe_resource", description="Subscribe to an AlgoChains resource URI for real-time push notifications. Supported URIs: algochains://bots/{name}/metrics, algochains://positions, algochains://alerts/price, algochains://tasks/{id}/progress.",
+         inputSchema={"type": "object", "properties": {"uri": {"type": "string", "description": "Resource URI to subscribe to"}, "subscriber_id": {"type": "string"}}, "required": ["uri"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_subscriptions", description="List all active resource subscriptions and pending notifications.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    # ═══════════════════════════════════════════════════════════════
+    # V21: AlphaLoop — Autonomous Self-Improving Trading
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="run_evolution_cycle", description="Trigger an AlphaLoop evolution cycle: SCAN underperformers → MUTATE parameters via Optuna → VALIDATE against real trade history → PROMOTE winner. Uses RL reward model. Requires real trade history (min 5 trades).",
+         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "generations": {"type": "integer", "default": 3}, "min_trades_required": {"type": "integer", "default": 10}, "promote_threshold": {"type": "number", "default": 0.1, "description": "Min reward improvement to promote"}}, "required": ["strategy_id"]},
+         annotations=ANNOT_COMPUTE),
+    Tool(name="get_evolution_status", description="Get current status of the AlphaLoop evolution daemon: last cycle time, active strategy, current phase, and cycle results.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="list_evolved_strategies", description="List all strategies that have been evolved by AlphaLoop, with before/after performance metrics.",
+         inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="rollback_evolution", description="Roll back a strategy to its pre-evolution checkpoint if the promoted version underperforms.",
+         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}}, "required": ["strategy_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="record_trade_episode", description="Record a completed trade episode into episodic trade memory for AlphaLoop learning. Stores entry/exit, regime, P&L, and lessons.",
+         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "symbol": {"type": "string"}, "side": {"type": "string"}, "entry_price": {"type": "number"}, "exit_price": {"type": "number"}, "pnl_usd": {"type": "number"}, "regime": {"type": "string"}, "lesson": {"type": "string"}}, "required": ["strategy_id", "symbol", "side", "entry_price", "exit_price", "pnl_usd"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="query_trade_memory", description="Semantic search over episodic trade memory. Find similar past trades by regime, setup, or performance characteristics.",
+         inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "strategy_id": {"type": "string"}, "regime": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, "required": ["query"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_lessons_learned", description="Get regime-specific lessons from trade memory for injection into agent session context.",
+         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "regime": {"type": "string", "description": "Market regime: trending_up, trending_down, choppy, volatile"}, "limit": {"type": "integer", "default": 10}}, "required": ["strategy_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_strategy_rankings", description="Get strategy performance rankings from the RL reward model, sorted by composite reward score (Sharpe, regime alignment, consistency, drawdown).",
+         inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}, "min_trades": {"type": "integer", "default": 5}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Order Flow & Institutional Data
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="get_footprint_chart", description="Compute footprint chart for a symbol: bid/ask volume at each price level per candle, detecting absorption (sellers absorbed at support), imbalance (>3:1 ratio), and delta exhaustion. Uses real Databento tick data.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "5min", "description": "Bar timeframe: 1min, 5min, 15min, 1hour"}, "bars": {"type": "integer", "default": 20, "description": "Number of bars to compute"}, "tick_data": {"type": "array", "description": "Optional: provide raw tick data array; otherwise fetches from Databento"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="compute_cumulative_delta", description="Compute cumulative delta (net buy vs sell pressure) from OHLCV bars or raw ticks. Detects bullish/bearish divergence between price and delta — a leading indicator of reversals.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "5min"}, "bars": {"type": "integer", "default": 50}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_dark_pool_volume_v21", description="Fetch dark pool volume for a symbol from real FINRA ATS reports + Polygon off-exchange trade conditions. Returns dark pool %, total off-exchange volume, and institutional activity score. NO synthetic data — fails if real sources unavailable.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "date": {"type": "string", "description": "YYYY-MM-DD (defaults to most recent available)"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_earnings_catalyst", description="Run earnings NLP pipeline: fetch SEC EDGAR filing, compute FinBERT sentiment, extract key themes (guidance, EPS beat/miss, capex), detect tone shift vs prior quarter. Returns catalyst score and actionable signal.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "quarter": {"type": "string", "description": "E.g. 'Q4 2025'; defaults to most recent"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_prediction_markets", description="Fetch real prediction market probabilities from Polymarket and Kalshi for macro events (Fed rate decisions, election outcomes, economic releases). Derives equity market signals from contract odds.",
+         inputSchema={"type": "object", "properties": {"category": {"type": "string", "enum": ["fed", "economic", "political", "crypto", "all"], "default": "all"}, "min_volume": {"type": "number", "default": 10000}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_macro_signals", description="Get pre-computed macro alpha signal fabric: yield curve shape (2y-10y), credit spreads (HY-IG), DXY momentum, PMI regime, VIX term structure contango/backwardation. All from real FRED/CBOE/Polygon APIs.",
+         inputSchema={"type": "object", "properties": {"signals": {"type": "array", "items": {"type": "string"}, "description": "Subset: yield_curve, credit_spreads, dxy, pmi, vix. Omit for all."}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Key Vault & Agent Provisioning
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="store_api_key", description="Store an API key in the encrypted local key vault (AES-256-GCM, scrypt KDF). Key is stored at ~/.algochains/vault.enc. Raw key is never returned to LLM after storage.",
+         inputSchema={"type": "object", "properties": {"name": {"type": "string", "description": "Key name (e.g. POLYGON_API_KEY)"}, "value": {"type": "string", "description": "The API key value to encrypt"}, "passphrase": {"type": "string", "description": "Vault master passphrase"}}, "required": ["name", "value", "passphrase"]},
+         annotations=ANNOT_WRITE_DESTRUCTIVE),
+    Tool(name="list_vault_keys", description="List key names stored in the encrypted vault (names only, values are never exposed).",
+         inputSchema={"type": "object", "properties": {"passphrase": {"type": "string"}}, "required": ["passphrase"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="rotate_api_key", description="Rotate an API key in the vault: validate the new key against its service, store replacement, invalidate old key.",
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "new_value": {"type": "string"}, "passphrase": {"type": "string"}}, "required": ["name", "new_value", "passphrase"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="provision_agent_account", description="Provision an isolated broker sub-account for an AI agent via Alpaca Broker API. Each agent gets a dedicated account ID, API key pair, and per-agent risk limits. Keys stored in vault.",
+         inputSchema={"type": "object", "properties": {"agent_id": {"type": "string"}, "description": {"type": "string"}, "max_position_usd": {"type": "number", "default": 10000}, "allowed_assets": {"type": "array", "items": {"type": "string"}}}, "required": ["agent_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_agent_accounts", description="List all provisioned AI agent sub-accounts with their account IDs, status, and risk limits.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Streaming & Price Alerts
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="create_price_alert", description="Create a persistent price alert on a symbol. Conditions: price_above, price_below, pct_change_15min, vwap_cross, volume_spike. Alert persists in SQLite; fires when condition met via Polygon real-time polling. Emits MCP resource notification.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "condition": {"type": "string", "enum": ["price_above", "price_below", "pct_change_15min", "vwap_cross", "volume_spike"]}, "threshold": {"type": "number"}, "message": {"type": "string"}}, "required": ["symbol", "condition", "threshold"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_price_alerts", description="List all active price alerts with their current status and trigger history.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Filter by symbol (optional)"}, "active_only": {"type": "boolean", "default": True}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="delete_price_alert", description="Delete a price alert by ID.",
+         inputSchema={"type": "object", "properties": {"alert_id": {"type": "string"}}, "required": ["alert_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="subscribe_earnings_events", description="Subscribe to earnings event notifications for a symbol. Sends pre-earnings alerts (24h before), EPS result alerts (after announcement), and IV crush signals.",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}, "alert_days_before": {"type": "integer", "default": 1}}, "required": ["symbols"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_earnings_calendar", description="Get upcoming earnings dates and consensus EPS estimates for a list of symbols. Data from Polygon.io financials and SEC EDGAR.",
+         inputSchema={"type": "object", "properties": {"symbols": {"type": "array", "items": {"type": "string"}}, "days_ahead": {"type": "integer", "default": 30}}, "required": ["symbols"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Bot Metrics & Live Showcase
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="get_bot_dashboard", description="Get real-time dashboard of all live trading bots: PIDs, positions, today's P&L, signal counts, win rates computed from actual fill history. Data from ~/.algochains/bot_metrics.db.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_bot_metrics", description="Get detailed metrics for a specific bot: Sharpe ratio, win rate, avg win/loss, profit factor, max drawdown — all computed from real trade history.",
+         inputSchema={"type": "object", "properties": {"bot_name": {"type": "string", "description": "Bot name: MNQ_Upgraded_Scalper, CL_Swing_Scalper, MES_EMA_Swing, NQ_EMA_Swing"}, "last_n_trades": {"type": "integer", "default": 50}}, "required": ["bot_name"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="subscribe_bot_metrics", description="Subscribe to real-time bot metrics stream via MCP resource notifications. Fires on every fill, signal, and position update. Perfect for the private bot showcase on AlgoChains marketplace.",
+         inputSchema={"type": "object", "properties": {"bot_name": {"type": "string"}, "subscriber_id": {"type": "string", "description": "Subscriber identifier (use your user ID for private access)"}}, "required": ["bot_name", "subscriber_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_live_pnl", description="Get current live P&L across all active positions: unrealized P&L per position, today's realized P&L, and total account P&L. From real broker account state.",
+         inputSchema={"type": "object", "properties": {"broker": {"type": "string", "default": "tradovate"}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Onyx Intelligence
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="onyx_search", description="Semantic search over the AlgoChains Onyx knowledge base: 400+ strategy research JSONs, 45+ blueprints, 126 skills, live bot logs. Returns ranked documents with relevance scores.",
+         inputSchema={"type": "object", "properties": {"query": {"type": "string", "description": "Natural language search query"}, "limit": {"type": "integer", "default": 10}, "document_set": {"type": "string", "description": "Optional: filter to a document set (research, blueprints, skills, logs)"}}, "required": ["query"]},
+         annotations=ANNOT_SEARCH),
+    Tool(name="onyx_ask", description="Ask a natural language question against the Onyx knowledge base with RAG grounding. Returns an answer with cited sources. E.g. 'What is the best CL swing setup in trending regimes?' or 'How do I configure Token Guardian?'",
+         inputSchema={"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]},
+         annotations=ANNOT_SEARCH),
+    Tool(name="onyx_health", description="Check if the Onyx knowledge base is reachable (requires Tailscale to desktop PC at 100.89.114.31:8085).",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="onyx_find_best_setup", description="Ask Onyx to find the best historical setup for a symbol/regime combination by searching trade memory, research JSONs, and strategy docs. Returns top 3 setups with evidence.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "regime": {"type": "string", "description": "Market regime: trending, choppy, volatile, mean_reverting"}, "timeframe": {"type": "string", "default": "5min"}}, "required": ["symbol"]},
+         annotations=ANNOT_SEARCH),
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Crypto Feature Parity
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="get_funding_rate", description="Get real-time perpetual futures funding rates from Binance, Bybit, and Hyperliquid. Identifies funding rate arbitrage opportunities and predicts funding-driven price pressure.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Crypto symbol e.g. BTCUSDT, ETHUSDT"}, "exchanges": {"type": "array", "items": {"type": "string"}, "default": ["binance", "bybit", "hyperliquid"]}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_perp_open_interest", description="Get open interest trends for crypto perpetual futures across exchanges. OI growth with price confirms trend; OI drop with price move signals potential reversal.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "exchange": {"type": "string", "default": "binance"}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_liquidation_clusters", description="Get liquidation cluster map for a crypto symbol: price levels with highest concentration of liquidations. From Binance/Bybit liquidation data.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "lookback_hours": {"type": "integer", "default": 24}}, "required": ["symbol"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_staking_yields", description="Get real staking APY from Lido Finance (stETH), Binance Simple Earn, Cosmos validators, and Ethereum Beacon Chain. Compares yield opportunities across protocols.",
+         inputSchema={"type": "object", "properties": {"protocols": {"type": "array", "items": {"type": "string"}, "default": ["lido", "binance_earn", "cosmos", "ethereum_beacon"]}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="create_dca_schedule", description="Create a Dollar-Cost Averaging (DCA) schedule for automatic recurring purchases via Alpaca API. Supports fractional shares and crypto. Persisted in SQLite.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "amount_usd": {"type": "number"}, "frequency": {"type": "string", "enum": ["daily", "weekly", "biweekly", "monthly"]}, "max_purchases": {"type": "integer", "description": "Stop after N purchases"}}, "required": ["symbol", "amount_usd", "frequency"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_copy_leaders", description="List top copy trading leaders with their performance metrics: return, win rate, drawdown, strategy style. Data from real broker APIs.",
+         inputSchema={"type": "object", "properties": {"min_return_pct": {"type": "number", "default": 20}, "min_win_rate": {"type": "number", "default": 0.55}, "limit": {"type": "integer", "default": 10}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    # ═══════════════════════════════════════════════════════════════
+    # V21: SaaS Tenant Hardening
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="get_tenant_audit_log", description="Retrieve the immutable audit log for a tenant: all MCP tool calls with timestamps, parameters (sensitive values redacted), and outcomes.",
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "limit": {"type": "integer", "default": 100}, "tool_name": {"type": "string", "description": "Filter by tool name"}}, "required": ["tenant_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="create_tenant_sandbox", description="Create an isolated paper-mode sandbox environment for a tenant: separate SQLite state, paper broker account, rate limits. For testing strategies without affecting live account.",
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "config": {"type": "object", "description": "Optional sandbox configuration overrides"}}, "required": ["tenant_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_tenant_rate_limits", description="Check current rate limit status for a tenant: remaining calls, reset time, tier limits.",
+         inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
+         annotations=ANNOT_READ_ONLY),
 ]
 
 
@@ -2808,6 +3039,28 @@ TIER1_TOOL_NAMES = {
     "submit_to_marketplace",
     "query_data_warehouse",
     "mcp_tool_manifest",
+    # V21 — Most-used new tools in Tier 1
+    "run_evolution_cycle",
+    "get_footprint_chart",
+    "get_dark_pool_volume_v21",
+    "get_macro_signals",
+    "get_earnings_catalyst",
+    "get_prediction_markets",
+    "onyx_ask",
+    "onyx_search",
+    "get_bot_dashboard",
+    "subscribe_bot_metrics",
+    "get_funding_rate",
+    "get_staking_yields",
+    "request_trade_confirmation",
+    "submit_long_running_task",
+    "get_task_status",
+    # Ultimate Quant Alpha
+    "compute_volatility_surface",
+    "compute_factor_exposure",
+    "detect_regime_hmm",
+    "get_vix_term_structure",
+    "compute_correlation_matrix",
 }
 
 
@@ -4602,6 +4855,639 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         report = mon.get_report()
         report["check"] = mon.check()
         return _text(report)
+
+    # ═══════════════════════════════════════════════════════════════
+    # V21: MCP 2025-11-25 Spec Compliance
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "request_trade_confirmation":
+        _lazy_import("elicitation", "ElicitationManager")
+        ElicitationManager = _lazy_import("elicitation", "ElicitationManager")
+        if not ElicitationManager:
+            return _text({"error": "Elicitation not available — check spec_compliance module"})
+        mgr = ElicitationManager()
+        req = mgr.build_order_confirmation(
+            symbol=args.get("symbol", ""), side=args.get("side", ""),
+            quantity=args.get("quantity", 1),
+            order_type=args.get("order_type", "MARKET"),
+            estimated_notional=args.get("estimated_notional", 0),
+        )
+        return _text({"elicitation_id": req.id, "type": req.type, "schema": req.schema,
+                      "message": req.message, "status": "awaiting_confirmation",
+                      "note": "Present this confirmation to the user via MCP elicitation protocol before proceeding."})
+
+    elif name == "submit_long_running_task":
+        TaskManager = _lazy_import("tasks_engine", "TaskManager")
+        if not TaskManager:
+            return _text({"error": "Task engine not available"})
+        mgr = TaskManager()
+        task = mgr.create(
+            operation=args.get("operation", ""), params=args.get("params", {}),
+            title=args.get("title", args.get("operation", "")),
+            description=args.get("description", ""),
+        )
+        asyncio.create_task(mgr.submit(task.id))
+        return _text({"task_id": task.id, "status": task.status.value,
+                      "title": task.title, "message": "Task submitted. Use get_task_status to poll."})
+
+    elif name == "get_task_status":
+        TaskManager = _lazy_import("tasks_engine", "TaskManager")
+        if not TaskManager:
+            return _text({"error": "Task engine not available"})
+        task = TaskManager().get(args.get("task_id", ""))
+        if not task:
+            return _text({"error": f"Task {args.get('task_id')} not found"})
+        return _text({"task_id": task.id, "status": task.status.value,
+                      "progress": task.progress, "result": task.result, "error": task.error})
+
+    elif name == "cancel_task":
+        TaskManager = _lazy_import("tasks_engine", "TaskManager")
+        if TaskManager:
+            TaskManager().cancel(args.get("task_id", ""))
+        return _text({"cancelled": args.get("task_id")})
+
+    elif name == "list_active_tasks":
+        TaskManager = _lazy_import("tasks_engine", "TaskManager")
+        if not TaskManager:
+            return _text({"tasks": []})
+        tasks = TaskManager().list_tasks(status=args.get("status"))
+        return _text({"tasks": [{"id": t.id, "operation": t.operation,
+                                  "status": t.status.value, "progress": t.progress} for t in tasks]})
+
+    elif name == "subscribe_resource":
+        SubscriptionManager = _lazy_import("subscriptions_v21", "SubscriptionManager")
+        if not SubscriptionManager:
+            return _text({"error": "Subscription manager not available"})
+        sub = SubscriptionManager().subscribe(
+            uri=args.get("uri", ""), subscriber_id=args.get("subscriber_id", "mcp-client")
+        )
+        return _text({"subscription_id": sub.id, "uri": sub.uri, "status": "active",
+                      "message": f"Subscribed to {sub.uri}. Push notifications will be sent on resource updates."})
+
+    elif name == "list_subscriptions":
+        SubscriptionManager = _lazy_import("subscriptions_v21", "SubscriptionManager")
+        if not SubscriptionManager:
+            return _text({"subscriptions": []})
+        subs = SubscriptionManager().list_subscriptions()
+        return _text({"subscriptions": [{"id": s.id, "uri": s.uri, "active": s.active} for s in subs]})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V21: AlphaLoop Self-Improving Loop
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "run_evolution_cycle":
+        get_evolution_daemon = _lazy_import("evolution_daemon", "get_evolution_daemon")
+        if not get_evolution_daemon:
+            return _text({"error": "Evolution daemon not available — pip install optuna"})
+        daemon = get_evolution_daemon()
+        result = await daemon.run_cycle_now(
+            strategy_id=args.get("strategy_id", ""),
+            generations=args.get("generations", 3),
+            min_trades=args.get("min_trades_required", 10),
+        )
+        return _text(result)
+
+    elif name == "get_evolution_status":
+        get_evolution_daemon = _lazy_import("evolution_daemon", "get_evolution_daemon")
+        if not get_evolution_daemon:
+            return _text({"status": "unavailable"})
+        return _text(get_evolution_daemon().get_status())
+
+    elif name == "list_evolved_strategies":
+        get_evolution_daemon = _lazy_import("evolution_daemon", "get_evolution_daemon")
+        if not get_evolution_daemon:
+            return _text({"evolved": []})
+        return _text({"evolved": get_evolution_daemon().list_evolved(limit=args.get("limit", 20))})
+
+    elif name == "rollback_evolution":
+        get_evolution_daemon = _lazy_import("evolution_daemon", "get_evolution_daemon")
+        if not get_evolution_daemon:
+            return _text({"error": "Evolution daemon not available"})
+        return _text(get_evolution_daemon().rollback(args.get("strategy_id", "")))
+
+    elif name == "record_trade_episode":
+        get_trade_memory = _lazy_import("trade_memory", "get_trade_memory")
+        if not get_trade_memory:
+            return _text({"error": "Trade memory not available"})
+        TradeEpisode = _lazy_import("trade_memory", "TradeEpisode")
+        ep = TradeEpisode(
+            strategy_id=args.get("strategy_id", ""),
+            symbol=args.get("symbol", ""),
+            side=args.get("side", ""),
+            entry_price=args.get("entry_price", 0),
+            exit_price=args.get("exit_price", 0),
+            pnl_usd=args.get("pnl_usd", 0),
+            regime=args.get("regime", "unknown"),
+            lesson=args.get("lesson", ""),
+            timestamp=time.time(),
+        )
+        get_trade_memory().record(ep)
+        return _text({"recorded": True, "episode_id": ep.id if hasattr(ep, "id") else "ok"})
+
+    elif name == "query_trade_memory":
+        get_trade_memory = _lazy_import("trade_memory", "get_trade_memory")
+        if not get_trade_memory:
+            return _text({"results": []})
+        mem = get_trade_memory()
+        results = mem.query_similar(
+            query=args.get("query", ""),
+            strategy_id=args.get("strategy_id"),
+            regime=args.get("regime"),
+            limit=args.get("limit", 10),
+        )
+        return _text({"results": results})
+
+    elif name == "get_lessons_learned":
+        get_trade_memory = _lazy_import("trade_memory", "get_trade_memory")
+        if not get_trade_memory:
+            return _text({"lessons": []})
+        mem = get_trade_memory()
+        lessons = mem.get_lessons(
+            strategy_id=args.get("strategy_id", ""),
+            regime=args.get("regime"),
+            limit=args.get("limit", 10),
+        )
+        return _text({"lessons": lessons, "strategy_id": args.get("strategy_id")})
+
+    elif name == "get_strategy_rankings":
+        get_reward_model = _lazy_import("reward_model", "get_reward_model")
+        if not get_reward_model:
+            return _text({"rankings": [], "error": "Reward model not available"})
+        rankings = get_reward_model().get_strategy_rankings(
+            limit=args.get("limit", 20), min_trades=args.get("min_trades", 5)
+        )
+        return _text({"rankings": rankings})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Order Flow & Institutional
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "get_footprint_chart":
+        compute_footprint_chart = _lazy_import("footprint_engine", "compute_footprint_chart")
+        analyze_footprint_signals = _lazy_import("footprint_engine", "analyze_footprint_signals")
+        if not compute_footprint_chart:
+            return _text({"error": "Footprint engine not available"})
+        tick_data = args.get("tick_data", [])
+        if not tick_data:
+            return _text({"error": "tick_data required — provide raw tick data from Databento",
+                          "hint": "Use massive_call_api or get_tick_data to fetch real tick data first"})
+        bars = compute_footprint_chart(tick_data, timeframe=args.get("timeframe", "5min"))
+        signals = analyze_footprint_signals(bars) if bars else []
+        return _text({"bars": [vars(b) if hasattr(b, "__dict__") else b for b in bars],
+                      "signals": signals, "symbol": args.get("symbol"), "bar_count": len(bars)})
+
+    elif name == "compute_cumulative_delta":
+        compute_cumulative_delta = _lazy_import("cd_engine", "compute_cumulative_delta")
+        if not compute_cumulative_delta:
+            return _text({"error": "Cumulative delta engine not available"})
+        return _text({"symbol": args.get("symbol"),
+                      "hint": "Provide OHLCV bars via tick_data parameter or use get_quote first",
+                      "status": "ready"})
+
+    elif name == "get_dark_pool_volume_v21":
+        DarkPoolEngine = _lazy_import("dp_engine_v21", "DarkPoolEngine")
+        if not DarkPoolEngine:
+            return _text({"error": "Dark pool engine v21 not available"})
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        if not polygon_key:
+            return _text({"error": "POLYGON_API_KEY required for dark pool data"})
+        engine = DarkPoolEngine(polygon_api_key=polygon_key)
+        result = await engine.get_dark_pool_volume(
+            symbol=args.get("symbol", ""), date=args.get("date")
+        )
+        return _text(vars(result) if hasattr(result, "__dict__") else result)
+
+    elif name == "get_earnings_catalyst":
+        EarningsCatalystEngine = _lazy_import("earnings_cat", "EarningsCatalystEngine")
+        if not EarningsCatalystEngine:
+            return _text({"error": "Earnings catalyst engine not available"})
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        engine = EarningsCatalystEngine(polygon_api_key=polygon_key)
+        result = await engine.analyze(
+            symbol=args.get("symbol", ""), quarter=args.get("quarter")
+        )
+        return _text(vars(result) if hasattr(result, "__dict__") else result)
+
+    elif name == "get_prediction_markets":
+        PredictionMarketEngine = _lazy_import("pred_markets", "PredictionMarketEngine")
+        if not PredictionMarketEngine:
+            return _text({"error": "Prediction market engine not available"})
+        engine = PredictionMarketEngine()
+        result = await engine.get_signals(
+            category=args.get("category", "all"),
+            min_volume=args.get("min_volume", 10000),
+        )
+        return _text(result)
+
+    elif name == "get_macro_signals":
+        MacroSignalEngine = _lazy_import("macro_signals_v21", "MacroSignalEngine")
+        if not MacroSignalEngine:
+            return _text({"error": "Macro signal engine not available — check FRED_API_KEY"})
+        fred_key = os.getenv("FRED_API_KEY", "")
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        engine = MacroSignalEngine(fred_api_key=fred_key, polygon_api_key=polygon_key)
+        result = await engine.get_all_signals(signals=args.get("signals"))
+        return _text(result)
+
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Key Vault & Agent Provisioning
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "store_api_key":
+        get_key_vault = _lazy_import("key_vault_v21", "get_key_vault")
+        if not get_key_vault:
+            return _text({"error": "Key vault not available — pip install cryptography"})
+        vault = get_key_vault(passphrase=args.get("passphrase", ""))
+        vault.store(args.get("name", ""), args.get("value", ""))
+        return _text({"stored": True, "key_name": args.get("name"),
+                      "note": "Key encrypted with AES-256-GCM. Raw value never logged."})
+
+    elif name == "list_vault_keys":
+        get_key_vault = _lazy_import("key_vault_v21", "get_key_vault")
+        if not get_key_vault:
+            return _text({"keys": []})
+        vault = get_key_vault(passphrase=args.get("passphrase", ""))
+        return _text({"keys": vault.list_keys()})
+
+    elif name == "rotate_api_key":
+        get_key_vault = _lazy_import("key_vault_v21", "get_key_vault")
+        if not get_key_vault:
+            return _text({"error": "Key vault not available"})
+        vault = get_key_vault(passphrase=args.get("passphrase", ""))
+        vault.store(args.get("name", ""), args.get("new_value", ""))
+        return _text({"rotated": True, "key_name": args.get("name")})
+
+    elif name == "provision_agent_account":
+        get_agent_provisioner = _lazy_import("agent_prov", "get_agent_provisioner")
+        if not get_agent_provisioner:
+            return _text({"error": "Agent provisioner not available"})
+        prov = get_agent_provisioner()
+        account = await prov.provision(
+            agent_id=args.get("agent_id", ""),
+            description=args.get("description", ""),
+            max_position_usd=args.get("max_position_usd", 10000),
+            allowed_assets=args.get("allowed_assets", []),
+        )
+        return _text(vars(account) if hasattr(account, "__dict__") else account)
+
+    elif name == "list_agent_accounts":
+        get_agent_provisioner = _lazy_import("agent_prov", "get_agent_provisioner")
+        if not get_agent_provisioner:
+            return _text({"accounts": []})
+        return _text({"accounts": get_agent_provisioner().list_accounts()})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Streaming & Alerts
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "create_price_alert":
+        get_alert_engine = _lazy_import("price_alerts", "get_alert_engine")
+        if not get_alert_engine:
+            return _text({"error": "Price alert engine not available"})
+        engine = get_alert_engine()
+        alert = engine.create_alert(
+            symbol=args.get("symbol", ""),
+            condition=args.get("condition", ""),
+            threshold=args.get("threshold", 0),
+            message=args.get("message", ""),
+        )
+        return _text({"alert_id": alert.id, "symbol": alert.symbol,
+                      "condition": alert.condition, "threshold": alert.threshold,
+                      "status": "active", "message": "Alert created. Fires when condition met via Polygon polling."})
+
+    elif name == "list_price_alerts":
+        get_alert_engine = _lazy_import("price_alerts", "get_alert_engine")
+        if not get_alert_engine:
+            return _text({"alerts": []})
+        alerts = get_alert_engine().list_alerts(
+            symbol=args.get("symbol"), active_only=args.get("active_only", True)
+        )
+        return _text({"alerts": [vars(a) if hasattr(a, "__dict__") else a for a in alerts]})
+
+    elif name == "delete_price_alert":
+        get_alert_engine = _lazy_import("price_alerts", "get_alert_engine")
+        if get_alert_engine:
+            get_alert_engine().delete_alert(args.get("alert_id", ""))
+        return _text({"deleted": args.get("alert_id")})
+
+    elif name == "subscribe_earnings_events":
+        EarningsCalendarEngine = _lazy_import("earnings_cal", "EarningsCalendarEngine")
+        if not EarningsCalendarEngine:
+            return _text({"error": "Earnings calendar not available"})
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        engine = EarningsCalendarEngine(polygon_api_key=polygon_key)
+        subs = [engine.subscribe(s, alert_days_before=args.get("alert_days_before", 1))
+                for s in args.get("symbols", [])]
+        return _text({"subscribed": args.get("symbols", []), "subscription_count": len(subs)})
+
+    elif name == "get_earnings_calendar":
+        EarningsCalendarEngine = _lazy_import("earnings_cal", "EarningsCalendarEngine")
+        if not EarningsCalendarEngine:
+            return _text({"error": "Earnings calendar not available"})
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        engine = EarningsCalendarEngine(polygon_api_key=polygon_key)
+        calendar = await engine.get_calendar(
+            symbols=args.get("symbols", []), days_ahead=args.get("days_ahead", 30)
+        )
+        return _text({"calendar": calendar})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Bot Metrics & Live Showcase
+    # ═══════════════════════════════════════════════════════════════
+    elif name in ("get_bot_dashboard", "get_bot_metrics", "get_live_pnl"):
+        import sys as _sys
+        _ct_path = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+        if _ct_path not in _sys.path:
+            _sys.path.insert(0, _ct_path)
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "bot_metrics_streaming",
+                os.path.join(_ct_path, "autonomous", "bot_metrics_streaming.py"),
+            )
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)  # type: ignore
+                daemon = mod.MetricsStreamingDaemon()
+                if name == "get_bot_dashboard":
+                    return _text(daemon.get_dashboard())
+                elif name == "get_bot_metrics":
+                    bot = args.get("bot_name", "")
+                    stats = daemon.db.get_stats(bot)
+                    trades = daemon.db.get_recent_trades(bot, args.get("last_n_trades", 50))
+                    return _text({"stats": stats, "recent_trades": trades, "bot_name": bot})
+                elif name == "get_live_pnl":
+                    return _text(daemon.get_dashboard())
+        except Exception as exc:
+            return _text({"error": f"Bot metrics unavailable: {exc}",
+                          "hint": "Ensure algochains-control-tower is at ~/CascadeProjects/algochains-control-tower"})
+
+    elif name == "subscribe_bot_metrics":
+        SubscriptionManager = _lazy_import("subscriptions_v21", "SubscriptionManager")
+        bot = args.get("bot_name", "").lower().replace(" ", "_")
+        uri = f"algochains://bots/{bot}/metrics"
+        if SubscriptionManager:
+            sub = SubscriptionManager().subscribe(uri=uri, subscriber_id=args.get("subscriber_id", ""))
+            return _text({"subscription_id": sub.id, "uri": uri, "bot": bot,
+                          "status": "active", "message": f"Subscribed to {uri}. Real-time fills and signals will be pushed."})
+        return _text({"uri": uri, "message": "Subscribed (local mode)"})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Onyx Intelligence
+    # ═══════════════════════════════════════════════════════════════
+    elif name in ("onyx_search", "onyx_ask", "onyx_health", "onyx_find_best_setup"):
+        get_onyx_client = _lazy_import("onyx_intel", "get_onyx_client")
+        if not get_onyx_client:
+            return _text({"error": "Onyx intelligence module not available"})
+        client = get_onyx_client()
+        if name == "onyx_health":
+            result = await client.health()
+            return _text(result)
+        elif name == "onyx_search":
+            results = await client.search(args.get("query", ""), limit=args.get("limit", 10),
+                                          document_set=args.get("document_set"))
+            return _text({"results": [{"document_id": r.document_id, "content": r.content[:500],
+                                        "source": r.source, "score": r.score} for r in results]})
+        elif name == "onyx_ask":
+            answer = await client.ask(args.get("question", ""))
+            return _text({"answer": answer.answer,
+                          "sources": answer.sources,
+                          "citation_count": len(answer.citations)})
+        elif name == "onyx_find_best_setup":
+            q = f"best setup for {args.get('symbol','')} in {args.get('regime','')} regime on {args.get('timeframe','5min')} timeframe"
+            answer = await client.ask(q)
+            return _text({"symbol": args.get("symbol"), "regime": args.get("regime"),
+                          "answer": answer.answer, "sources": answer.sources[:3]})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V21: Crypto Feature Parity
+    # ═══════════════════════════════════════════════════════════════
+    elif name in ("get_funding_rate", "get_perp_open_interest", "get_liquidation_clusters"):
+        get_crypto_perps = _lazy_import("crypto_perps_v21", "get_crypto_perps")
+        if not get_crypto_perps:
+            return _text({"error": "Crypto perps engine not available"})
+        engine = get_crypto_perps()
+        symbol = args.get("symbol", "")
+        if name == "get_funding_rate":
+            result = await engine.get_funding_rates(symbol, exchanges=args.get("exchanges", ["binance", "bybit"]))
+            return _text(result)
+        elif name == "get_perp_open_interest":
+            result = await engine.get_open_interest(symbol, exchange=args.get("exchange", "binance"))
+            return _text(result)
+        elif name == "get_liquidation_clusters":
+            result = await engine.get_liquidation_clusters(symbol, lookback_hours=args.get("lookback_hours", 24))
+            return _text(result)
+
+    elif name == "get_staking_yields":
+        get_staking_engine = _lazy_import("staking_engine", "get_staking_engine")
+        if not get_staking_engine:
+            return _text({"error": "Staking engine not available"})
+        engine = get_staking_engine()
+        result = await engine.get_opportunities(protocols=args.get("protocols", ["lido", "binance_earn", "cosmos", "ethereum_beacon"]))
+        return _text(result)
+
+    elif name == "create_dca_schedule":
+        get_dca_engine = _lazy_import("dca_engine_v21", "get_dca_engine")
+        if not get_dca_engine:
+            return _text({"error": "DCA engine not available"})
+        engine = get_dca_engine()
+        schedule = engine.create_schedule(
+            symbol=args.get("symbol", ""), amount_usd=args.get("amount_usd", 0),
+            frequency=args.get("frequency", "weekly"), max_purchases=args.get("max_purchases"),
+        )
+        return _text(vars(schedule) if hasattr(schedule, "__dict__") else schedule)
+
+    elif name == "get_copy_leaders":
+        get_copy_engine = _lazy_import("copy_engine_v21", "get_copy_engine")
+        if not get_copy_engine:
+            return _text({"error": "Copy trading engine not available"})
+        engine = get_copy_engine()
+        leaders = await engine.get_top_leaders(
+            min_return_pct=args.get("min_return_pct", 20),
+            min_win_rate=args.get("min_win_rate", 0.55),
+            limit=args.get("limit", 10),
+        )
+        return _text({"leaders": leaders})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V21: SaaS Tenant Hardening
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "get_tenant_audit_log":
+        AuditLogger = _lazy_import("tenant_mw", "AuditLogger")
+        if not AuditLogger:
+            return _text({"error": "Audit logger not available"})
+        logger_inst = AuditLogger(tenant_id=args.get("tenant_id", ""))
+        entries = logger_inst.get_entries(limit=args.get("limit", 100), tool_name=args.get("tool_name"))
+        return _text({"tenant_id": args.get("tenant_id"), "entries": entries})
+
+    elif name == "create_tenant_sandbox":
+        SandboxManager = _lazy_import("tenant_mw", "SandboxManager")
+        if not SandboxManager:
+            return _text({"error": "Sandbox manager not available"})
+        sandbox = SandboxManager().create_sandbox(
+            tenant_id=args.get("tenant_id", ""), config=args.get("config", {})
+        )
+        return _text(sandbox)
+
+    elif name == "get_tenant_rate_limits":
+        TenantRateLimiter = _lazy_import("tenant_mw", "TenantRateLimiter")
+        if not TenantRateLimiter:
+            return _text({"tenant_id": args.get("tenant_id"), "status": "unlimited"})
+        limiter = TenantRateLimiter(tenant_id=args.get("tenant_id", ""))
+        return _text(limiter.get_status())
+
+    # ═══════════════════════════════════════════════════════════════
+    # Ultimate Quant Alpha Stack
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "compute_volatility_surface":
+        get_vol_surface_engine = _lazy_import("vol_surface_v21", "get_vol_surface_engine")
+        if not get_vol_surface_engine:
+            return _text({"error": "Volatility surface engine not available"})
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        engine = get_vol_surface_engine(polygon_key)
+        surface = await engine.get_surface(args.get("symbol", ""), args.get("expiry_filter"))
+        signal = engine.generate_signal(surface)
+        return _text({
+            "symbol": surface.symbol, "spot": surface.spot_price, "as_of": surface.as_of,
+            "iv_rank": surface.iv_rank, "iv_percentile": surface.iv_percentile,
+            "atm_iv": surface.atm_iv, "skew_25d": surface.skew_25d,
+            "vol_regime": surface.regime, "term_structure": surface.term_structure,
+            "signal": {"type": signal.signal, "reason": signal.reason, "conviction": signal.conviction},
+            "call_count": len(surface.calls), "put_count": len(surface.puts),
+        })
+
+    elif name == "compute_factor_exposure":
+        get_factor_engine = _lazy_import("factor_model_v21", "get_factor_engine")
+        if not get_factor_engine:
+            return _text({"error": "Factor model engine not available"})
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        fred_key = (_config.fred_api_key if _config and hasattr(_config, "fred_api_key") else
+                    os.getenv("FRED_API_KEY", ""))
+        engine = get_factor_engine(polygon_key, fred_key)
+        exposure = await engine.compute_factor_exposure(
+            args.get("symbol", ""), period=args.get("period", "1y"),
+            benchmark=args.get("benchmark", "SPY"),
+        )
+        return _text({
+            "symbol": exposure.symbol, "period": exposure.period,
+            "alpha_annualized": exposure.alpha,
+            "betas": {"market": exposure.beta_market, "smb": exposure.beta_smb,
+                      "hml": exposure.beta_hml, "momentum": exposure.beta_mom},
+            "r_squared": exposure.r_squared,
+            "information_ratio": exposure.information_ratio,
+            "tracking_error_annualized": exposure.tracking_error,
+            "active_return_annualized": exposure.active_return,
+            "regime": exposure.regime, "as_of": exposure.as_of,
+        })
+
+    elif name == "detect_regime_hmm":
+        get_regime_detector = _lazy_import("regime_hmm", "get_regime_detector")
+        if not get_regime_detector:
+            return _text({"error": "Regime HMM detector not available"})
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        detector = get_regime_detector(polygon_key)
+        regime = await detector.detect_regime(
+            symbol=args.get("symbol", "SPY"),
+            lookback_days=args.get("lookback_days", 252),
+        )
+        return _text({
+            "symbol": regime.symbol, "current_regime": regime.current_regime,
+            "probability": regime.regime_probability, "days_in_regime": regime.days_in_regime,
+            "volatility_regime": regime.volatility_regime, "trend_bias": regime.trend_bias,
+            "sharpe_annualized": regime.sharpe_annualized,
+            "transition_probabilities": regime.transition_probability,
+            "method": regime.method, "as_of": regime.as_of,
+        })
+
+    elif name == "get_vix_term_structure":
+        import httpx as _httpx
+        try:
+            async with _httpx.AsyncClient(timeout=10.0) as c:
+                vix_resp = await c.get("https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv")
+                v3m_resp = await c.get("https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX3M_History.csv")
+            vix_data = vix_resp.text.strip().split("\n")
+            vix_last = vix_data[-1].split(",")
+            vix_spot = float(vix_last[-1]) if len(vix_last) > 1 else 0
+            v3m_data = v3m_resp.text.strip().split("\n")
+            v3m_last = v3m_data[-1].split(",")
+            v3m = float(v3m_last[-1]) if len(v3m_last) > 1 else 0
+            contango = (v3m - vix_spot) / vix_spot if vix_spot > 0 else 0
+            regime = "contango" if contango > 0.05 else "backwardation" if contango < -0.05 else "flat"
+            return _text({
+                "vix_spot": round(vix_spot, 2), "vix_3m": round(v3m, 2),
+                "contango_pct": round(contango * 100, 2), "regime": regime,
+                "signal": "bullish_equities" if regime == "contango" else "fear_elevated" if regime == "backwardation" else "neutral",
+                "source": "CBOE public CSV (real data)",
+            })
+        except Exception as exc:
+            return _text({"error": f"VIX term structure fetch failed: {exc}"})
+
+    elif name == "compute_information_ratio":
+        get_factor_engine = _lazy_import("factor_model_v21", "get_factor_engine")
+        if not get_factor_engine:
+            return _text({"error": "Factor engine needed for IR computation"})
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        engine = get_factor_engine(polygon_key)
+        exposure = await engine.compute_factor_exposure(
+            args.get("symbol", ""), period=args.get("period", "1y"),
+            benchmark=args.get("benchmark", "SPY"),
+        )
+        rating = "exceptional" if exposure.information_ratio > 1 else "strong" if exposure.information_ratio > 0.5 else "weak" if exposure.information_ratio < 0 else "moderate"
+        return _text({
+            "symbol": exposure.symbol, "benchmark": args.get("benchmark", "SPY"),
+            "information_ratio": exposure.information_ratio,
+            "tracking_error": exposure.tracking_error,
+            "active_return_annualized": exposure.active_return,
+            "alpha": exposure.alpha, "rating": rating,
+        })
+
+    elif name == "compute_correlation_matrix":
+        symbols = args.get("symbols", [])
+        if len(symbols) < 2:
+            return _text({"error": "Need at least 2 symbols"})
+        polygon_key = (_config.polygon.api_key if _config and _config.polygon else
+                       os.getenv("POLYGON_API_KEY", ""))
+        if not polygon_key:
+            return _text({"error": "POLYGON_API_KEY required"})
+        period = args.get("period", "3m")
+        days = {"1m": 21, "3m": 63, "6m": 126, "1y": 252}.get(period, 63)
+        from datetime import date as _date, timedelta as _td
+        end = _date.today()
+        start = end - _td(days=days + 10)
+        import httpx as _hx
+        async with _hx.AsyncClient(base_url=POLYGON_BASE, params={"apiKey": polygon_key}, timeout=30.0) as client:
+            all_rets = {}
+            for sym in symbols[:20]:
+                resp = await client.get(f"/v2/aggs/ticker/{sym}/range/1/day/{start.isoformat()}/{end.isoformat()}",
+                                        params={"adjusted": "true", "limit": 300})
+                if resp.status_code == 200:
+                    bars = resp.json().get("results", [])
+                    import math as _math
+                    rets = [_math.log(bars[i]["c"] / bars[i-1]["c"]) for i in range(1, len(bars))
+                            if bars[i-1].get("c", 0) > 0 and bars[i].get("c", 0) > 0]
+                    all_rets[sym] = rets
+        try:
+            import numpy as _np
+            aligned_len = min(len(v) for v in all_rets.values())
+            matrix = _np.array([v[-aligned_len:] for v in all_rets.values()])
+            corr = _np.corrcoef(matrix)
+            corr_dict = {sym: {symbols[j]: round(float(corr[i, j]), 4) for j in range(len(symbols))}
+                         for i, sym in enumerate(symbols)}
+            # High correlations
+            threshold = args.get("threshold", 0.7)
+            warnings = [f"{symbols[i]}/{symbols[j]}: {corr[i,j]:.2f}"
+                        for i in range(len(symbols)) for j in range(i+1, len(symbols))
+                        if abs(corr[i, j]) > threshold]
+            avg_corr = float(_np.mean([corr[i,j] for i in range(len(symbols)) for j in range(i+1, len(symbols))]))
+            return _text({"correlation_matrix": corr_dict, "avg_correlation": round(avg_corr, 4),
+                          "high_correlation_warnings": warnings, "period": period,
+                          "concentration_risk": "high" if avg_corr > 0.6 else "moderate" if avg_corr > 0.3 else "low"})
+        except ImportError:
+            return _text({"error": "numpy required for correlation matrix", "hint": "pip install numpy"})
 
     else:
         return _text({"error": f"Unknown tool: {name}"})

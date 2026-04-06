@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "algochains-mcp-server"
-version = "20.0.0"
-description = "AlgoChains MCP Server — Universal AI-to-broker trading protocol with 227 tools, account protection (13 pre-trade safety guards), Builder SDK (data warehouse + strategy submission), MCPT marketplace, BYOK keys, streaming, portfolio optimization, and memory-safe architecture"
+version = "21.1.0"
+description = "AlgoChains MCP Server — The Ultimate Algo Quant Stack. 281+ tools: live trading (Tradovate/Alpaca/OANDA/Binance), AlphaLoop self-improving strategies, order flow intelligence (footprint/delta/dark pool), Onyx RAG search, volatility surfaces, factor models, HMM regime detection, MCP 2025-11-25 spec, private bot showcase, and real data only policy."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -65,6 +65,20 @@ backtrader = ["backtrader>=1.9.78"]
 supabase = ["supabase>=2.0.0"]
 http = ["fastapi>=0.111.0", "uvicorn[standard]>=0.30.0"]
 optimize = ["optuna>=3.0.0"]
+dashboard = ["fastapi>=0.115.0", "uvicorn>=0.30.0"]
+quant = ["hmmlearn>=0.3.0", "numpy>=1.26.0", "scipy>=1.12.0"]
+onyx = ["httpx>=0.27.0"]
+streaming = ["stripe>=8.0.0", "redis>=5.0.0"]
+full_v21 = [
+    "optuna>=3.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "hmmlearn>=0.3.0",
+    "numpy>=1.26.0",
+    "scipy>=1.12.0",
+    "stripe>=8.0.0",
+    "cryptography>=42.0.0",
+]
 
 [project.scripts]
 algochains-mcp = "algochains_mcp.server:main"
