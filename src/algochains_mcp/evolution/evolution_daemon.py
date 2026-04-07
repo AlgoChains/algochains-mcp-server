@@ -363,7 +363,12 @@ class EvolutionDaemon:
 
     def run_cycle_now(self) -> dict[str, Any]:
         """Manually trigger one evolution cycle immediately."""
-        asyncio.ensure_future(self._run_cycle())
+        # Store task reference to prevent silent GC and enable cancellation
+        self._manual_cycle_task = asyncio.ensure_future(self._run_cycle())
+        self._manual_cycle_task.add_done_callback(
+            lambda t: log.warning("Evolution cycle error: %s", t.exception())
+            if not t.cancelled() and t.exception() else None
+        )
         return {"status": "cycle_triggered", "phase": "starting"}
 
 

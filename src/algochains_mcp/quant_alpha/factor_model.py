@@ -231,12 +231,12 @@ class FactorModelEngine:
         try:
             if not self.fred_key:
                 return 0.045  # Approximate current RF if FRED unavailable
-            resp = await httpx.AsyncClient().get(
-                f"https://api.stlouisfed.org/fred/series/observations",
-                params={"series_id": "DGS3MO", "api_key": self.fred_key,
-                        "file_type": "json", "sort_order": "desc", "limit": 1},
-                timeout=10.0,
-            )
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as _client:
+                resp = await _client.get(
+                    "https://api.stlouisfed.org/fred/series/observations",
+                    params={"series_id": "DGS3MO", "api_key": self.fred_key,
+                            "file_type": "json", "sort_order": "desc", "limit": 1},
+                )
             if resp.status_code == 200:
                 obs = resp.json().get("observations", [{}])
                 val = obs[0].get("value", ".")

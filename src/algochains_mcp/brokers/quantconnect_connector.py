@@ -117,10 +117,17 @@ class QuantConnectConnector(BrokerConnector):
         )
 
     async def cancel_order(self, order_id: str) -> bool:
-        return False
+        raise NotImplementedError(
+            "QuantConnect does not support direct order cancellation via this connector. "
+            "Manage orders inside your LEAN algorithm or via the QuantConnect web UI."
+        )
 
     async def get_quote(self, symbol: str) -> Quote:
-        return Quote(symbol=symbol, bid=0, ask=0, last=0)
+        raise NotImplementedError(
+            "QuantConnect does not provide real-time quote data via this connector. "
+            "Use a data provider (Polygon, Alpaca, Databento) for live quotes. "
+            "QuantConnect quotes are available only inside LEAN algorithm context."
+        )
 
     # ── QuantConnect-specific methods ───────────────────────────────
 

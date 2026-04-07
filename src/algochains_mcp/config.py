@@ -104,6 +104,55 @@ class GatingConfig:
 
 
 @dataclass
+class SupabaseConfig:
+    url: str = field(default_factory=lambda: _env("SUPABASE_URL"))
+    anon_key: str = field(default_factory=lambda: _env("SUPABASE_ANON_KEY"))
+    service_key: str = field(default_factory=lambda: _env("SUPABASE_SERVICE_KEY"))
+
+    @property
+    def available(self) -> bool:
+        return bool(self.url and self.service_key)
+
+
+@dataclass
+class EmailConfig:
+    resend_api_key: str = field(default_factory=lambda: _env("RESEND_API_KEY"))
+    from_support: str = field(default_factory=lambda: _env("SUPPORT_FROM_EMAIL", "support@algochains.ai"))
+    from_waitlist: str = field(default_factory=lambda: _env("WAITLIST_FROM_EMAIL", "waitlist@algochains.ai"))
+    from_noreply: str = field(default_factory=lambda: _env("VERIFICATION_FROM_EMAIL", "noreply@algochains.ai"))
+
+
+@dataclass
+class SchwabConfig:
+    client_id: str = field(default_factory=lambda: _env("SCHWAB_CLIENT_ID"))
+    client_secret: str = field(default_factory=lambda: _env("SCHWAB_CLIENT_SECRET"))
+    access_token: str = field(default_factory=lambda: _env("SCHWAB_ACCESS_TOKEN"))
+    account_hash: str = field(default_factory=lambda: _env("SCHWAB_ACCOUNT_HASH"))
+    paper: bool = field(default_factory=lambda: _env("SCHWAB_PAPER", "false").lower() == "true")
+
+
+@dataclass
+class TwilioConfig:
+    account_sid: str = field(default_factory=lambda: _env("TWILIO_ACCOUNT_SID"))
+    auth_token: str = field(default_factory=lambda: _env("TWILIO_AUTH_TOKEN"))
+    from_number: str = field(default_factory=lambda: _env("TWILIO_FROM_NUMBER"))
+
+    @property
+    def available(self) -> bool:
+        return bool(self.account_sid and self.auth_token and self.from_number)
+
+
+@dataclass
+class NotionConfig:
+    api_key: str = field(default_factory=lambda: _env("NOTION_API_KEY"))
+    support_db_id: str = field(default_factory=lambda: _env("NOTION_SUPPORT_DB_ID"))
+
+    @property
+    def available(self) -> bool:
+        return bool(self.api_key and self.support_db_id)
+
+
+@dataclass
 class ServerConfig:
     alpaca: AlpacaConfig = field(default_factory=AlpacaConfig)
     ibkr: IBKRConfig = field(default_factory=IBKRConfig)
@@ -114,6 +163,11 @@ class ServerConfig:
     massive: MassiveConfig = field(default_factory=MassiveConfig)
     marketplace: MarketplaceConfig = field(default_factory=MarketplaceConfig)
     gating: GatingConfig = field(default_factory=GatingConfig)
+    supabase: SupabaseConfig = field(default_factory=SupabaseConfig)
+    email: EmailConfig = field(default_factory=EmailConfig)
+    schwab: SchwabConfig = field(default_factory=SchwabConfig)
+    twilio: TwilioConfig = field(default_factory=TwilioConfig)
+    notion: NotionConfig = field(default_factory=NotionConfig)
     tool_mode: str = field(default_factory=lambda: _env("ALGOCHAINS_TOOL_MODE", "smart"))
 
     def available_brokers(self) -> list[str]:
@@ -130,6 +184,8 @@ class ServerConfig:
             brokers.append("quantconnect")
         if self.tradovate.cid:
             brokers.append("tradovate")
+        if self.schwab.client_id or self.schwab.access_token:
+            brokers.append("schwab")
         return brokers
 
 

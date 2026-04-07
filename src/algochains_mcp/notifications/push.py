@@ -102,7 +102,7 @@ class NotificationDispatcher:
     Usage:
         dispatcher = NotificationDispatcher()
         dispatcher.configure_slack(webhook_url="https://hooks.slack.com/...")
-        dispatcher.configure_email(api_key="re_...", from_addr="alerts@algochains.ai")
+        dispatcher.configure_email(api_key=os.getenv("RESEND_API_KEY", ""), from_addr="alerts@algochains.ai")
 
         await dispatcher.send(Notification(
             event=NotificationEvent.ORDER_FILL,
@@ -196,7 +196,7 @@ class NotificationDispatcher:
         import httpx
         cfg = self._channels[NotificationChannel.SLACK]
         emoji = {"critical": "🚨", "high": "🔔", "medium": "📊", "low": "ℹ️"}.get(n.priority.value, "")
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
             await client.post(cfg["webhook_url"], json={
                 "text": f"{emoji} *{n.title}*\n{n.body}",
             })
@@ -204,7 +204,7 @@ class NotificationDispatcher:
     async def _send_email(self, n: Notification) -> None:
         import httpx
         cfg = self._channels[NotificationChannel.EMAIL]
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
             await client.post(
                 "https://api.resend.com/emails",
                 headers={"Authorization": f"Bearer {cfg['api_key']}"},
@@ -219,7 +219,7 @@ class NotificationDispatcher:
     async def _send_discord(self, n: Notification) -> None:
         import httpx
         cfg = self._channels[NotificationChannel.DISCORD]
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
             await client.post(cfg["webhook_url"], json={
                 "content": f"**{n.title}**\n{n.body}",
             })
@@ -227,15 +227,85 @@ class NotificationDispatcher:
     async def _send_telegram(self, n: Notification) -> None:
         import httpx
         cfg = self._channels[NotificationChannel.TELEGRAM]
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
             await client.post(
                 f"https://api.telegram.org/bot{cfg['bot_token']}/sendMessage",
                 json={"chat_id": cfg["chat_id"], "text": f"*{n.title}*\n{n.body}", "parse_mode": "Markdown"},
             )
 
     async def _send_mobile_push(self, n: Notification, channel: NotificationChannel) -> None:
-        # Placeholder — real implementation would use firebase-admin or apns2 library
-        logger.info("Mobile push (%s): %s", channel.value, n.title)
+        """
+        Send native mobile push via FCM (Android/web) or APNS (iOS).
+
+        Requires one of:
+          - FCM: set channel config key 'fcm_server_key' (Firebase Cloud Messaging v1 service account JSON at 'fcm_service_account_file')
+          - APNS: set 'apns_key_file', 'apns_key_id', 'apns_team_id', 'apns_bundle_id'
+
+        Install: pip install firebase-admin  (FCM)  or  pip install apns2  (APNS)
+        """
+        cfg = self._channels.get(channel, {})
+
+        # FCM path (Firebase Admin SDK)
+        if cfg.get("fcm_server_key") or cfg.get("fcm_service_account_file"):
+            try:
+                import firebase_admin  # type: ignore
+                from firebase_admin import credentials, messaging  # type: ignore
+
+                sa_file = cfg.get("fcm_service_account_file", "")
+                if sa_file and not firebase_admin._apps:
+                    cred = credentials.Certificate(sa_file)
+                    firebase_admin.initialize_app(cred)
+
+                msg = messaging.Message(
+                    notification=messaging.Notification(title=n.title, body=n.body),
+                    topic=cfg.get("fcm_topic", "algochains_alerts"),
+                )
+                response = messaging.send(msg)
+                logger.info("FCM push sent (msg_id=%s): %s", response, n.title)
+                return
+            except ImportError:
+                logger.warning(
+                    "firebase-admin not installed — cannot send FCM mobile push. "
+                    "Run: pip install firebase-admin"
+                )
+                return
+            except Exception as e:
+                logger.error("FCM push failed: %s", e)
+                return
+
+        # APNS path (Apple Push Notification Service)
+        if cfg.get("apns_key_file"):
+            try:
+                from apns2.client import APNsClient  # type: ignore
+                from apns2.payload import Payload  # type: ignore
+
+                client = APNsClient(
+                    credentials=cfg["apns_key_file"],
+                    use_sandbox=cfg.get("apns_sandbox", False),
+                )
+                payload = Payload(alert={"title": n.title, "body": n.body}, sound="default")
+                device_token = cfg.get("apns_device_token", "")
+                if not device_token:
+                    logger.warning("APNS: no apns_device_token configured; push skipped.")
+                    return
+                client.send_notification(device_token, payload, topic=cfg.get("apns_bundle_id", ""))
+                logger.info("APNS push sent: %s", n.title)
+                return
+            except ImportError:
+                logger.warning(
+                    "apns2 not installed — cannot send APNS mobile push. "
+                    "Run: pip install apns2"
+                )
+                return
+            except Exception as e:
+                logger.error("APNS push failed: %s", e)
+                return
+
+        logger.warning(
+            "Mobile push channel '%s' configured but missing credentials. "
+            "Set 'fcm_service_account_file' (FCM) or 'apns_key_file' (APNS) in channel config.",
+            channel.value,
+        )
 
     def get_history(self, limit: int = 20, event: Optional[NotificationEvent] = None) -> list[dict]:
         """Get notification history, optionally filtered by event type."""

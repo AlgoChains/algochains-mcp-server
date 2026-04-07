@@ -125,10 +125,17 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
         expose_headers=["Mcp-Session-Id"],
     )
 
-    # Start background cleanup
+    # Start background cleanup — store ref to prevent silent GC drop
+    _bg_tasks: list[asyncio.Task] = []
+
     @http_app.on_event("startup")
     async def _on_startup() -> None:
-        asyncio.create_task(_cleanup_stale_sessions())
+        t = asyncio.create_task(_cleanup_stale_sessions(), name="cleanup_stale_sessions")
+        t.add_done_callback(
+            lambda task: logger.warning("Cleanup task failed: %s", task.exception())
+            if not task.cancelled() and task.exception() else None
+        )
+        _bg_tasks.append(t)
         logger.info("AlgoChains MCP HTTP transport started")
 
     def _auth(request: Request) -> None:

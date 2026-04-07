@@ -328,11 +328,15 @@ if FASTAPI_AVAILABLE:
 
 
 def run():
+    import logging as _logging
+    _log = _logging.getLogger("algochains_mcp.dashboard")
     if not FASTAPI_AVAILABLE:
-        print("FastAPI not installed. Run: pip install fastapi uvicorn")
+        _log.error("FastAPI not installed — live dashboard unavailable. Run: pip install fastapi uvicorn")
         return
     import uvicorn
-    uvicorn.run("algochains_mcp.dashboard.live_dashboard:app", host="0.0.0.0", port=8766, reload=False)
+    host = __import__("os").getenv("ALGOCHAINS_DASHBOARD_HOST", "127.0.0.1")
+    port = int(__import__("os").getenv("ALGOCHAINS_DASHBOARD_PORT", "8766"))
+    uvicorn.run("algochains_mcp.dashboard.live_dashboard:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":
