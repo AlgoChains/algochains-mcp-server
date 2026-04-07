@@ -20,6 +20,7 @@ class ProviderCategory(str, Enum):
     ECONOMIC_DATA = "economic_data"
     ALTERNATIVE_DATA = "alternative_data"
     AGGREGATOR = "aggregator"
+    PREDICTION_MARKET = "prediction_market"
 
 
 @dataclass
@@ -186,6 +187,41 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
         validation_method="bearer",
         data_types=["aggregated_bars", "aggregated_fundamentals", "aggregated_news"],
         notes="Aggregates multiple data sources. Great as a fallback.",
+    ),
+    "polymarket": ProviderMeta(
+        name="polymarket",
+        display_name="Polymarket (read + optional CLOB)",
+        env_vars=["POLYMARKET_API_KEY", "POLYMARKET_API_SECRET", "POLYMARKET_PASSPHRASE"],
+        categories=[ProviderCategory.PREDICTION_MARKET, ProviderCategory.ALTERNATIVE_DATA],
+        signup_url="https://polymarket.com",
+        docs_url="https://docs.polymarket.com",
+        free_tier=True,
+        free_tier_limits="Gamma/CLOB reads are mostly public; trading requires wallet + API keys",
+        validation_url="",
+        validation_method="",
+        requires_key=False,
+        data_types=["event_odds", "clob_order_book", "volume"],
+        notes="BYOK: omit keys for read-only via Gamma API. Set POLYMARKET_* for authenticated CLOB orders.",
+    ),
+    "kalshi": ProviderMeta(
+        name="kalshi",
+        display_name="Kalshi",
+        env_vars=[
+            "KALSHI_ACCESS_KEY",
+            "KALSHI_PRIVATE_KEY_PATH",
+            "KALSHI_PRIVATE_KEY_PEM",
+            "KALSHI_API_HOST",
+        ],
+        categories=[ProviderCategory.PREDICTION_MARKET, ProviderCategory.ALTERNATIVE_DATA],
+        signup_url="https://kalshi.com",
+        docs_url="https://docs.kalshi.com/getting_started/quick_start_authenticated_requests",
+        free_tier=False,
+        free_tier_limits="Exchange access per Kalshi account",
+        validation_url="",
+        validation_method="",
+        data_types=["binary_events", "order_book", "fills"],
+        notes="RSA-PSS-SHA256 headers per Kalshi docs. Optional KALSHI_API_HOST (default api.elections.kalshi.com). "
+        "Demo: https://demo-api.kalshi.co — set host accordingly.",
     ),
 }
 

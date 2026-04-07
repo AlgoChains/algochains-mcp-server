@@ -72,6 +72,20 @@ from .middleware import (
     record_failure, guard_response_size, CircuitOpenError,
 )
 
+# ─── V22 Trading Guardrails — hard-coded circuit breakers (AI cannot override) ─
+# Import at startup so limits are enforced from first tool call.
+# Graceful fallback: if module missing, order velocity checking is skipped
+# but a warning is logged on every place_order call.
+try:
+    from .trading_guardrails import get_guardrails, GuardrailTripped
+    _GUARDRAILS_AVAILABLE = True
+except ImportError:
+    _GUARDRAILS_AVAILABLE = False
+    logger.warning(
+        "trading_guardrails not available — hard-coded circuit breakers are INACTIVE. "
+        "Deploy trading_guardrails.py to activate V22 safety limits."
+    )
+
 # ─── V20 Memory Safety — import first so we can monitor from startup ─────────
 # Memory safety is lightweight and has no heavy sub-deps.
 from .memory_safety import get_memory_monitor, MemoryMonitor
@@ -229,7 +243,7 @@ _LAZY_SPECS = {
     "cd_engine":        (".order_flow.cumulative_delta",   ["compute_cumulative_delta"]),
     "dp_engine_v21":    (".order_flow.dark_pool_volume",   ["DarkPoolEngine"]),
     "earnings_cat":     (".order_flow.earnings_catalyst",  ["EarningsCatalystEngine"]),
-    "pred_markets":     (".order_flow.prediction_markets", ["PredictionMarketEngine"]),
+    "pred_markets":     (".order_flow.prediction_markets", ["PredictionMarketsEngine", "PredictionMarketEngine"]),
     "macro_signals_v21":(".order_flow.macro_signals",      ["MacroSignalEngine"]),
     # ── V21: Security / Key Vault ────────────────────────────────────
     "key_vault_v21":    (".auth.key_vault",                ["KeyVault", "get_key_vault"]),
@@ -2874,6 +2888,160 @@ TOOLS = [
     Tool(name="get_prediction_markets", description="Fetch real prediction market probabilities from Polymarket and Kalshi for macro events (Fed rate decisions, election outcomes, economic releases). Derives equity market signals from contract odds.",
          inputSchema={"type": "object", "properties": {"category": {"type": "string", "enum": ["fed", "economic", "political", "crypto", "all"], "default": "all"}, "min_volume": {"type": "number", "default": 10000}}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="search_prediction_markets", description="Search live Polymarket and/or Kalshi markets by keyword. Returns real contract YES/NO prices, volume, liquidity, and URLs. Fails closed if no API data.",
+         inputSchema={"type": "object", "properties": {
+             "query": {"type": "string", "description": "Search phrase, e.g. Bitcoin Fed election"},
+             "platform": {"type": "string", "enum": ["polymarket", "kalshi", "all"], "default": "all"},
+             "limit": {"type": "integer", "default": 10},
+         }, "required": ["query"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_polymarket_high_volume", description="List highest 24h-volume Polymarket markets right now (real Gamma API). Useful for Roo-style early YES/NO flow and liquidity discovery.",
+         inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="record_prediction_market_bot_metric", description="Append one real performance snapshot for a Polymarket or Kalshi bot to the JSONL audit log (latency, YES prob, edge). Required for marketplace promotion evidence trail. No synthetic values stored unless caller passes them.",
+         inputSchema={"type": "object", "properties": {
+             "bot_id": {"type": "string"},
+             "platform": {"type": "string", "enum": ["polymarket", "kalshi"]},
+             "market_id": {"type": "string"},
+             "yes_probability": {"type": "number"},
+             "edge_vs_entry": {"type": "number"},
+             "latency_ms_observed": {"type": "number"},
+             "action": {"type": "string", "description": "BUY_YES, BUY_NO, HOLD, ARB, ..."},
+             "notes": {"type": "string"},
+             "metadata": {"type": "object"},
+         }, "required": ["bot_id", "platform", "market_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_prediction_market_bot_metrics", description="Read recent JSONL metric entries for a prediction-market bot_id from the local audit log.",
+         inputSchema={"type": "object", "properties": {
+             "bot_id": {"type": "string"},
+             "max_lines": {"type": "integer", "default": 500},
+         }, "required": ["bot_id"]},
+         annotations=ANNOT_READ_ONLY),
+    # ── V22.8: New PM tools (gap analysis vs mcp-server-kalshi + polymarket-mcp) ──
+    Tool(name="get_polymarket_market",
+         description="Fetch detailed info for a specific Polymarket market by condition ID or event slug. Returns question, YES/NO prices, volume, liquidity, resolution date, and status. More precise than search — use when you have a specific market ID.",
+         inputSchema={"type": "object", "properties": {
+             "market_id_or_slug": {"type": "string", "description": "Polymarket condition ID (hex) or event slug (e.g. 'will-fed-cut-rates-in-june-2025')"},
+         }, "required": ["market_id_or_slug"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_polymarket_market_history",
+         description="Get historical YES price data for a specific Polymarket market. Returns timestamped price series. Accepts slug, Gamma numeric ID, or CLOB token ID — auto-resolves. Useful for charting probability movement, analyzing market efficiency, and detecting smart money flow timing.",
+         inputSchema={"type": "object", "properties": {
+             "market_id_or_slug": {"type": "string", "description": "Polymarket slug, numeric Gamma ID, or CLOB YES token ID"},
+             "timeframe": {"type": "string", "enum": ["1d", "7d", "30d", "all"], "default": "7d", "description": "1d=10min candles, 7d=1h candles, 30d/all=daily candles"},
+         }, "required": ["market_id_or_slug"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="list_polymarket_markets",
+         description="List Polymarket prediction markets with status filtering and pagination. Unlike search, this returns all markets in a category. status=open (default) | closed | resolved. Sorts by 24h volume descending.",
+         inputSchema={"type": "object", "properties": {
+             "status": {"type": "string", "enum": ["open", "closed", "resolved"], "default": "open"},
+             "limit": {"type": "integer", "default": 20, "description": "Max markets per page (1-100)"},
+             "offset": {"type": "integer", "default": 0, "description": "Pagination offset"},
+             "category": {"type": "string", "description": "Optional category/tag filter (e.g. politics, economics, crypto)"},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_kalshi_settlements",
+         description="Fetch recently settled Kalshi prediction market contracts (RSA-PSS signed). Returns results, profit-per-contract, and settlement timestamps. Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH. Inspired by 9crusher/mcp-server-kalshi settlements endpoint.",
+         inputSchema={"type": "object", "properties": {
+             "limit": {"type": "integer", "default": 25, "description": "Number of settlements to return"},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="place_kalshi_order",
+         description="Place a limit order on Kalshi via RSA-PSS signed POST. Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH. side: yes|no, action: buy|sell, limit_price_cents: 1-99 (represents probability %). WARNING: places real orders on live Kalshi account. Use demo BASE_URL for testing.",
+         inputSchema={"type": "object", "properties": {
+             "ticker": {"type": "string", "description": "Kalshi market ticker (e.g. HIGHAUS-25JUL01-T10.5)"},
+             "side": {"type": "string", "enum": ["yes", "no"]},
+             "action": {"type": "string", "enum": ["buy", "sell"]},
+             "count": {"type": "integer", "description": "Number of contracts (each contract = $1 max payout)"},
+             "limit_price_cents": {"type": "integer", "description": "Limit price in cents 1-99 (= probability %). 60 = buy at $0.60/contract."},
+             "expiration_ts": {"type": "integer", "description": "Optional order expiry (ms since epoch)"},
+         }, "required": ["ticker", "side", "action", "count", "limit_price_cents"]},
+         annotations=ANNOT_TRADE_EXEC),
+    # ═══════════════════════════════════════════════════════════════
+    # V22.9 — PAI Integration: TELOS + US Economics + Learning Signals + ntfy
+    # Based on gap analysis vs danielmiessler/Personal_AI_Infrastructure (⭐11.2k)
+    # Novel additions only — skills/memory/debate already surpassed PAI equivalents
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="get_algochains_telos",
+         description="Read AlgoChains business identity files (TELOS system, adapted from PAI). Returns mission, goals, strategies, mental models, lessons learned, challenges, ideas, and KPIs. Use section='all' for full context or specify: mission|goals|strategies|models|learned|challenges|ideas|metrics. Every agent should read TELOS at session start for full business context.",
+         inputSchema={"type": "object", "properties": {
+             "section": {"type": "string", "enum": ["all", "mission", "goals", "strategies", "models", "learned", "challenges", "ideas", "metrics"], "description": "Which TELOS file to read. 'all' returns all sections.", "default": "all"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="update_algochains_telos",
+         description="Append a new entry to an AlgoChains TELOS file (goals, learned, ideas, challenges, etc.). Use to capture new lessons learned, ideas, or goal updates during a session. The log is append-only — entries are never overwritten.",
+         inputSchema={"type": "object", "properties": {
+             "section": {"type": "string", "enum": ["goals", "strategies", "models", "learned", "challenges", "ideas", "metrics"], "description": "Which TELOS section to update"},
+             "entry": {"type": "string", "description": "The content to add (markdown text, plain sentences OK)"},
+             "action": {"type": "string", "enum": ["append", "prepend"], "default": "append", "description": "append = add to end (default); prepend = add after header"},
+         }, "required": ["section", "entry"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_us_economic_indicators",
+         description="Fetch US economic indicators from FRED (Federal Reserve Economic Data). Covers 16 key indicators: VIX, Fed Funds Rate, CPI, PCE, 10Y-2Y Treasury spread, unemployment, M2, GDP, housing starts, consumer sentiment. Requires FRED_API_KEY (free at fred.stlouisfed.org). Results cached 6h. Essential for regime detection across all bots.",
+         inputSchema={"type": "object", "properties": {
+             "categories": {"type": "array", "items": {"type": "string"}, "description": "Filter by category. Options: monetary_policy, rates, inflation, labor, growth, volatility, sentiment, housing. Omit for all."},
+             "use_cache": {"type": "boolean", "default": True, "description": "Use 6-hour local cache to avoid rate limits"},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_crude_oil_inventories",
+         description="Fetch EIA weekly crude oil inventory data — critical signal for the CL (crude oil) futures bot. Covers US commercial crude stocks, Cushing Oklahoma (WTI delivery point), and field production. Released every Wednesday ~10:30 AM ET. Build above estimate = bearish CL; draw below = bullish. Requires EIA_API_KEY (free at eia.gov/opendata).",
+         inputSchema={"type": "object", "properties": {
+             "use_cache": {"type": "boolean", "default": True, "description": "Use 24-hour cache (EIA data is weekly)"},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_fed_policy_signals",
+         description="Get the 7 most important Fed policy indicators in one call: Fed Funds Rate, CPI, PCE, 10Y-2Y spread, VIX, 10Y yield, 2Y yield — with AI-derived regime interpretation (restrictive/neutral/accommodative, crisis/normal, inverted/normal yield curve). Use for MNQ/NQ regime context before trading sessions. Requires FRED_API_KEY.",
+         inputSchema={"type": "object", "properties": {
+             "use_cache": {"type": "boolean", "default": True},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="capture_learning_signal",
+         description="Record the outcome of an agent action or skill invocation for continuous learning. After 30+ signals, patterns emerge: which skills produce the best outcomes, where failure is common, what to improve. Stored in state/learning_signals.jsonl (append-only audit log). Use after any significant agent action.",
+         inputSchema={"type": "object", "properties": {
+             "action_type": {"type": "string", "enum": ["bot_diagnosis", "strategy_change", "bot_restart", "token_renewal", "backtest_run", "skill_invocation", "code_change", "research", "deploy", "market_analysis", "position_management", "alert_triage", "onboarding", "debate_invocation", "mcpt_validation", "regime_detection", "other"]},
+             "action_description": {"type": "string", "description": "Short description of what was done (< 200 chars)"},
+             "outcome": {"type": "string", "enum": ["success", "failure", "partial", "skipped", "unknown"]},
+             "rating": {"type": "integer", "minimum": 1, "maximum": 10, "description": "1-10 quality rating (10 = perfect/euphoric result). Optional."},
+             "notes": {"type": "string", "description": "Free-text notes about what happened and why"},
+             "skill_used": {"type": "string", "description": "Name of skill invoked (e.g. 'bot-diagnostics')"},
+             "bot": {"type": "string", "description": "Which bot this relates to (MNQ, CL, MES, NQ, all)"},
+             "agent": {"type": "string", "description": "Which agent captured this (cursor, claude, windsurf, openclaw)"},
+             "session_id": {"type": "string", "description": "Optional session ID for grouping related signals"},
+         }, "required": ["action_type", "action_description", "outcome"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_learning_signals",
+         description="Retrieve and analyze historical learning signals from state/learning_signals.jsonl. Returns signals with optional summary statistics: success rate by action type, top skills by effectiveness, bot activity, average ratings. Use to identify where agent performance is strongest/weakest and drive improvement priorities.",
+         inputSchema={"type": "object", "properties": {
+             "limit": {"type": "integer", "default": 50, "description": "Max signals to return (most recent first)"},
+             "action_type": {"type": "string", "description": "Filter by action type"},
+             "outcome": {"type": "string", "enum": ["success", "failure", "partial", "skipped", "unknown"]},
+             "bot": {"type": "string", "description": "Filter by bot name (MNQ, CL, MES, NQ)"},
+             "min_rating": {"type": "integer", "minimum": 1, "maximum": 10},
+             "summarize": {"type": "boolean", "default": True, "description": "Include summary statistics"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="send_ntfy_notification",
+         description="Send a mobile push notification via ntfy (https://ntfy.sh). Topics: bots (bot up/down/trade), risk (circuit breaker, daily loss), marketplace (new subscriber, bot promoted), ops (deploy, system health), alpha (high-confidence signal). Priority: max/urgent = always-on screen; high = with sound; default = normal; low/min = silent. Requires NTFY_BASE_URL + optional NTFY_AUTH_TOKEN.",
+         inputSchema={"type": "object", "properties": {
+             "title": {"type": "string", "description": "Notification title (shown in bold)"},
+             "message": {"type": "string", "description": "Notification body text"},
+             "topic": {"type": "string", "enum": ["bots", "risk", "marketplace", "ops", "alpha"], "default": "ops"},
+             "priority": {"type": "string", "enum": ["max", "urgent", "high", "default", "low", "min"], "default": "default"},
+             "tags": {"type": "array", "items": {"type": "string"}, "description": "Emoji tag names (e.g. ['warning', 'robot']). ntfy maps to emojis automatically."},
+             "click_url": {"type": "string", "description": "URL to open when notification is tapped"},
+         }, "required": ["title", "message"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="propagate_trade_signal", description="POST a signed trade signal to the AlgoChains Django propagation service (Roo architecture). Mirrors send_signal.py: subscribers receive execution on connected **paper** accounts. Requires SIGNAL_URL + SIGNAL_SECRET.",
+         inputSchema={"type": "object", "properties": {
+             "strategy_name": {"type": "string", "description": "Must match bot name on algochains.ai exactly"},
+             "symbol": {"type": "string"},
+             "side": {"type": "string", "enum": ["BUY", "SELL", "buy", "sell"]},
+             "qty": {"type": "number"},
+             "confidence": {"type": "number", "default": 0.0},
+             "stop_loss": {"type": "number", "default": 0.0},
+             "take_profit": {"type": "number", "default": 0.0},
+         }, "required": ["strategy_name", "symbol", "side", "qty"]},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_macro_signals", description="Get pre-computed macro alpha signal fabric: yield curve shape (2y-10y), credit spreads (HY-IG), DXY momentum, PMI regime, VIX term structure contango/backwardation. All from real FRED/CBOE/Polygon APIs.",
          inputSchema={"type": "object", "properties": {"signals": {"type": "array", "items": {"type": "string"}, "description": "Subset: yield_curve, credit_spreads, dxy, pmi, vix. Omit for all."}}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
@@ -2928,6 +3096,103 @@ TOOLS = [
     Tool(name="get_live_pnl", description="Get current live P&L across all active positions: unrealized P&L per position, today's realized P&L, and total account P&L. From real broker account state.",
          inputSchema={"type": "object", "properties": {"broker": {"type": "string", "default": "tradovate"}}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
+    # ═══════════════════════════════════════════════════════════════
+    # V22.7: Skills Bridge — OpenClaw + Windsurf + Cursor + Claude
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="list_skills",
+         description="List all available AlgoChains skills from OpenClaw (363+), Windsurf (80+), Cursor (15), and Claude (8) skill libraries. Filter by category (trading, research, operations, intelligence, agent, comms, risk, data, ml, marketplace) or platform. Returns name, description, categories, tools used, and trigger type.",
+         inputSchema={"type": "object", "properties": {
+             "category": {"type": "string", "description": "Filter by category: trading, research, operations, intelligence, agent, comms, risk, data, ml, marketplace"},
+             "platform": {"type": "string", "description": "Filter by platform: openclaw, windsurf, cursor, claude"},
+             "limit": {"type": "integer", "default": 50},
+             "offset": {"type": "integer", "default": 0},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_skill_detail",
+         description="Get the full SKILL.md content and metadata for any skill by name (e.g. 'moltbook-debate', 'bot-diagnostics', 'autonomous-researcher', 'backtest-governance'). Returns complete instructions, tool requirements, trigger conditions, and schedule. Use list_skills or search_skills to discover skill names.",
+         inputSchema={"type": "object", "properties": {
+             "name": {"type": "string", "description": "Skill name (exact or partial match)"},
+         }, "required": ["name"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="search_skills",
+         description="Search across all 450+ skills by keyword. Returns ranked matches from OpenClaw, Windsurf, Cursor, and Claude libraries. Use to find the right skill for a task before reading its full SKILL.md.",
+         inputSchema={"type": "object", "properties": {
+             "query": {"type": "string", "description": "Search query (e.g. 'regime detection', 'bot restart', 'dark pool', 'backtest')"},
+             "limit": {"type": "integer", "default": 20},
+         }, "required": ["query"]},
+         annotations=ANNOT_SEARCH),
+    Tool(name="get_skills_for_task",
+         description="Given a task description in plain language, return the 3-5 best skills to use. Matches your task against skill descriptions across all platforms. Use when you do not know which skill to call.",
+         inputSchema={"type": "object", "properties": {
+             "task_description": {"type": "string", "description": "Natural language description of what you need to do"},
+         }, "required": ["task_description"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="reload_skills_registry",
+         description="Force a reload of the skills registry from disk (after adding new skills or updating SKILL.md files). Returns total skills loaded per platform.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    # ── Agent Memory Bridge ──────────────────────────────────────
+    Tool(name="get_openclaw_memory",
+         description="Read the OpenClaw agent memory store. Contains trade lessons, regime history, signal quality scores, and cross-session agent context. Filter by key_prefix (e.g. 'trade', 'regime', 'bot') to narrow results.",
+         inputSchema={"type": "object", "properties": {
+             "key_prefix": {"type": "string", "description": "Optional prefix filter on memory keys"},
+             "limit": {"type": "integer", "default": 50},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="store_trade_lesson",
+         description="Persist a trade lesson to OpenClaw memory so autonomous agents can learn from it. Lessons are retrieved during future trade decisions for similar setups. Required: symbol, direction, outcome, lesson text.",
+         inputSchema={"type": "object", "properties": {
+             "symbol": {"type": "string"},
+             "direction": {"type": "string", "enum": ["LONG", "SHORT", "HOLD"]},
+             "outcome": {"type": "string", "enum": ["WIN", "LOSS", "BREAKEVEN"]},
+             "regime": {"type": "string", "description": "Market regime at time of trade"},
+             "lesson": {"type": "string", "description": "Key lesson from this trade"},
+             "pnl": {"type": "number", "description": "P&L in dollars (optional)"},
+         }, "required": ["symbol", "direction", "outcome", "lesson"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_current_regime",
+         description="Read the current market regime from OpenClaw state (written by autonomous regime_detector skill). Returns regime label, confidence, and timestamp. This is the regime all live bots use for signal filtering.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_bot_heartbeat_openclaw",
+         description="Read the bot heartbeat state from OpenClaw — shows which bots are alive, last-seen timestamps, and LIVE/STALE status. Written by autonomous_watchdog.py every 5 minutes.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_agent_evaluations",
+         description="Read OpenClaw agent evaluation records — which agents have been scored, their performance accuracy, and reputation weights. Used by the Moltbook reputation system and agent-orchestrator.",
+         inputSchema={"type": "object", "properties": {
+             "limit": {"type": "integer", "default": 20},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_openclaw_state_summary",
+         description="Get existence, size, and last-modified time for all OpenClaw state files (memory, regime, heartbeat, monitor, evaluations, AI cost, calibration). Use to verify OpenClaw is healthy and its state files are current.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    # ── Skill Execution Shortcuts ─────────────────────────────────
+    Tool(name="invoke_moltbook_debate",
+         description="Trigger a Moltbook bull/bear multi-agent debate for a trading signal. Shadow mode — does NOT place orders. Returns consensus direction, confidence, agreement %, and per-agent reasoning. Use before significant trades for multi-agent validation.",
+         inputSchema={"type": "object", "properties": {
+             "symbol": {"type": "string", "description": "Trading symbol e.g. MNQ, CL, ES"},
+             "direction": {"type": "string", "enum": ["LONG", "SHORT"]},
+             "confidence": {"type": "number", "description": "Bot confidence score 0-100"},
+             "regime": {"type": "string", "description": "Market regime (optional, fetched from OpenClaw if omitted)"},
+             "trigger_type": {"type": "string", "default": "mcp_manual"},
+         }, "required": ["symbol", "direction", "confidence"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="run_mcpt_pipeline",
+         description="Run the MCPT marketplace autopilot pipeline. Steps: decay (check edge decay), graduate (30-day paper trading gates), audit (batch MCPT re-validation), listing (generate marketplace JSON), slack (post summary to #quant-lab). Calls scripts/mcpt_autopilot.py.",
+         inputSchema={"type": "object", "properties": {
+             "step": {"type": "string", "enum": ["all", "sync", "decay", "graduate", "audit", "listing", "slack"], "default": "all"},
+             "dry_run": {"type": "boolean", "default": False, "description": "Report only, no writes"},
+             "no_desktop": {"type": "boolean", "default": False},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="run_regime_detection",
+         description="Run the regime detection pipeline — analyzes VIX term structure, market breadth, and price action to classify current market as trending/choppy/volatile/mean_reverting. Updates OpenClaw current_regime.json used by all live bots.",
+         inputSchema={"type": "object", "properties": {
+             "symbol": {"type": "string", "default": "SPY"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
     # ═══════════════════════════════════════════════════════════════
     # V21: Onyx Intelligence
     # ═══════════════════════════════════════════════════════════════
@@ -3005,21 +3270,374 @@ TOOLS = [
              "symbol": {"type": "string", "description": "Limit to specific symbol (optional)"},
              "dry_run": {"type": "boolean", "default": False, "description": "No writes, just report what would happen"},
          }, "required": []},
-         annotations=ANNOT_WRITE_EXTERNAL),
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_marketplace_listings", description="Get all staged marketplace bot listings with real metrics: futures (owner-only), equities, crypto, forex. Includes Sharpe, win rate, max DD, subscription pricing, and paper trading status.",
          inputSchema={"type": "object", "properties": {
              "asset_class": {"type": "string", "enum": ["all", "equities", "crypto", "futures", "forex", "options"], "default": "all"},
              "status": {"type": "string", "enum": ["all", "live", "validated", "paper"], "default": "all"},
          }, "required": []},
-         annotations=ANNOT_READ_LOCAL),
+         annotations=ANNOT_READ_ONLY),
     Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the AlgoChains knowledge brain at 100.89.114.31:8085. Replaces Vertex AI RAG pipeline.",
          inputSchema={"type": "object", "properties": {
              "full_sync": {"type": "boolean", "default": False, "description": "Full re-index vs incremental (new files only)"},
          }, "required": []},
-         annotations=ANNOT_WRITE_EXTERNAL),
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_onyx_status", description="Check Onyx knowledge base status: health, last sync time, total indexed documents, connector status. Onyx at 100.89.114.31:8085.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
+    # ═══════════════════════════════════════════════════════════════
+    # V22: Live Bot Intelligence — real metrics, heartbeat, academic citations
+    # ═══════════════════════════════════════════════════════════════
+    # Parses real Tradovate fill logs for live P&L/WinRate/signal data.
+    # Reads Mac→Desktop heartbeat file to self-identify primary vs standby.
+    # Provides SSRN academic citations and MCPT backtest artifacts per bot.
+    # Powers algochains.ai marketplace bot card live data panel.
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="get_live_bot_metrics",
+         description="Get real-time trading metrics for a live Tradovate futures bot by parsing its actual log file. Returns daily P&L, win rate, last signal, confidence, error count, and MCPT-validated Sharpe/MaxDD. Bot IDs: mnq, cl, mes, nq. All data from real fills — no synthetic values.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_all_bot_metrics",
+         description="Get real-time trading metrics for all 4 live Tradovate bots (MNQ, CL, MES, NQ) in a single call. Returns daily P&L, win rates, signals, error states, and MCPT validation badges. Data from real log files.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_system_heartbeat",
+         description="Check whether this MCP server node is the primary trader (MacBook offline) or standby (MacBook alive). Reads the Mac heartbeat file to determine heartbeat age, Mac liveness, and which node is currently running the bots. Critical for dual-node failover awareness.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_strategy_academic_citations",
+         description="Get all academic citations, SSRN papers, and published works that provide the theoretical basis for a specific bot's strategy. Includes authors, year, venue, DOI/SSRN link, and relevance explanation. Bot IDs: mnq, cl, mes, nq.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_bot_card_data",
+         description="Get the complete bot card data payload for algochains.ai marketplace display. Includes strategy summary, academic citations, backtest artifact paths (MCPT JSON, whitepapers, blueprints), skills references, and subscription tier. Use to populate or refresh a bot card on the marketplace site.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="list_bot_research_attachments",
+         description="List all research attachments available for a bot: MCPT validation JSON files, backtest PDFs, whitepapers, and blueprint markdown files. Shows local path and whether the file exists. Use to prepare uploads to Supabase storage for bot card attachment panel.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq. Use 'all' for every bot.", "default": "all"}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # V22.2: Onboarding — guided setup wizard for new users
+    # ═══════════════════════════════════════════════════════════════
+    # Compliance-gated broker connection, key validation, smoke test.
+    # Risk disclosure shown FIRST, acknowledgment REQUIRED before any trading.
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="start_onboarding",
+         description="Begin the AlgoChains setup wizard. Shows risk disclosure, privacy notice, and compliance acknowledgment. MUST be called first by new users before connecting any broker. Returns the disclosure text and required acknowledgment string.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="acknowledge_risk_disclosure",
+         description="Acknowledge the AlgoChains risk disclosure to unlock trading tools. User must type the exact acknowledgment text shown by start_onboarding(). Creates an auditable timestamp of acknowledgment.",
+         inputSchema={"type": "object", "properties": {"acknowledgment": {"type": "string", "description": "Exact acknowledgment text as shown in start_onboarding() response"}}, "required": ["acknowledgment"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_broker_setup_guide",
+         description="Get step-by-step setup guide for a broker: required env vars, where to get credentials, paper trading instructions, rate limits. Includes broker-specific risk warnings. Brokers: tradovate | alpaca | oanda",
+         inputSchema={"type": "object", "properties": {"broker": {"type": "string", "enum": ["tradovate", "alpaca", "oanda"]}}, "required": ["broker"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="validate_broker_connection",
+         description="Test broker connectivity using credentials from environment variables. Returns success/failure with specific error messages. Fails loudly if credentials are missing or invalid — never silently proceeds.",
+         inputSchema={"type": "object", "properties": {"broker": {"type": "string", "enum": ["tradovate", "alpaca", "oanda"]}}, "required": ["broker"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_data_provider_setup_guide",
+         description="Get setup guide for a market data provider: required env vars, where to get API keys, free tier details. Providers: polygon | databento | onyx | fred",
+         inputSchema={"type": "object", "properties": {"provider": {"type": "string", "enum": ["polygon", "databento", "onyx", "fred"]}}, "required": ["provider"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="validate_data_provider",
+         description="Test market data provider connectivity: polygon, databento, onyx, or fred. Uses credentials from environment variables. Returns connected/failed with error details.",
+         inputSchema={"type": "object", "properties": {"provider": {"type": "string", "enum": ["polygon", "databento", "onyx", "fred"]}}, "required": ["provider"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="run_onboarding_smoke_test",
+         description="Run end-to-end connectivity smoke test for all configured brokers and data providers. Marks onboarding complete if all pass. Call this after setting up credentials to verify everything works before trading.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_onboarding_status",
+         description="Check current onboarding progress: steps completed, steps remaining, connected brokers and data providers, and next required action. Call this to see where you are in the setup process.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="generate_ide_config",
+         description="Generate the MCP config file (mcporter.json / mcp.json) for your IDE based on your connected brokers and data providers. IDEs: cursor | windsurf | claude | vscode. Mode: smart (default, 25 tools) | full (262 tools). Output includes install instructions.",
+         inputSchema={"type": "object", "properties": {"ide": {"type": "string", "enum": ["cursor", "windsurf", "claude", "vscode"]}, "tool_mode": {"type": "string", "enum": ["smart", "full"], "default": "smart"}}, "required": ["ide"]},
+         annotations=ANNOT_READ_ONLY),
+
+    # V22.1: Trading Guardrails — hard-coded circuit breakers (read-only status)
+    # ═══════════════════════════════════════════════════════════════
+    # The AI can READ guardrail status but CANNOT modify limits.
+    # Limits are Python constants in trading_guardrails.py.
+    # Only a code deploy can change them.
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="get_circuit_breaker_status",
+         description="Read current state of all hard-coded trading circuit breakers. Shows which brokers are OPEN/CLOSED/HALF_OPEN, trip reasons, cooldown timers, and current order velocity. These limits are code-level constants — the AI cannot modify them. Use to understand why orders are being blocked.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_agent_loop_status",
+         description="Check AI agent loop detection metrics: calls in last 60s, unique call signatures, max identical call count, and loop risk level (LOW/MEDIUM/HIGH). If loop risk is HIGH, a circuit breaker may trip on the next repeated call. Read-only — limits are hard-coded constants.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_latency_profile",
+         description="Get real-time latency profile for this MCP session: tool call overhead, broker API round-trip times, and current execution tier. Includes a reminder that MCP AI-assisted execution is Tier 4 (120ms-2s) — not suitable for HFT. Use to set correct expectations for strategy timing.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    # V22.3 — Proprietary Data Ingestion
+    Tool(name="ingest_csv_data",
+         description="Ingest a user-provided CSV file of OHLCV market data into AlgoChains. Validates columns, parses rows, and stores in state/custom_data/. The data becomes available for backtesting via run_backtest(data_source='custom'). Requires real file on disk — no synthetic substitution.",
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "file_path": {"type": "string", "description": "Absolute path to the CSV file."},
+                 "symbol": {"type": "string", "description": "Ticker symbol, e.g. 'MNQ', 'AAPL'."},
+                 "timeframe": {"type": "string", "description": "Bar timeframe, e.g. '1min', '5min', '1h', '1d'."},
+                 "columns": {"type": "object", "description": "Optional mapping: canonical name -> CSV column header. E.g. {\"open\": \"Open\", \"close\": \"Close\"}."},
+                 "date_column": {"type": "string", "description": "Name of the date/timestamp column. Default: 'date'."},
+                 "date_format": {"type": "string", "description": "strptime format string. Default: '%Y-%m-%d %H:%M:%S'."},
+             },
+             "required": ["file_path", "symbol", "timeframe"],
+         },
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="ingest_json_signals",
+         description="Ingest a JSON file of pre-computed signals, ML features, labels, or regime tags into AlgoChains. Supports entry/exit signals, feature vectors, classification labels, and regime classifications. Data becomes available for ML training.",
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "file_path": {"type": "string", "description": "Absolute path to the JSON file."},
+                 "signal_type": {"type": "string", "enum": ["entry_exit", "features", "labels", "regime"], "description": "Type of signal data."},
+                 "symbol": {"type": "string", "description": "Ticker symbol the signals are for."},
+             },
+             "required": ["file_path", "signal_type", "symbol"],
+         },
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="connect_onyx_docs",
+         description="Index local research documents (PDF, Markdown, JSON, TXT) into the Onyx RAG knowledge base. Documents become searchable via onyx_ask() and onyx_search(). Supports recursive directory scanning. Requires Onyx to be running at ONYX_API_URL.",
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "doc_paths": {"type": "array", "items": {"type": "string"}, "description": "List of absolute file or directory paths."},
+                 "doc_type": {"type": "string", "enum": ["strategy_research", "blueprint", "backtest", "whitepaper", "general"], "description": "Document category for Onyx tagging."},
+             },
+             "required": ["doc_paths", "doc_type"],
+         },
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="register_strategy",
+         description="Register a custom strategy spec JSON with the AlgoChains platform. The spec must contain entry_rules and exit_rules. Once registered, the strategy can be backtested via run_backtest(strategy_id=...). Validates the spec file before registering.",
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "name": {"type": "string", "description": "Human-readable strategy name."},
+                 "asset_class": {"type": "string", "enum": ["futures", "equities", "forex", "crypto", "options"]},
+                 "timeframe": {"type": "string", "enum": ["1min", "3min", "5min", "10min", "15min", "30min", "1h", "4h", "1d", "1w"]},
+                 "symbols": {"type": "array", "items": {"type": "string"}, "description": "List of ticker symbols this strategy trades."},
+                 "spec_path": {"type": "string", "description": "Absolute path to strategy spec JSON file."},
+                 "description": {"type": "string"},
+                 "author": {"type": "string"},
+             },
+             "required": ["name", "asset_class", "timeframe", "symbols", "spec_path"],
+         },
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_ingested_data",
+         description="List all custom OHLCV datasets, signal files, Onyx document ingestions, and registered strategies. Shows what proprietary data has been brought into AlgoChains.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Support Ticket System ──────────────────────────────────────────────
+    Tool(name="create_support_ticket",
+         description="Create an IT support ticket. Stores in Supabase, syncs to Notion, and sends email confirmation. Use for bug reports, billing issues, broker connection problems, or onboarding help.",
+         inputSchema={"type": "object", "properties": {
+             "subject": {"type": "string", "description": "Short summary (max 200 chars)"},
+             "description": {"type": "string", "description": "Full problem description"},
+             "user_email": {"type": "string", "description": "User's email for reply notifications"},
+             "category": {"type": "string", "enum": ["broker_connection","bot_performance","billing","account","onboarding","bug","feature_request","other"], "default": "other"},
+             "priority": {"type": "string", "enum": ["low","medium","high","critical"], "default": "medium"},
+             "user_id": {"type": "string"},
+             "metadata": {"type": "object"},
+         }, "required": ["subject","description","user_email"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_support_ticket",
+         description="Get a support ticket by ID. Returns full ticket details including status, responses, and Notion page link.",
+         inputSchema={"type": "object", "properties": {"ticket_id": {"type": "string"}}, "required": ["ticket_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="list_support_tickets",
+         description="List support tickets with optional filters by status, priority, category, or user email.",
+         inputSchema={"type": "object", "properties": {
+             "status": {"type": "string", "enum": ["open","in_progress","resolved","closed"]},
+             "priority": {"type": "string", "enum": ["low","medium","high","critical"]},
+             "category": {"type": "string"},
+             "user_email": {"type": "string"},
+             "limit": {"type": "integer", "default": 50},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="update_ticket_status",
+         description="Update a support ticket status (open → in_progress → resolved → closed). Optionally add an agent response.",
+         inputSchema={"type": "object", "properties": {
+             "ticket_id": {"type": "string"},
+             "status": {"type": "string", "enum": ["open","in_progress","resolved","closed"]},
+             "agent_response": {"type": "string"},
+             "agent_email": {"type": "string"},
+         }, "required": ["ticket_id","status"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_ticket_stats",
+         description="Get aggregate support ticket statistics: total, by status, by priority, by category, open critical count.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── OAuth Broker Connection ────────────────────────────────────────────
+    Tool(name="generate_broker_auth_url",
+         description="Generate an OAuth authorization URL for a user to connect their broker account (Schwab, Alpaca, Tradovate, OANDA). Returns the URL to redirect the user to.",
+         inputSchema={"type": "object", "properties": {
+             "broker": {"type": "string", "enum": ["schwab","alpaca","tradovate","oanda"], "description": "Which broker to connect"},
+             "user_id": {"type": "string", "description": "User ID to associate the OAuth token with"},
+             "redirect_uri": {"type": "string", "description": "Override callback URI (default: algochains.ai/oauth/callback/{broker})"},
+         }, "required": ["broker","user_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="exchange_broker_oauth_code",
+         description="Exchange an OAuth authorization code for broker access/refresh tokens. Call this after the user returns from the broker's authorization page.",
+         inputSchema={"type": "object", "properties": {
+             "state": {"type": "string", "description": "State token returned by generate_broker_auth_url"},
+             "code": {"type": "string", "description": "Authorization code from the broker callback URL"},
+             "redirect_uri": {"type": "string"},
+         }, "required": ["state","code"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_broker_oauth_status",
+         description="Get OAuth connection status and token validity for a user's broker connection.",
+         inputSchema={"type": "object", "properties": {
+             "broker": {"type": "string"},
+             "user_id": {"type": "string"},
+         }, "required": ["broker","user_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_connected_brokers",
+         description="List all brokers a user has connected via OAuth, with token expiry and scope information.",
+         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="revoke_broker_connection",
+         description="Disconnect a broker OAuth connection and remove stored tokens.",
+         inputSchema={"type": "object", "properties": {
+             "broker": {"type": "string"},
+             "user_id": {"type": "string"},
+         }, "required": ["broker","user_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    # ── Waitlist ──────────────────────────────────────────────────────────
+    Tool(name="join_waitlist",
+         description="Add an email to the AlgoChains waitlist. Stores in Supabase, sends welcome email via Resend. Returns waitlist position.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "first_name": {"type": "string"},
+             "last_name": {"type": "string"},
+             "broker": {"type": "string", "description": "Which broker they use"},
+             "use_case": {"type": "string", "description": "What they plan to use AlgoChains for"},
+             "referral_code": {"type": "string"},
+         }, "required": ["email"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_waitlist_stats",
+         description="Get waitlist aggregate statistics: total signups, by status, by broker interest.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="send_waitlist_invite",
+         description="Send an invite code to a waitlist user. Generates a unique code and emails it. Updates status to 'invited'.",
+         inputSchema={"type": "object", "properties": {"email": {"type": "string"}}, "required": ["email"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    # ── Email/SMS Verification ────────────────────────────────────────────
+    Tool(name="send_email_verification_code",
+         description="Send a 6-digit verification code to an email address. Use for purchase confirmation, email verification, or broker connection confirmation.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "purpose": {"type": "string", "enum": ["email_verification","purchase","broker_connect","password_reset","account_recovery"], "default": "email_verification"},
+             "context": {"type": "string", "description": "Optional context shown in the email"},
+         }, "required": ["email"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="send_sms_verification_code",
+         description="Send a 6-digit verification code via SMS (Twilio). Use for purchase confirmation or high-value action verification.",
+         inputSchema={"type": "object", "properties": {
+             "phone": {"type": "string", "description": "E.164 format: +15551234567"},
+             "purpose": {"type": "string", "default": "purchase"},
+             "context": {"type": "string"},
+         }, "required": ["phone"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="verify_code",
+         description="Verify a code sent via email or SMS. Returns valid=true if the code is correct and not expired.",
+         inputSchema={"type": "object", "properties": {
+             "destination": {"type": "string", "description": "Email or phone the code was sent to"},
+             "code": {"type": "string", "description": "The 6-digit code the user entered"},
+             "purpose": {"type": "string", "default": "email_verification"},
+         }, "required": ["destination","code"]},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Platform Analytics ────────────────────────────────────────────────
+    Tool(name="track_platform_event",
+         description="Track a platform analytics event (page_view, signup, broker_connected, purchase, etc.). Used for soft-launch funnel monitoring.",
+         inputSchema={"type": "object", "properties": {
+             "event_type": {"type": "string", "description": "Event type: page_view, signup, email_verified, waitlist_join, broker_connected, bot_started, purchase, conversion"},
+             "session_id": {"type": "string"},
+             "user_id": {"type": "string"},
+             "page": {"type": "string"},
+             "referrer": {"type": "string"},
+             "properties": {"type": "object"},
+             "device": {"type": "string", "enum": ["desktop","mobile","tablet"]},
+         }, "required": ["event_type"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_analytics_summary",
+         description="Get platform analytics summary for the last N days: total events, unique users, conversion funnel, top pages, by-day breakdown.",
+         inputSchema={"type": "object", "properties": {
+             "days": {"type": "integer", "default": 7, "description": "Lookback period in days"},
+             "event_type": {"type": "string", "description": "Optional filter to a specific event type"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Password Reset & Account Recovery ────────────────────────────────
+    Tool(name="initiate_password_reset",
+         description="Send a password reset link to a user's email via Supabase Auth. Always returns success to prevent user enumeration.",
+         inputSchema={"type": "object", "properties": {"email": {"type": "string"}}, "required": ["email"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="complete_password_reset",
+         description="Complete a password reset using the access token from the reset email link. Validates password policy (12 chars, upper/lower/number/special).",
+         inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "Access token from the reset email URL fragment"},
+             "new_password": {"type": "string"},
+         }, "required": ["access_token","new_password"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="initiate_account_recovery",
+         description="Start account recovery for users who cannot receive the reset email. Creates a support ticket and provides recovery instructions.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "reason": {"type": "string", "enum": ["lost_email_access","lost_2fa","account_locked","other"], "default": "lost_email_access"},
+             "contact_info": {"type": "string", "description": "Alternate contact (phone or backup email)"},
+         }, "required": ["email"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_password_policy",
+         description="Return the current password policy requirements for AlgoChains accounts.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Multi-Bot Account Metrics ─────────────────────────────────────────
+    Tool(name="get_user_bot_metrics",
+         description="Get metrics for a specific bot in the context of a user's subscription. Returns live metrics or appropriate fallback state (broker_not_connected, metrics_pending, data_stale).",
+         inputSchema={"type": "object", "properties": {
+             "user_id": {"type": "string"},
+             "bot_id": {"type": "string", "description": "Bot identifier (mnq, cl, mes, nq, or marketplace UUID)"},
+             "subscription_id": {"type": "string"},
+             "log_path": {"type": "string", "description": "Optional custom log path for self-hosted bots"},
+         }, "required": ["user_id","bot_id","subscription_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_all_user_bots",
+         description="Get metrics for all bots a user is subscribed to. Includes fallback states for each bot (live, pending, not_connected, stale).",
+         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="upsert_bot_performance",
+         description="Record real performance data for a managed bot subscription. Called by the metrics streaming daemon. All values must come from actual execution.",
+         inputSchema={"type": "object", "properties": {
+             "subscription_id": {"type": "string"},
+             "bot_id": {"type": "string"},
+             "daily_pnl": {"type": "number"},
+             "win_rate": {"type": "number"},
+             "trade_count": {"type": "integer"},
+             "is_running": {"type": "boolean"},
+             "broker": {"type": "string"},
+             "sharpe_ratio": {"type": "number"},
+             "max_drawdown": {"type": "number"},
+             "weekly_pnl": {"type": "number"},
+             "last_trade_at": {"type": "string"},
+         }, "required": ["subscription_id","bot_id","daily_pnl","win_rate","trade_count","is_running","broker"]},
+         annotations=ANNOT_WRITE_SAFE),
 ]
 
 
@@ -3093,6 +3711,29 @@ TIER1_TOOL_NAMES = {
     "get_macro_signals",
     "get_earnings_catalyst",
     "get_prediction_markets",
+    "search_prediction_markets",
+    "get_polymarket_high_volume",
+    "get_polymarket_market",
+    "get_polymarket_market_history",
+    "list_polymarket_markets",
+    "get_kalshi_settlements",
+    "record_prediction_market_bot_metric",
+    "get_prediction_market_bot_metrics",
+    "propagate_trade_signal",
+    # Skills Bridge (V22.7)
+    "list_skills",
+    "get_skill_detail",
+    "search_skills",
+    "get_skills_for_task",
+    "get_openclaw_memory",
+    "get_current_regime",
+    "get_bot_heartbeat_openclaw",
+    "get_openclaw_state_summary",
+    "store_trade_lesson",
+    "invoke_moltbook_debate",
+    "run_mcpt_pipeline",
+    "run_regime_detection",
+    # Onyx
     "onyx_ask",
     "onyx_search",
     "get_bot_dashboard",
@@ -3113,6 +3754,74 @@ TIER1_TOOL_NAMES = {
     "get_marketplace_listings",
     "run_onyx_ingest",
     "get_onyx_status",
+    # V22 — Live Bot Intelligence (always Tier 1 — powers bot cards)
+    "get_live_bot_metrics",
+    "get_all_bot_metrics",
+    "get_system_heartbeat",
+    "get_strategy_academic_citations",
+    "get_bot_card_data",
+    "list_bot_research_attachments",
+    # V22.1 — Guardrails status (always Tier 1 — safety awareness)
+    "get_circuit_breaker_status",
+    "get_agent_loop_status",
+    "get_latency_profile",
+    # V22.2 — Onboarding (always Tier 1 — first thing new users see)
+    "start_onboarding",
+    "acknowledge_risk_disclosure",
+    "get_broker_setup_guide",
+    "validate_broker_connection",
+    "get_data_provider_setup_guide",
+    "validate_data_provider",
+    "run_onboarding_smoke_test",
+    "get_onboarding_status",
+    "generate_ide_config",
+    # V22.3 — Data Ingestion (always Tier 1 — users need this early)
+    "ingest_csv_data",
+    "ingest_json_signals",
+    "connect_onyx_docs",
+    "register_strategy",
+    "list_ingested_data",
+    # Support Tickets
+    "create_support_ticket",
+    "get_support_ticket",
+    "list_support_tickets",
+    "update_ticket_status",
+    "get_ticket_stats",
+    # OAuth Broker Connection
+    "generate_broker_auth_url",
+    "exchange_broker_oauth_code",
+    "get_broker_oauth_status",
+    "get_connected_brokers",
+    "revoke_broker_connection",
+    # Waitlist
+    "join_waitlist",
+    "get_waitlist_stats",
+    "send_waitlist_invite",
+    # Verification
+    "send_email_verification_code",
+    "send_sms_verification_code",
+    "verify_code",
+    # Analytics
+    "track_platform_event",
+    "get_analytics_summary",
+    # Password Reset
+    "initiate_password_reset",
+    "complete_password_reset",
+    "initiate_account_recovery",
+    "get_password_policy",
+    # Multi-Bot Metrics
+    "get_user_bot_metrics",
+    "get_all_user_bots",
+    "upsert_bot_performance",
+    # V22.9 — PAI Integration (always Tier 1 — business context + macro data)
+    "get_algochains_telos",
+    "get_us_economic_indicators",
+    "get_fed_policy_signals",
+    "get_crude_oil_inventories",
+    "capture_learning_signal",
+    "get_learning_signals",
+    "send_ntfy_notification",
+    "update_algochains_telos",
 }
 
 
@@ -3160,6 +3869,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     t0 = time.monotonic()
 
     try:
+        # ── 0. V22 Guardrails — AI loop detection (ALL tool calls) ───
+        # This runs before sanitization so loops are caught even on
+        # malformed arguments. GuardrailTripped is handled below.
+        if _GUARDRAILS_AVAILABLE:
+            try:
+                get_guardrails().record_tool_call(name, arguments)
+            except GuardrailTripped as _gt:
+                tlog.log_call(name, arguments, error=str(_gt), duration_ms=0)
+                return _text({
+                    "error_type": "GuardrailTripped",
+                    "reason": _gt.reason.value,
+                    "message": str(_gt),
+                    "cooldown_sec": _gt.cooldown_sec,
+                    "action": "All orders blocked. No broker API calls made.",
+                })
+
         # ── 1. Sanitize inputs ───────────────────────────────────
         arguments = validate_arguments(name, arguments)
 
@@ -3221,6 +3946,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
         return _error_text(e)
 
+    except AttributeError as e:
+        record_failure(name)
+        msg = str(e)
+        # Catch unguarded None engine calls (e.g. "NoneType has no attribute 'method'")
+        if "NoneType" in msg or "None" in msg:
+            friendly = (
+                f"Engine for tool '{name}' failed to initialize (returned None). "
+                "Check server startup logs for import errors or missing env vars. "
+                f"Original error: {msg}"
+            )
+            logger.error("Tool %s: uninitialized engine — %s", name, msg)
+            tlog.log_call(name, arguments, error=friendly, duration_ms=(time.monotonic() - t0) * 1000)
+            return _text({"error_type": "EngineUnavailable", "message": friendly, "tool": name})
+        logger.error("Tool %s AttributeError: %s", name, msg, exc_info=True)
+        tlog.log_call(name, arguments, error=msg, duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": "AttributeError", "message": msg, "tool": name})
+
     except Exception as e:
         record_failure(name)
         logger.error("Tool %s failed: %s", name, e, exc_info=True)
@@ -3273,6 +4015,53 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             logger.debug("Elicitation not available, executing trade directly: %s", _elicit_err)
 
         conn = _require_broker(registry, arguments["broker"])
+
+        # ── V22 Guardrails: hard-coded pre-order gate ─────────────
+        # Fetches current account state to check financial limits.
+        # All checks are mandatory. GuardrailTripped blocks execution.
+        if _GUARDRAILS_AVAILABLE:
+            try:
+                _g = get_guardrails()
+                _broker_name = arguments.get("broker", "tradovate")
+                _symbol = arguments.get("symbol", "")
+                _qty = float(arguments.get("qty", 1))
+
+                # Fetch live account data for financial limit checks
+                _daily_pnl = 0.0
+                _drawdown_pct = 0.0
+                _consecutive_losses = 0
+                _vix = 0.0
+                _notional = 0.0
+                try:
+                    _acct = await conn.get_account()
+                    _daily_pnl = getattr(_acct, "daily_pnl", 0.0) or 0.0
+                    _drawdown_pct = getattr(_acct, "drawdown_pct", 0.0) or 0.0
+                except Exception as _acct_err:
+                    logger.debug("Could not fetch account for guardrail check: %s", _acct_err)
+
+                _g.check_all(
+                    broker=_broker_name,
+                    symbol=_symbol,
+                    qty_contracts=_qty,
+                    current_daily_pnl=_daily_pnl,
+                    current_drawdown_pct=_drawdown_pct,
+                    consecutive_losses=_consecutive_losses,
+                    vix=_vix,
+                    total_open_notional=_notional,
+                )
+                _g.record_order()  # Record velocity after gate passes
+            except GuardrailTripped as _gt:
+                logger.warning("place_order BLOCKED by guardrail: %s", _gt)
+                return _text({
+                    "error_type": "GuardrailTripped",
+                    "reason": _gt.reason.value,
+                    "message": str(_gt),
+                    "cooldown_sec": _gt.cooldown_sec,
+                    "order_submitted": False,
+                    "action": "Order rejected before reaching broker. No position opened.",
+                })
+        # ── End V22 Guardrails ────────────────────────────────────
+
         order = await conn.place_order(
             symbol=arguments["symbol"],
             side=OrderSide(arguments["side"]),
@@ -3283,6 +4072,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             trail_pct=arguments.get("trail_pct"),
             time_in_force=arguments.get("time_in_force", "day"),
         )
+        # V22: Record successful order for circuit breaker health tracking
+        if _GUARDRAILS_AVAILABLE:
+            try:
+                get_guardrails().record_order_success(arguments.get("broker", "tradovate"))
+            except Exception:
+                pass
         return _text(order.to_dict())
 
     elif name == "cancel_order":
@@ -3839,31 +4634,47 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "optimize_strategy":
         StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
+        if StrategySpec is None:
+            return _text({"error": "strategy_builder module unavailable; check server logs."})
         spec = StrategySpec.from_dict(arguments["spec"])
         optimizer = _get_strategy_optimizer()
+        if optimizer is None:
+            return _text({"error": "StrategyOptimizer unavailable — backtest runner failed to initialize. Check ALGOCHAINS_STATE_DIR and tick data paths."})
         result = await optimizer.optimize(spec, n_trials=arguments.get("n_trials", 100), metric=arguments.get("metric", "sharpe"))
         return _text(result)
 
     elif name == "walk_forward_test":
         StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
+        if StrategySpec is None:
+            return _text({"error": "strategy_builder module unavailable; check server logs."})
         spec = StrategySpec.from_dict(arguments["spec"])
         wf = _get_walk_forward()
+        if wf is None:
+            return _text({"error": "WalkForwardEngine unavailable — backtest runner failed to initialize."})
         result = await wf.run(spec, n_folds=arguments.get("n_folds", 5), train_pct=arguments.get("train_pct", 0.70))
         return _text(result)
 
     elif name == "deploy_strategy":
         StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
+        if StrategySpec is None:
+            return _text({"error": "strategy_builder module unavailable; check server logs."})
         spec = StrategySpec.from_dict(arguments["spec"])
         deployer = _get_deployer()
+        if deployer is None:
+            return _text({"error": "StrategyDeployer unavailable — check server logs."})
         result = await deployer.deploy(spec, broker=arguments["broker"], mode=arguments.get("mode", "paper"), capital=arguments.get("capital", 10000))
         return _text(result)
 
     elif name == "list_templates":
         mgr = _get_template_mgr()
+        if mgr is None:
+            return _text({"error": "TemplateManager unavailable — check server logs."})
         return _text(mgr.list_templates(category=arguments.get("category"), asset_class=arguments.get("asset_class")))
 
     elif name == "fork_template":
         mgr = _get_template_mgr()
+        if mgr is None:
+            return _text({"error": "TemplateManager unavailable — check server logs."})
         return _text(mgr.fork_template(template_id=arguments["template_id"], new_name=arguments.get("new_name"), symbols=arguments.get("symbols"), overrides=arguments.get("overrides")))
 
     # ── V8: Social Trading ───────────────────────────────────
@@ -4597,6 +5408,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         parser = _get_intent_parser()
         solver = _get_constraint_solver()
         executor = _get_plan_executor()
+        if parser is None or solver is None or executor is None:
+            missing = [n for n, o in [("IntentParser", parser), ("ConstraintSolver", solver), ("PlanExecutor", executor)] if o is None]
+            return _text({"error": f"Intent engine components unavailable: {missing}. Check server logs."})
         intent = await parser.parse(arguments["intent"])
         plan = await solver.solve(intent)
         dry_run = arguments.get("dry_run", True)
@@ -4608,6 +5422,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_intent_plan":
         solver = _get_constraint_solver()
+        if solver is None:
+            return _text({"error": "ConstraintSolver unavailable — check server logs."})
         plan = solver.get_plan(arguments["plan_id"])
         if not plan:
             return _text({"error": f"Plan '{arguments['plan_id']}' not found"})
@@ -4616,6 +5432,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "approve_intent":
         solver = _get_constraint_solver()
         executor = _get_plan_executor()
+        if solver is None or executor is None:
+            return _text({"error": "Intent engine unavailable — check server logs."})
         plan = solver.approve_plan(arguments["plan_id"])
         if not plan:
             return _text({"error": f"Plan '{arguments['plan_id']}' not found or not pending"})
@@ -4628,6 +5446,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "create_shadow_portfolio":
         eng = _get_shadow_engine()
+        if eng is None:
+            return _text({"error": "ShadowPortfolioEngine unavailable — check server logs."})
         return _text(await eng.create(
             name=arguments["name"],
             strategy_id=arguments.get("strategy_id"),
@@ -4637,6 +5457,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_shadow_results":
         eng = _get_shadow_engine()
+        if eng is None:
+            return _text({"error": "ShadowPortfolioEngine unavailable — check server logs."})
         shadow_id = arguments["shadow_id"]
         if arguments.get("compare_live"):
             return _text(await eng.compare(shadow_id))
@@ -4937,7 +5759,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             title=args.get("title", args.get("operation", "")),
             description=args.get("description", ""),
         )
-        asyncio.create_task(mgr.submit(task.id))
+        _submit_task = asyncio.create_task(mgr.submit(task.id), name=f"task_submit_{task.id[:8]}")
+        _submit_task.add_done_callback(
+            lambda t: logger.warning("Task submit failed: %s", t.exception()) if not t.cancelled() and t.exception() else None
+        )
         return _text({"task_id": task.id, "status": task.status.value,
                       "title": task.title, "message": "Task submitted. Use get_task_status to poll."})
 
@@ -5120,15 +5945,275 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(vars(result) if hasattr(result, "__dict__") else result)
 
     elif name == "get_prediction_markets":
-        PredictionMarketEngine = _lazy_import("pred_markets", "PredictionMarketEngine")
-        if not PredictionMarketEngine:
+        PMEng = _lazy_import("pred_markets", "PredictionMarketsEngine")
+        if not PMEng:
             return _text({"error": "Prediction market engine not available"})
-        engine = PredictionMarketEngine()
-        result = await engine.get_signals(
-            category=args.get("category", "all"),
-            min_volume=args.get("min_volume", 10000),
-        )
+        engine = PMEng()
+        try:
+            result = engine.get_signals(
+                category=str(args.get("category", "all")),
+                min_volume=float(args.get("min_volume", 10000)),
+            )
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
         return _text(result)
+
+    elif name == "search_prediction_markets":
+        PMEng = _lazy_import("pred_markets", "PredictionMarketsEngine")
+        if not PMEng:
+            return _text({"error": "Prediction market engine not available"})
+        engine = PMEng()
+        try:
+            q = str(args.get("query", "")).strip()
+            if not q:
+                return _text({"error": "query is required"})
+            platform = str(args.get("platform", "all"))
+            lim = int(args.get("limit", 10))
+            rows = engine.search_markets(q, platform=platform, limit=lim)
+            return _text({"query": q, "platform": platform, "count": len(rows),
+                          "markets": [m.to_dict() for m in rows]})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_polymarket_high_volume":
+        PMEng = _lazy_import("pred_markets", "PredictionMarketsEngine")
+        if not PMEng:
+            return _text({"error": "Prediction market engine not available"})
+        engine = PMEng()
+        try:
+            lim = int(args.get("limit", 20))
+            rows = engine.get_top_markets(platform="polymarket", limit=lim)
+            return _text({"platform": "polymarket", "count": len(rows), "markets": rows})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_polymarket_market":
+        PMEng = _lazy_import("pred_markets", "PredictionMarketsEngine")
+        if not PMEng:
+            return _text({"error": "Prediction market engine not available"})
+        engine = PMEng()
+        try:
+            result = engine.get_polymarket_market(str(args["market_id_or_slug"]))
+            return _text(result)
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_polymarket_market_history":
+        PMEng = _lazy_import("pred_markets", "PredictionMarketsEngine")
+        if not PMEng:
+            return _text({"error": "Prediction market engine not available"})
+        engine = PMEng()
+        try:
+            result = engine.get_polymarket_market_history(
+                market_id_or_slug=str(args.get("market_id_or_slug", args.get("market_id", ""))),
+                timeframe=str(args.get("timeframe", "7d")),
+            )
+            return _text(result)
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "list_polymarket_markets":
+        PMEng = _lazy_import("pred_markets", "PredictionMarketsEngine")
+        if not PMEng:
+            return _text({"error": "Prediction market engine not available"})
+        engine = PMEng()
+        try:
+            result = engine.list_polymarket_markets(
+                status=str(args.get("status", "open")),
+                limit=int(args.get("limit", 20)),
+                offset=int(args.get("offset", 0)),
+                category=args.get("category"),
+            )
+            return _text(result)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_kalshi_settlements":
+        PMEng = _lazy_import("pred_markets", "PredictionMarketsEngine")
+        if not PMEng:
+            return _text({"error": "Prediction market engine not available"})
+        engine = PMEng()
+        try:
+            result = engine.get_kalshi_settlements(limit=int(args.get("limit", 25)))
+            return _text(result)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "place_kalshi_order":
+        PMEng = _lazy_import("pred_markets", "PredictionMarketsEngine")
+        if not PMEng:
+            return _text({"error": "Prediction market engine not available"})
+        engine = PMEng()
+        try:
+            result = engine.place_kalshi_order(
+                ticker=str(args["ticker"]),
+                side=str(args["side"]),
+                action=str(args["action"]),
+                count=int(args["count"]),
+                limit_price_cents=int(args["limit_price_cents"]),
+                expiration_ts=int(args["expiration_ts"]) if args.get("expiration_ts") else None,
+            )
+            return _text(result)
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "propagate_trade_signal":
+        from .trade_propagation import propagate_signal
+        try:
+            out = await propagate_signal(
+                strategy_name=str(args.get("strategy_name", "")),
+                symbol=str(args.get("symbol", "")),
+                side=str(args.get("side", "")),
+                qty=float(args.get("qty", 0)),
+                confidence=float(args.get("confidence", 0.0)),
+                stop_loss=float(args.get("stop_loss", 0.0)),
+                take_profit=float(args.get("take_profit", 0.0)),
+            )
+            return _text(out)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    # ──────────────────────────────────────────────────────────────
+    # V22.9 — PAI Integration handlers
+    # ──────────────────────────────────────────────────────────────
+    elif name == "get_algochains_telos":
+        from .telos import get_telos
+        try:
+            section = str(args.get("section", "all"))
+            return _text(get_telos(section))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "update_algochains_telos":
+        from .telos import update_telos
+        try:
+            return _text(update_telos(
+                section=str(args["section"]),
+                entry=str(args["entry"]),
+                action=str(args.get("action", "append")),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_us_economic_indicators":
+        from .us_economics import get_us_economic_indicators
+        try:
+            categories = args.get("categories")
+            if categories and not isinstance(categories, list):
+                categories = [str(categories)]
+            use_cache = bool(args.get("use_cache", True))
+            return _text(get_us_economic_indicators(categories=categories, use_cache=use_cache))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_crude_oil_inventories":
+        from .us_economics import get_crude_oil_inventories
+        try:
+            use_cache = bool(args.get("use_cache", True))
+            return _text(get_crude_oil_inventories(use_cache=use_cache))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_fed_policy_signals":
+        from .us_economics import get_fed_policy_signals
+        try:
+            use_cache = bool(args.get("use_cache", True))
+            return _text(get_fed_policy_signals(use_cache=use_cache))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "capture_learning_signal":
+        from .learning_signals import capture_learning_signal
+        try:
+            return _text(capture_learning_signal(
+                action_type=str(args.get("action_type", "other")),
+                action_description=str(args["action_description"]),
+                outcome=str(args["outcome"]),
+                rating=int(args["rating"]) if args.get("rating") is not None else None,
+                notes=str(args.get("notes", "")),
+                skill_used=str(args.get("skill_used", "")),
+                bot=str(args.get("bot", "")),
+                agent=str(args.get("agent", "")),
+                session_id=str(args.get("session_id", "")),
+                extra=args.get("extra") if isinstance(args.get("extra"), dict) else None,
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_learning_signals":
+        from .learning_signals import get_learning_signals
+        try:
+            return _text(get_learning_signals(
+                limit=int(args.get("limit", 50)),
+                action_type=str(args["action_type"]) if args.get("action_type") else None,
+                outcome=str(args["outcome"]) if args.get("outcome") else None,
+                bot=str(args["bot"]) if args.get("bot") else None,
+                min_rating=int(args["min_rating"]) if args.get("min_rating") is not None else None,
+                max_rating=int(args["max_rating"]) if args.get("max_rating") is not None else None,
+                summarize=bool(args.get("summarize", True)),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "send_ntfy_notification":
+        from .notifications.ntfy_push import send_push
+        try:
+            tags = args.get("tags")
+            if tags and not isinstance(tags, list):
+                tags = [str(tags)]
+            return _text(send_push(
+                title=str(args["title"]),
+                message=str(args["message"]),
+                topic=str(args.get("topic", "ops")),
+                priority=str(args.get("priority", "default")),
+                tags=tags,
+                click_url=str(args.get("click_url", "")),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "record_prediction_market_bot_metric":
+        from .prediction_market_metrics import record_bot_metric_snapshot
+        try:
+            out = record_bot_metric_snapshot(
+                bot_id=str(args.get("bot_id", "")),
+                platform=str(args.get("platform", "")),
+                market_id=str(args.get("market_id", "")),
+                yes_probability=float(args["yes_probability"]) if args.get("yes_probability") is not None else None,
+                edge_vs_entry=float(args["edge_vs_entry"]) if args.get("edge_vs_entry") is not None else None,
+                latency_ms_observed=float(args["latency_ms_observed"]) if args.get("latency_ms_observed") is not None else None,
+                action=str(args.get("action", "")),
+                notes=str(args.get("notes", "")),
+                extra=args.get("metadata") if isinstance(args.get("metadata"), dict) else None,
+            )
+            return _text(out)
+        except KeyError as exc:
+            return _text({"error": f"Missing required field: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_prediction_market_bot_metrics":
+        from .prediction_market_metrics import read_recent_metrics
+        try:
+            out = read_recent_metrics(
+                bot_id=str(args.get("bot_id", "")),
+                max_lines=int(args.get("max_lines", 500)),
+            )
+            return _text(out)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
 
     elif name == "get_macro_signals":
         MacroSignalEngine = _lazy_import("macro_signals_v21", "MacroSignalEngine")
@@ -5283,6 +6368,188 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"subscription_id": sub.id, "uri": uri, "bot": bot,
                           "status": "active", "message": f"Subscribed to {uri}. Real-time fills and signals will be pushed."})
         return _text({"uri": uri, "message": "Subscribed (local mode)"})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V22.7: Skills Bridge dispatch
+    # ═══════════════════════════════════════════════════════════════
+    elif name in ("list_skills", "get_skill_detail", "search_skills",
+                  "get_skills_for_task", "reload_skills_registry"):
+        try:
+            from .skills_registry import get_registry
+            reg = get_registry()
+            if name == "list_skills":
+                result = reg.list_skills(
+                    category=args.get("category"),
+                    platform=args.get("platform"),
+                    limit=int(args.get("limit", 50)),
+                    offset=int(args.get("offset", 0)),
+                )
+            elif name == "get_skill_detail":
+                result = reg.get_skill_detail(str(args["name"]))
+            elif name == "search_skills":
+                result = reg.search_skills(str(args["query"]), limit=int(args.get("limit", 20)))
+            elif name == "get_skills_for_task":
+                result = reg.get_skills_for_task(str(args["task_description"]))
+            elif name == "reload_skills_registry":
+                count = reg.reload()
+                result = {"reloaded": True, "total_skills": count, "stats": reg.stats()}
+            else:
+                result = {"error": f"Unknown skills tool: {name}"}
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": f"Skills registry error: {exc}", "error_type": type(exc).__name__})
+        return _text(result)
+
+    elif name in ("get_openclaw_memory", "store_trade_lesson", "get_current_regime",
+                  "get_bot_heartbeat_openclaw", "get_agent_evaluations",
+                  "get_openclaw_state_summary"):
+        try:
+            from . import agent_memory as _am
+            if name == "get_openclaw_memory":
+                result = _am.get_openclaw_memory(
+                    key_prefix=args.get("key_prefix"),
+                    limit=int(args.get("limit", 50)),
+                )
+            elif name == "store_trade_lesson":
+                result = _am.store_trade_lesson({
+                    "symbol": args["symbol"],
+                    "direction": args["direction"],
+                    "outcome": args["outcome"],
+                    "regime": args.get("regime", "unknown"),
+                    "lesson": args["lesson"],
+                    "pnl": args.get("pnl"),
+                })
+            elif name == "get_current_regime":
+                result = _am.get_current_regime()
+            elif name == "get_bot_heartbeat_openclaw":
+                result = _am.get_bot_heartbeat()
+            elif name == "get_agent_evaluations":
+                result = _am.get_agent_evaluations(limit=int(args.get("limit", 20)))
+            elif name == "get_openclaw_state_summary":
+                result = _am.get_all_state_files()
+            else:
+                result = {"error": f"Unknown agent memory tool: {name}"}
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": f"Agent memory error: {exc}", "error_type": type(exc).__name__})
+        return _text(result)
+
+    elif name == "invoke_moltbook_debate":
+        try:
+            import subprocess, json as _json, sys as _sys
+            symbol = str(args["symbol"])
+            direction = str(args["direction"])
+            confidence = float(args["confidence"])
+            regime = args.get("regime", "unknown")
+            trigger_type = str(args.get("trigger_type", "mcp_manual"))
+
+            # Try direct import first (faster, in-process)
+            try:
+                from moltbook.debate_engine import DebateEngine
+                engine = DebateEngine()
+                import inspect as _inspect
+                if _inspect.iscoroutinefunction(engine.run_debate):
+                    import asyncio as _asyncio
+                    result = await engine.run_debate(
+                        symbol=symbol, direction=direction, confidence=confidence,
+                        regime=regime, trigger_type=trigger_type,
+                    )
+                else:
+                    result = engine.run_debate(
+                        symbol=symbol, direction=direction, confidence=confidence,
+                        regime=regime, trigger_type=trigger_type,
+                    )
+            except ImportError:
+                # Fallback: call as subprocess from control-tower directory
+                control_tower = "/Users/treycsa/CascadeProjects/algochains-control-tower"
+                script = (
+                    "import json, sys; sys.path.insert(0, '.'); "
+                    "from moltbook.debate_engine import DebateEngine; "
+                    "import asyncio; e = DebateEngine(); "
+                    f"r = asyncio.run(e.run_debate('{symbol}', '{direction}', "
+                    f"{confidence}, '{regime}', '{trigger_type}')); "
+                    "print(json.dumps(r))"
+                )
+                proc = subprocess.run(
+                    [_sys.executable, "-c", script],
+                    cwd=control_tower, capture_output=True, text=True, timeout=60
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    result = _json.loads(proc.stdout)
+                else:
+                    result = {
+                        "error": "Moltbook debate engine not reachable",
+                        "stderr": proc.stderr[-300:],
+                        "hint": "Ensure algochains-control-tower moltbook services are running",
+                    }
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": f"Moltbook debate error: {exc}", "error_type": type(exc).__name__,
+                          "hint": "Ensure moltbook is running in algochains-control-tower"})
+        return _text(result)
+
+    elif name == "run_mcpt_pipeline":
+        try:
+            import subprocess, sys as _sys
+            control_tower = "/Users/treycsa/CascadeProjects/algochains-control-tower"
+            step = str(args.get("step", "all"))
+            dry_run = bool(args.get("dry_run", False))
+            no_desktop = bool(args.get("no_desktop", False))
+
+            cmd = [_sys.executable, "scripts/mcpt_autopilot.py", "--json"]
+            if step != "all":
+                cmd += ["--step", step]
+            if dry_run:
+                cmd.append("--dry-run")
+            if no_desktop:
+                cmd.append("--no-desktop")
+
+            proc = subprocess.run(cmd, cwd=control_tower, capture_output=True,
+                                  text=True, timeout=120)
+            if proc.returncode != 0:
+                return _text({"error": f"MCPT pipeline failed (exit {proc.returncode})",
+                              "stderr": proc.stderr[-500:],
+                              "stdout": proc.stdout[-500:]})
+            import json as _json
+            try:
+                result = _json.loads(proc.stdout)
+            except Exception:
+                result = {"output": proc.stdout[-2000:], "step": step}
+        except FileNotFoundError:
+            return _text({"error": "mcpt_autopilot.py not found — ensure control-tower is at /Users/treycsa/CascadeProjects/algochains-control-tower"})
+        except subprocess.TimeoutExpired:
+            return _text({"error": "MCPT pipeline timed out after 120s"})
+        except Exception as exc:
+            return _text({"error": f"MCPT pipeline error: {exc}"})
+        return _text(result)
+
+    elif name == "run_regime_detection":
+        try:
+            from .agent_memory import get_current_regime
+            current = get_current_regime()
+            # Also try to call the live detector if available
+            try:
+                import subprocess, sys as _sys
+                control_tower = "/Users/treycsa/CascadeProjects/algochains-control-tower"
+                proc = subprocess.run(
+                    [_sys.executable, "-m", "openclaw.skills.regime_detector"],
+                    cwd=control_tower, capture_output=True, text=True, timeout=30
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    import json as _json
+                    live = _json.loads(proc.stdout)
+                    return _text({"regime_from_openclaw": current, "live_detection": live})
+            except Exception:
+                pass
+            return _text({
+                "regime_from_openclaw": current,
+                "note": "Live detector not available — showing cached regime from OpenClaw state",
+            })
+        except Exception as exc:
+            return _text({"error": f"Regime detection error: {exc}"})
 
     # ═══════════════════════════════════════════════════════════════
     # V21: Onyx Intelligence
@@ -5598,6 +6865,585 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             })
         except Exception as exc:
             return _text({"error": f"Onyx status check failed: {exc}", "url": os.getenv("ONYX_API_URL", "http://100.89.114.31:8085")})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V22: Live Bot Intelligence
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "get_live_bot_metrics":
+        try:
+            from .live_bot_intelligence import parse_bot_metrics
+            bot_id = args.get("bot_id", "mnq").lower()
+            metrics = parse_bot_metrics(bot_id)
+            return _text(metrics.to_dict())
+        except Exception as exc:
+            return _text({"error": f"Bot metrics parse error: {exc}", "bot_id": args.get("bot_id")})
+
+    elif name == "get_all_bot_metrics":
+        try:
+            from .live_bot_intelligence.metrics_parser import parse_all_bots
+            all_metrics = parse_all_bots()
+            return _text({k: v.to_dict() for k, v in all_metrics.items()})
+        except Exception as exc:
+            return _text({"error": f"All bot metrics error: {exc}"})
+
+    elif name == "get_system_heartbeat":
+        try:
+            from .live_bot_intelligence import get_system_heartbeat as _get_hb
+            hb = _get_hb()
+            return _text(hb.to_dict())
+        except Exception as exc:
+            return _text({"error": f"Heartbeat read error: {exc}"})
+
+    elif name == "get_strategy_academic_citations":
+        try:
+            from .live_bot_intelligence import get_academic_citations
+            bot_id = args.get("bot_id", "mnq").lower()
+            citations = get_academic_citations(bot_id)
+            return _text({
+                "bot_id": bot_id,
+                "citation_count": len(citations),
+                "citations": [{"title": c.title, "authors": c.authors, "year": c.year,
+                               "venue": c.venue, "doi_or_ssrn": c.doi_or_ssrn,
+                               "relevance": c.relevance, "url": c.url}
+                              for c in citations]
+            })
+        except Exception as exc:
+            return _text({"error": f"Academic citations error: {exc}", "bot_id": args.get("bot_id")})
+
+    elif name == "get_bot_card_data":
+        try:
+            from .live_bot_intelligence import get_bot_card_data
+            bot_id = args.get("bot_id", "mnq").lower()
+            card = get_bot_card_data(bot_id)
+            return _text(card.to_dict())
+        except Exception as exc:
+            return _text({"error": f"Bot card data error: {exc}", "bot_id": args.get("bot_id")})
+
+    elif name == "list_bot_research_attachments":
+        try:
+            from .live_bot_intelligence.academic_registry import BACKTEST_ARTIFACTS, BLUEPRINT_REFS
+            bot_id = args.get("bot_id", "all").lower()
+            if bot_id == "all":
+                result = {}
+                for bid in ["mnq", "cl", "mes", "nq"]:
+                    result[bid] = {
+                        "artifacts": [{"type": a.artifact_type, "name": a.name,
+                                       "path": a.local_path, "available": a.available,
+                                       "description": a.description}
+                                      for a in BACKTEST_ARTIFACTS.get(bid, [])],
+                        "blueprints": BLUEPRINT_REFS.get(bid, []),
+                    }
+                return _text(result)
+            else:
+                return _text({
+                    "bot_id": bot_id,
+                    "artifacts": [{"type": a.artifact_type, "name": a.name,
+                                   "path": a.local_path, "available": a.available,
+                                   "description": a.description}
+                                  for a in BACKTEST_ARTIFACTS.get(bot_id, [])],
+                    "blueprints": BLUEPRINT_REFS.get(bot_id, []),
+                })
+        except Exception as exc:
+            return _text({"error": f"Research attachments error: {exc}"})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V22.2: Onboarding Tools
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "start_onboarding":
+        try:
+            from .onboarding import start_onboarding as _start_onboarding
+            return _text(_start_onboarding())
+        except Exception as exc:
+            return _text({"error": f"Onboarding start error: {exc}"})
+
+    elif name == "acknowledge_risk_disclosure":
+        try:
+            from .onboarding import acknowledge_risk_disclosure as _ack_risk
+            return _text(_ack_risk(arguments.get("acknowledgment", "")))
+        except Exception as exc:
+            return _text({"error": f"Acknowledgment error: {exc}"})
+
+    elif name == "get_broker_setup_guide":
+        try:
+            from .onboarding import get_broker_setup_guide as _broker_guide
+            return _text(_broker_guide(arguments.get("broker", "")))
+        except Exception as exc:
+            return _text({"error": f"Broker guide error: {exc}"})
+
+    elif name == "validate_broker_connection":
+        try:
+            from .onboarding import validate_broker_connection as _validate_broker
+            return _text(await _validate_broker(arguments.get("broker", "")))
+        except Exception as exc:
+            return _text({"error": f"Broker validation error: {exc}"})
+
+    elif name == "get_data_provider_setup_guide":
+        try:
+            from .onboarding import get_data_provider_setup_guide as _dp_guide
+            return _text(_dp_guide(arguments.get("provider", "")))
+        except Exception as exc:
+            return _text({"error": f"Data provider guide error: {exc}"})
+
+    elif name == "validate_data_provider":
+        try:
+            from .onboarding import validate_data_provider as _validate_dp
+            return _text(await _validate_dp(arguments.get("provider", "")))
+        except Exception as exc:
+            return _text({"error": f"Data provider validation error: {exc}"})
+
+    elif name == "run_onboarding_smoke_test":
+        try:
+            from .onboarding import run_smoke_test as _smoke_test
+            return _text(await _smoke_test())
+        except Exception as exc:
+            return _text({"error": f"Smoke test error: {exc}"})
+
+    elif name == "get_onboarding_status":
+        try:
+            from .onboarding import get_onboarding_status as _ob_status
+            return _text(_ob_status())
+        except Exception as exc:
+            return _text({"error": f"Onboarding status error: {exc}"})
+
+    elif name == "generate_ide_config":
+        try:
+            from .onboarding import generate_mcporter_config as _gen_config
+            return _text(_gen_config(
+                ide=arguments.get("ide", "cursor"),
+                tool_mode=arguments.get("tool_mode", "smart"),
+            ))
+        except Exception as exc:
+            return _text({"error": f"Config generation error: {exc}"})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V22.3: Proprietary Data Ingestion Tools
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "ingest_csv_data":
+        try:
+            from .data_ingestion import ingest_csv_data as _ingest_csv
+            return _text(_ingest_csv(
+                file_path=arguments["file_path"],
+                symbol=arguments["symbol"],
+                timeframe=arguments["timeframe"],
+                columns=arguments.get("columns"),
+                date_column=arguments.get("date_column", "date"),
+                date_format=arguments.get("date_format", "%Y-%m-%d %H:%M:%S"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": f"CSV ingestion error: {exc}"})
+
+    elif name == "ingest_json_signals":
+        try:
+            from .data_ingestion import ingest_json_signals as _ingest_signals
+            return _text(_ingest_signals(
+                file_path=arguments["file_path"],
+                signal_type=arguments["signal_type"],
+                symbol=arguments["symbol"],
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": f"Signal ingestion error: {exc}"})
+
+    elif name == "connect_onyx_docs":
+        try:
+            from .data_ingestion import connect_onyx_docs as _connect_onyx
+            return _text(_connect_onyx(
+                doc_paths=arguments["doc_paths"],
+                doc_type=arguments["doc_type"],
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": f"Onyx ingestion error: {exc}"})
+
+    elif name == "register_strategy":
+        try:
+            from .data_ingestion import register_strategy as _reg_strategy
+            return _text(_reg_strategy(
+                name=arguments["name"],
+                asset_class=arguments["asset_class"],
+                timeframe=arguments["timeframe"],
+                symbols=arguments["symbols"],
+                spec_path=arguments["spec_path"],
+                description=arguments.get("description", ""),
+                author=arguments.get("author", ""),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": f"Strategy registration error: {exc}"})
+
+    elif name == "list_ingested_data":
+        try:
+            from .data_ingestion import list_ingested_data as _list_ingested
+            return _text(_list_ingested())
+        except Exception as exc:
+            return _text({"error": f"List ingested data error: {exc}"})
+
+    # ═══════════════════════════════════════════════════════════════
+    # Platform Tools — Support Tickets, OAuth, Waitlist, Verification,
+    #                  Analytics, Password Reset, Multi-Bot Metrics
+    # ═══════════════════════════════════════════════════════════════
+
+    elif name == "create_support_ticket":
+        try:
+            from .support_tickets import create_ticket as _create_ticket
+            return _text(await _create_ticket(
+                subject=arguments["subject"],
+                description=arguments["description"],
+                user_email=arguments["user_email"],
+                category=arguments.get("category", "other"),
+                priority=arguments.get("priority", "medium"),
+                user_id=arguments.get("user_id"),
+                metadata=arguments.get("metadata"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": f"Support ticket create error: {exc}"})
+
+    elif name == "get_support_ticket":
+        try:
+            from .support_tickets import get_ticket as _get_ticket
+            return _text(await _get_ticket(arguments["ticket_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "list_support_tickets":
+        try:
+            from .support_tickets import list_tickets as _list_tickets
+            return _text(await _list_tickets(
+                status=arguments.get("status"),
+                priority=arguments.get("priority"),
+                category=arguments.get("category"),
+                user_email=arguments.get("user_email"),
+                limit=int(arguments.get("limit", 50)),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "update_ticket_status":
+        try:
+            from .support_tickets import update_ticket_status as _update_ticket
+            return _text(await _update_ticket(
+                ticket_id=arguments["ticket_id"],
+                status=arguments["status"],
+                agent_response=arguments.get("agent_response"),
+                agent_email=arguments.get("agent_email"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_ticket_stats":
+        try:
+            from .support_tickets import get_ticket_stats as _ticket_stats
+            return _text(await _ticket_stats())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "generate_broker_auth_url":
+        try:
+            from .brokers.oauth_manager import generate_auth_url as _gen_auth_url
+            return _text(await _gen_auth_url(
+                broker=arguments["broker"],
+                user_id=arguments["user_id"],
+                redirect_uri=arguments.get("redirect_uri"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "exchange_broker_oauth_code":
+        try:
+            from .brokers.oauth_manager import exchange_code as _exchange_code
+            return _text(await _exchange_code(
+                state=arguments["state"],
+                code=arguments["code"],
+                redirect_uri=arguments.get("redirect_uri"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_broker_oauth_status":
+        try:
+            from .brokers.oauth_manager import get_token as _get_token
+            return _text(await _get_token(
+                broker=arguments["broker"],
+                user_id=arguments["user_id"],
+                auto_refresh=True,
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_connected_brokers":
+        try:
+            from .brokers.oauth_manager import get_connected_brokers as _get_connected
+            return _text(await _get_connected(arguments["user_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "revoke_broker_connection":
+        try:
+            from .brokers.oauth_manager import revoke_token as _revoke_token
+            return _text(await _revoke_token(
+                broker=arguments["broker"],
+                user_id=arguments["user_id"],
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "join_waitlist":
+        try:
+            from .waitlist import join_waitlist as _join_waitlist
+            return _text(await _join_waitlist(
+                email=arguments["email"],
+                first_name=arguments.get("first_name", ""),
+                last_name=arguments.get("last_name", ""),
+                broker=arguments.get("broker", ""),
+                use_case=arguments.get("use_case", ""),
+                referral_code=arguments.get("referral_code"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_waitlist_stats":
+        try:
+            from .waitlist import get_waitlist_stats as _waitlist_stats
+            return _text(await _waitlist_stats())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "send_waitlist_invite":
+        try:
+            from .waitlist import send_invite as _send_invite
+            return _text(await _send_invite(arguments["email"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "send_email_verification_code":
+        try:
+            from .verification import send_email_code as _send_email_code
+            return _text(await _send_email_code(
+                email=arguments["email"],
+                purpose=arguments.get("purpose", "email_verification"),
+                context=arguments.get("context"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "send_sms_verification_code":
+        try:
+            from .verification import send_sms_code as _send_sms_code
+            return _text(await _send_sms_code(
+                phone=arguments["phone"],
+                purpose=arguments.get("purpose", "purchase"),
+                context=arguments.get("context"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "verify_code":
+        try:
+            from .verification import verify_code as _verify_code
+            return _text(await _verify_code(
+                destination=arguments["destination"],
+                code=arguments["code"],
+                purpose=arguments.get("purpose", "email_verification"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "track_platform_event":
+        try:
+            from .platform_analytics import track_event as _track_event
+            return _text(await _track_event(
+                event_type=arguments["event_type"],
+                session_id=arguments.get("session_id"),
+                user_id=arguments.get("user_id"),
+                page=arguments.get("page"),
+                referrer=arguments.get("referrer"),
+                properties=arguments.get("properties"),
+                device=arguments.get("device"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_analytics_summary":
+        try:
+            from .platform_analytics import get_analytics_summary as _get_analytics
+            return _text(await _get_analytics(
+                days=int(arguments.get("days", 7)),
+                event_type=arguments.get("event_type"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "initiate_password_reset":
+        try:
+            from .auth.password_reset import initiate_password_reset as _init_reset
+            return _text(await _init_reset(arguments["email"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "complete_password_reset":
+        try:
+            from .auth.password_reset import complete_password_reset as _complete_reset
+            return _text(await _complete_reset(
+                access_token=arguments["access_token"],
+                new_password=arguments["new_password"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "initiate_account_recovery":
+        try:
+            from .auth.password_reset import initiate_account_recovery as _init_recovery
+            return _text(await _init_recovery(
+                email=arguments["email"],
+                reason=arguments.get("reason", "lost_email_access"),
+                contact_info=arguments.get("contact_info"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_password_policy":
+        try:
+            from .auth.password_reset import get_password_policy as _get_pwd_policy
+            return _text(await _get_pwd_policy())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_user_bot_metrics":
+        try:
+            from .live_bot_intelligence.multi_account_metrics import get_user_bot_metrics as _get_ubm
+            result = await _get_ubm(
+                user_id=arguments["user_id"],
+                bot_id=arguments["bot_id"],
+                subscription_id=arguments["subscription_id"],
+                log_path=arguments.get("log_path"),
+            )
+            return _text(result.to_dict())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_all_user_bots":
+        try:
+            from .live_bot_intelligence.multi_account_metrics import get_all_user_bots as _get_all_bots
+            return _text(await _get_all_bots(arguments["user_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "upsert_bot_performance":
+        try:
+            from .live_bot_intelligence.multi_account_metrics import upsert_managed_bot_performance as _upsert_perf
+            return _text(await _upsert_perf(
+                subscription_id=arguments["subscription_id"],
+                bot_id=arguments["bot_id"],
+                daily_pnl=float(arguments["daily_pnl"]),
+                win_rate=float(arguments["win_rate"]),
+                trade_count=int(arguments["trade_count"]),
+                is_running=bool(arguments["is_running"]),
+                broker=arguments["broker"],
+                sharpe_ratio=arguments.get("sharpe_ratio"),
+                max_drawdown=arguments.get("max_drawdown"),
+                win_rate_validated=arguments.get("win_rate_validated"),
+                weekly_pnl=arguments.get("weekly_pnl"),
+                last_trade_at=arguments.get("last_trade_at"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    # ═══════════════════════════════════════════════════════════════
+    # V22.1: Guardrail Status Tools (read-only — AI cannot modify limits)
+    # ═══════════════════════════════════════════════════════════════
+    elif name == "get_circuit_breaker_status":
+        if not _GUARDRAILS_AVAILABLE:
+            return _text({
+                "warning": "Trading guardrails module not loaded. Hard-coded circuit breakers are INACTIVE.",
+                "action": "Deploy trading_guardrails.py to activate V22 safety limits.",
+            })
+        try:
+            status = get_guardrails().get_status()
+            return _text(status)
+        except Exception as exc:
+            return _text({"error": f"Guardrail status error: {exc}"})
+
+    elif name == "get_agent_loop_status":
+        if not _GUARDRAILS_AVAILABLE:
+            return _text({
+                "warning": "Trading guardrails module not loaded. AI loop detection is INACTIVE.",
+            })
+        try:
+            status = get_guardrails().get_status()
+            return _text({
+                "loop_detection": status.get("loop_detection", {}),
+                "limits": {
+                    "max_identical_calls_60s": status["hard_coded_limits"]["ai_loop_identical_calls_limit"],
+                    "max_tool_calls_per_minute": status["hard_coded_limits"]["ai_tool_calls_per_minute_limit"],
+                },
+                "advice": (
+                    "If loop_risk is HIGH, avoid repeating the same tool call with identical arguments. "
+                    "The circuit breaker will trip on the next repeated call above the limit."
+                ),
+            })
+        except Exception as exc:
+            return _text({"error": f"Loop status error: {exc}"})
+
+    elif name == "get_latency_profile":
+        _t_session_start = t0 - (time.monotonic() - t0)  # approximate
+        return _text({
+            "execution_tier": "Tier 4: MCP AI-assisted (120ms–2s per tool call)",
+            "suitable_for": [
+                "Swing trading (15min – daily bars)",
+                "Portfolio rebalancing (daily/weekly)",
+                "Options strategy selection",
+                "Strategy research and backtesting",
+                "Post-trade performance analysis",
+                "Signal routing between research and live bots",
+            ],
+            "not_suitable_for": [
+                "HFT / market making (requires <1ms, co-located C++/FPGA)",
+                "Statistical arbitrage on tick data (requires <50ms, Rust engine)",
+                "1-minute intraday execution (borderline — use direct bot WebSocket)",
+            ],
+            "measured_latency_ms": {
+                "this_tool_call_overhead": round((time.monotonic() - t0) * 1000, 1),
+                "mcp_tool_overhead_typical": "2–5ms",
+                "llm_inference_typical": "80–400ms",
+                "tradovate_api_roundtrip": "15–80ms",
+                "polygon_bar_fetch": "20–150ms",
+                "onyx_rag_query": "100–500ms",
+                "end_to_end_simple_order": "~200–700ms",
+                "end_to_end_full_pipeline": "~500ms–2s",
+            },
+            "live_bot_execution_tier": (
+                "Tier 3: Direct Python WebSocket (15–80ms). "
+                "The 4 live bots (MNQ/CL/MES/NQ) execute via WebSocket directly — "
+                "they do NOT route through MCP for fills."
+            ),
+            "sse_server_port": int(os.environ.get("ALGOCHAINS_SSE_PORT", "8765")),
+            "sse_advantage": (
+                "V22 SSE transport eliminates quote polling. "
+                "Subscribe to /stream/quotes for real-time price push instead of polling get_quote."
+            ),
+            "reference": "See LATENCY_GUIDE.md for full tier comparison and strategy suitability matrix.",
+        })
 
     # ═══════════════════════════════════════════════════════════════
     # Ultimate Quant Alpha Stack

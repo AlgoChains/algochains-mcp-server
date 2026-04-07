@@ -1,524 +1,442 @@
-# AlgoChains MCP Server v21.3
-
-> **The institutional-grade Model Context Protocol server for autonomous trading systems.**  
-> Drop this into Claude, Cursor, or any MCP-compatible AI — and you get a full autonomous trading desk.
+# AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-338-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-371-green?style=flat-square)](#tool-categories)
+[![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
-[![Brokers](https://img.shields.io/badge/brokers-Tradovate%20%7C%20Alpaca%20%7C%20OANDA-orange?style=flat-square)](#supported-brokers)
-[![Bots](https://img.shields.io/badge/live%20bots-4%20futures%20%2B%20equities%2Fcrypto-red?style=flat-square)](#live-bot-showcase)
-[![Onyx](https://img.shields.io/badge/Onyx-RAG%20Knowledge%20Brain-8b5cf6?style=flat-square)](#onyx-intelligence)
 
 ---
 
-## What This Is
+## What Is This? (Plain English)
 
-AlgoChains MCP Server exposes a **live, institutional-grade trading platform** as a set of AI-callable tools — compatible with Claude Desktop, Cursor, VS Code, and any MCP 2025-11-25-compliant client.
+**Problem:** You want your AI assistant (Claude, Cursor, ChatGPT) to actually interact with your trading accounts — look up prices, check positions, run backtests, monitor bots. But AI tools are isolated; they can't call Tradovate or Alpaca directly.
 
-**No paper data. No synthetic fills. No placeholder values. No Vertex AI — Onyx on-prem replaces it all.**  
-Every tool connects to real brokers, real market data feeds (Databento tick-level, Polygon, FRED, CBOE), and real strategy execution infrastructure.
+**Solution:** The AlgoChains MCP Server is a **bridge**. It sits between your AI and your trading infrastructure. When you ask Claude "What's my MNQ P&L today?", Claude calls this server, this server calls Tradovate, and the answer comes back.
 
 ```
-Your AI assistant                    AlgoChains MCP Server v21.3
-  Claude / Cursor         ←MCP→      338 tools across 19 domains
-  ChatGPT / Copilot                  ↕                    ↕
-                                     Real Brokers       Onyx Knowledge Brain
-                                     Tradovate (Futures)  400+ research docs
-                                     Alpaca (Equities)    80+ skills indexed
-                                     OANDA (Forex)        Live bot logs
-                                     Binance (Crypto)     Blueprints & audits
-                                                          ↕
-                                     Autonomous Pipeline
-                                     Research → Backtest → MCPT → Marketplace
+You ask Claude:               Claude calls:                Server calls:
+"What's my NQ position?" → get_positions() → Tradovate API → returns real data
+"Run a backtest on GBPUSD" → run_backtest() → Rust engine → returns real metrics
+"Is the market trending?" → detect_market_regime() → Polygon + FRED → returns analysis
 ```
 
-### V21.3 Highlights
+**What it is NOT:**
+- It is NOT a trading bot by itself (the bots are separate processes)
+- It is NOT investment advice
+- It is NOT a managed account service
+- It is NOT a product sold to the public (this is Tyler's personal experimental infrastructure)
 
-- **Autonomous Marketplace Pipeline** — `run_marketplace_autopilot` scans strategy research, runs Rust tick backtests, applies 5-gate MCPT validation, stages passing strategies as subscribable marketplace bots — zero human intervention required
-- **Live Futures Showcase** — 4 live bots (MNQ Sharpe 4.61, CL, MES, NQ) with real fill metrics, locked to owner only
-- **Subscribable Equities & Crypto** — Alpaca paper trader running 16 equities + 8 crypto pairs with real fills, subscribable at $9-29/mo
-- **Onyx Intelligence Brain** — Replaces Vertex AI RAG. Self-hosted on desktop GPU (100.89.114.31:8085), daily sync at 3am PT
-- **Signal Conflict Manager** — Formalized buy/sell overlap policy with SQLite audit log, backtested design
-- **Desktop Tower Dispatcher** — Auto-routes heavy Optuna/backtest jobs to Windows GPU tower via Tailscale SSH
+**What it IS:**
+- Tyler's personal trading command center accessible from any AI tool
+- An experimental platform for AI-assisted strategy research and execution
+- A team knowledge base (via Onyx) that all team members can search
 
 ---
 
-## 60-Second Quickstart
+## Safety First — Read This Before Connecting Live Accounts
+
+**New to this? Start in demo mode — no credentials, no risk:**
+```bash
+python scripts/quickstart.py --mode demo
+```
+
+**Connecting a live broker account is only for Tyler currently.** Everyone else on the team should use demo or read-only mode (see [SAFETY_MODEL.md](SAFETY_MODEL.md)).
+
+**Roo, Eric, RJ — your setup is 2 minutes and zero financial risk. [Jump to Team Setup →](#team-access)**
+
+**The guardrails that prevent the AI from losing money:**
+- Hard-coded daily loss limit: $500 (cannot be overridden by AI)
+- Hard-coded max drawdown: 15% (cannot be overridden by AI)
+- Human confirmation required for all orders above $10K notional
+- AI loop detection: blocks all orders after 5 identical calls in 60s
+- VIX gate: all trades blocked when VIX > 35
+
+Full safety documentation: [SAFETY_MODEL.md](SAFETY_MODEL.md)
+
+---
+
+## Quick Start
+
+### Option A: Demo Mode (No Credentials — 1 Minute)
 
 ```bash
-# 1. Install
 pip install algochains-mcp-server
+python scripts/quickstart.py --mode demo
+# → Validates setup, generates IDE config, no broker needed
+```
 
-# 2. Set credentials (copy from .env.example)
-export TRADOVATE_USERNAME=...
-export ALPACA_API_KEY=...
-export POLYGON_API_KEY=...
+What you can do in demo mode:
+- `get_quote("AAPL")` — live price for any symbol
+- `detect_market_regime()` — is the market trending or ranging?
+- `get_macro_signals()` — macro environment analysis
+- `discover_tools()` — find the right tool for any task
+- `onyx_ask("any question")` — search the knowledge base (if ONYX_API_URL set)
 
-# 3. Add to Claude Desktop  (~/.claude/claude_desktop_config.json)
-{
-  "mcpServers": {
-    "algochains": {
-      "command": "uvx",
-      "args": ["algochains-mcp-server"],
-      "env": {
-        "TRADOVATE_USERNAME": "your-username",
-        "TRADOVATE_PASSWORD": "your-password",
-        "ALPACA_API_KEY": "your-key",
-        "POLYGON_API_KEY": "your-key"
-      }
-    }
-  }
-}
+### Option B: Paper Mode (Alpaca Paper — Free, No Real Money)
 
-# 4. Ask Claude:
-# "What's my current MNQ position P&L?"
-# "Run the AlphaLoop evolution cycle on my CL scalper"
-# "Show me dark pool prints on NVDA in the last hour"
-# "Compute gamma exposure for SPY options chain"
+```bash
+# 1. Get a free Alpaca paper account: https://app.alpaca.markets/paper
+# 2. Set credentials
+export ALPACA_API_KEY=your-paper-key
+export ALPACA_SECRET_KEY=your-paper-secret
+export ALPACA_PAPER=true
+
+# 3. Run
+python scripts/quickstart.py --mode paper
+```
+
+### Option C: Full Live Setup (Tyler's Config)
+
+Read [SAFETY_MODEL.md](SAFETY_MODEL.md) first, then:
+```bash
+# Copy .env.example and fill in your credentials
+cp .env.example .env
+# Edit .env with your real keys
+
+# Run health check
+python scripts/quickstart.py --health-check --mode live
+```
+
+### Generate Your IDE Config
+
+```bash
+python scripts/quickstart.py --generate-config cursor         # Cursor
+python scripts/quickstart.py --generate-config claude-desktop # Claude Desktop
+python scripts/quickstart.py --generate-config windsurf       # Windsurf
 ```
 
 ---
 
-## Live Bot Showcase — Real Autonomous Futures Trading
+## For Oleg (Planex) — Developer Handoff
 
-AlgoChains runs **4 live futures bots** on Tradovate, tracked in real-time through this MCP server. These can be subscribed to on the marketplace:
+The MCP server has implemented the backend for all critical + high-value tasks from Eric's list. Here's exactly what the frontend (algochains.ai Next.js) needs to wire up:
 
-| Bot | Symbol | Strategy | Timeframe | AI Stack |
-|-----|--------|----------|-----------|----------|
-| `MNQ_Upgraded_Scalper` | MNQ | 7-AI ensemble scalper | 5-min | GPT-4o, Claude 3.7, Gemini Pro, Llama 3.3 debate engine |
-| `CL_Swing_Scalper` | CL | FinBERT sentiment + momentum | Swing | FinBERT NLP, COT positioning, dark pool |
-| `MES_EMA_Swing` | MES | EMA pullback with regime detection | Daily | Multi-agent pipeline, ADDM drift detection |
-| `NQ_EMA_Swing` | NQ | Trend following + foundation model | Swing | Foundation model shadow runtime, DaveWang signals |
+| Task | Backend API | Frontend Action Needed |
+|------|-------------|------------------------|
+| **Support Page → Notion** | `POST /mcp/create_support_ticket` | Connect Support form → this endpoint. Pass subject, description, user_email, category, priority |
+| **Fix multi-bot metrics** | `GET /mcp/get_all_user_bots` | Dashboard must call this per user, render fallback states (BROKER_NOT_CONNECTED / METRICS_PENDING) |
+| **Schwab OAuth** | `GET /mcp/generate_broker_auth_url?broker=schwab` → callback → `exchange_broker_oauth_code` | Brokers page: "Connect Schwab" button triggers this 2-step flow |
+| **Join Waitlist** | `POST /mcp/join_waitlist` | Wire waitlist form → this. Email confirmation is automatic |
+| **Brokers Page UI** | `GET /mcp/get_connected_brokers` + `POST /mcp/revoke_broker_connection` | Show connected brokers, connect/disconnect buttons per broker |
+| **Purchase verification** | `POST /mcp/send_email_verification_code` + `POST /mcp/verify_code` | On checkout, send code to email, verify before processing payment |
+| **Analytics** | `POST /mcp/track_platform_event` | Add to every page (page_view), signup flow, broker connect |
+| **Password reset** | `POST /mcp/initiate_password_reset` → `POST /mcp/complete_password_reset` | Auth flow: Forgot Password page + reset page |
+| **Analytics dashboard** | `GET /mcp/get_analytics_summary?days=7` | Admin dashboard panel |
 
-Subscribe to live bot metrics via MCP:
-```python
-# In your agent session
-subscribe_bot_metrics(bot_name="MNQ_Upgraded_Scalper", subscriber_id="your-id")
-# → Streams live: entry price, P&L, signal confidence, regime state
+**Run the Supabase migration first:**
+```bash
+# Apply to your Supabase project
+supabase db push --file supabase/migrations/20260406_platform_tables.sql
+# Or paste the SQL in: Supabase Dashboard → SQL Editor → Run
 ```
+
+**Required new env vars** (see `.env.example` for all):
+```
+SUPABASE_SERVICE_KEY=     # Service role key from Supabase Settings → API
+RESEND_API_KEY=           # From resend.com — for emails
+SCHWAB_CLIENT_ID=         # From developer.schwab.com
+SCHWAB_CLIENT_SECRET=
+NOTION_API_KEY=           # Optional — for ticket sync to Notion
+NOTION_SUPPORT_DB_ID=     # Optional — Notion database ID
+```
+
+---
+
+## Team Access
+
+**5-person team (Tyler, Roo, Eric, RJ, +1) — different access levels:**
+
+### Read-Only Team Members (Roo, Eric, RJ)
+
+Get access to bot metrics, knowledge base, and market data. **No broker credentials needed.**
+
+```bash
+# Get from Tyler: ALGOCHAINS_BRIDGE_API_KEY and ONYX_API_URL
+export ALGOCHAINS_BRIDGE_API_KEY=<ask-tyler>
+export ONYX_API_URL=http://100.89.114.31:8085    # Desktop Onyx via Tailscale
+
+python scripts/quickstart.py --mode demo
+python scripts/quickstart.py --generate-config cursor
+```
+
+Once connected, you can ask your AI:
+- "What's the current status of Tyler's MNQ bot?"
+- "What are the validation gates for marketplace submission?"
+- "How does the Token Guardian work?"
+- "Show me recent AlphaLoop evolution results"
+
+### Shared Knowledge Base (Onyx)
+
+All team members' AI tools point at the same Onyx knowledge base. When Tyler runs a research cycle or makes a decision, it's automatically indexed. When you ask your AI about it, it finds it.
+
+Full team guide: [SAFETY_MODEL.md — Team Access Setup](SAFETY_MODEL.md#team-access-setup)
+
+---
+
+## Tool Starter Pack — Start Here, Not With 350 Tools
+
+Most first-time use cases are covered by these 12 tools:
+
+| Tool | What It Does | Safe In Demo? |
+|------|-------------|:---:|
+| `get_quote` | Live price for any symbol | ✅ |
+| `detect_market_regime` | Trending / ranging / choppy | ✅ |
+| `get_macro_signals` | Risk-on / risk-off macro state | ✅ |
+| `discover_tools` | Find the right tool with natural language | ✅ |
+| `onyx_ask` | Ask the knowledge base anything | ✅ |
+| `run_backtest` | Test a strategy on real historical data | ✅ |
+| `validate_strategy` | Check if strategy passes quality gates | ✅ |
+| `get_positions` | What am I currently holding? | ✅ |
+| `get_live_bot_metrics` | Tyler's live bot P&L (read-only) | ✅ |
+| `compute_gex` | Dealer gamma exposure for options | ✅ |
+| `place_order` | Execute a real trade | ⚠️ Live money |
+| `flatten_all_positions` | Close everything | 🔴 Irreversible |
+
+Every tool has a `danger_tier` (0-3) accessible via the `/tools` endpoint. See [Tool Danger Tiers →](#tool-danger-tiers)
 
 ---
 
 ## Tool Categories
 
-### 1. Account & Portfolio (28 tools)
+### Core Tools (Tier 0 — Safe For Everyone)
+
+**Market Data**
 ```
-get_account_balance      get_positions         get_orders
-get_working_orders       get_fills             cancel_order
-flatten_all_positions    get_risk_parameters   daily_pnl_summary
+get_quote           get_ohlcv           get_tick_data
+get_options_chain   get_futures_curve   get_level2
+get_footprint_chart compute_cumulative_delta  get_dark_pool_volume
+get_vix_term_structure  get_yield_curve  get_credit_spreads
+get_macro_signals   detect_market_regime
 ```
 
-### 2. Market Data — Tick to Macro (41 tools)
+**Signals & Analysis**
 ```
-get_quote                get_ohlcv             get_tick_data
-stream_quotes            get_options_chain     get_futures_curve
-get_macro_signals        get_vix_term_structure get_yield_curve
-get_dxy_regime           get_credit_spreads    get_pmi_data
-```
-
-### 3. Order Flow & Institutional (34 tools)
-```
-get_footprint_chart      compute_cumulative_delta  get_volume_profile
-get_dark_pool_volume     get_dark_pool_prints       detect_absorption
-compute_vwap             compute_twap               get_order_book_imbalance
+generate_signal     get_regime_state    get_ensemble_vote
+compute_gex         unusual_options_activity  read_tape
+pair_trade_signal   compute_kelly       compute_vwap
 ```
 
-### 4. Signal Generation & AI Ensemble (29 tools)
+**Research & Backtesting**
 ```
-generate_signal          run_ai_debate          get_ensemble_vote
-compute_confidence       get_regime_state       compute_gex
-unusual_options_activity read_tape              pair_trade_signal
-```
-
-### 5. Strategy Building & Backtesting (38 tools)
-```
-build_strategy           run_backtest           validate_strategy
-optimize_strategy        run_mcpt_validation    submit_to_marketplace
-compute_sharpe           run_walk_forward       analyze_overfitting
+run_backtest        validate_strategy   optimize_strategy
+walk_forward_test   run_mcpt_validation compute_sharpe
+analyze_overfitting search_ssrn_strategies
 ```
 
-### 6. AlphaLoop — Autonomous Self-Improvement (18 tools)
+**Intelligence**
 ```
-run_evolution_cycle      get_evolution_status   list_evolved_strategies
-rollback_evolution       record_trade_episode   query_trade_memory
-get_lessons_learned      inject_session_context get_strategy_rankings
-```
-
-### 7. Order Execution (22 tools)
-```
-place_order              place_bracket_order    place_oco_order
-modify_order             cancel_order           get_execution_quality
-compute_slippage         get_fill_analysis      smart_route_order
+onyx_ask            onyx_search         discover_tools
+get_earnings_catalyst  get_congressional_trades
+get_prediction_markets  get_news_sentiment
 ```
 
-### 8. Risk Management (19 tools)
+**Skills Bridge (V22.7 — 472 Skills Indexed)**
 ```
-compute_kelly            get_position_sizing    check_circuit_breaker
-get_max_drawdown         get_var               compute_correlation_risk
-event_risk_check         check_vix_gate         get_daily_loss_proximity
-```
-
-### 9. Market Intelligence (24 tools)
-```
-get_earnings_catalyst    get_prediction_markets get_congressional_trades
-get_insider_activity     get_dark_pool_prints   get_alt_data_signals
-get_news_sentiment       get_economic_releases  get_cot_report
+list_skills          get_skill_detail     search_skills
+get_skills_for_task  reload_skills_registry
 ```
 
-### 10. MCP Spec 2025-11-25 — Elicitation + Tasks (12 tools)
+**Agent Memory & Regime (V22.7)**
 ```
-request_trade_confirmation  submit_long_running_task  get_task_status
-cancel_task                 list_active_tasks         subscribe_resource
-list_subscriptions          notify_resource_update    get_sampling_config
-```
-
-### 11. Crypto & DeFi (31 tools)
-```
-get_crypto_quote         get_funding_rate          get_open_interest
-get_liquidation_clusters get_staking_yields        create_dca_schedule
-get_copy_trade_leaders   subscribe_copy_trading    get_nft_portfolio
+get_openclaw_memory  store_trade_lesson   get_current_regime
+get_bot_heartbeat_openclaw               get_agent_evaluations
+get_openclaw_state_summary
 ```
 
-### 12. Security & Key Management (11 tools)
+**Skill Execution Shortcuts (V22.7)**
 ```
-store_api_key            rotate_api_key            check_key_health
-provision_agent_account  list_agent_accounts       audit_access_log
-```
-
-### 13. SaaS & Marketplace (28 tools)
-```
-create_strategy_listing  get_marketplace_strategies subscribe_strategy
-get_subscriber_metrics   process_payment           get_revenue_report
-create_sandbox           destroy_sandbox            get_tenant_audit_log
+invoke_moltbook_debate   run_mcpt_pipeline   run_regime_detection
 ```
 
-### 14. Onyx Intelligence (8 tools)
+### Infrastructure Tools (Tier 1 — Internal State)
+
 ```
-onyx_search              onyx_ask                  onyx_health
-onyx_ingest_document     onyx_search_strategies    onyx_query_bot_history
-onyx_find_best_setup     onyx_get_lessons
+create_price_alert  connect_broker      build_strategy
+deploy_strategy     ingest_csv_data     register_strategy
+submit_to_marketplace  run_onyx_ingest  store_api_key
 ```
 
-### 15. Streaming & Alerts (16 tools)
+### Order Execution (Tier 2 — Live Money ⚠️)
+
 ```
-create_price_alert       list_alerts               delete_alert
-subscribe_earnings       get_earnings_calendar     stream_bot_metrics
-get_bot_dashboard        subscribe_bot_metrics     get_live_pnl
+place_order         place_bracket_order  place_oco_order
+modify_order        cancel_order         close_position
+smart_route_order   execute_twap         execute_vwap
 ```
 
-### 16. Autonomous Agents (14 tools)
+### Destructive Actions (Tier 3 — Irreversible 🔴)
+
 ```
-run_watchdog_check       get_adaptive_brain_status run_token_guardian
-get_system_health        run_morning_scan          get_incident_report
+flatten_all_positions   cancel_all_orders   emergency_stop
+reset_daily_loss_limit  trip_circuit_breaker
 ```
 
-### 17. White-Label & BYOK (17 tools)
-```
-configure_white_label    get_white_label_config    test_white_label_connection
-set_byok_key             get_byok_status           list_byok_providers
+---
+
+## Tool Danger Tiers
+
+Every tool is classified by danger tier. The HTTP bridge `/tools` endpoint returns this for every tool:
+
+```json
+{
+  "tool": "place_order",
+  "danger_tier": 2,
+  "danger_label": "ORDER_EXEC",
+  "danger_description": "Executes real orders on a live broker account. Requires human confirmation.",
+  "safe_in_demo_mode": false,
+  "safe_in_paper_mode": false,
+  "requires_live_account": true,
+  "requires_human_confirmation": true,
+  "irreversible": false
+}
 ```
 
-### 18. Strategy Research & Evolution (22 tools)
-```
-search_ssrn_strategies   replicate_paper           compute_dcf
-get_factor_exposures     run_sensitivity_sweep     scan_regime_alpha
+Use this in your agent prompts to prevent accidental order execution:
+```python
+# Before calling any tool, check its danger tier
+info = get_tool_danger_info("flatten_all_positions")
+# → danger_tier: 3, irreversible: true
 ```
 
-**Total: 350+ tools across 18 domains**
+---
+
+## Live Bot Showcase
+
+AlgoChains runs 4 live futures bots on Tradovate. Their real-time metrics stream through this MCP server:
+
+| Bot | Symbol | Strategy | Live Since |
+|-----|--------|----------|-----------|
+| `MNQ_Upgraded_Scalper` | MNQ | 7-AI ensemble, 5-min | Dec 2024 |
+| `CL_Swing_Scalper` | CL | FinBERT sentiment + momentum | Jan 2025 |
+| `MES_EMA_Swing` | MES | EMA pullback + regime detection | Feb 2025 |
+| `NQ_EMA_Swing` | NQ | Trend following + foundation model | Feb 2025 |
+
+Read live metrics (no credentials needed if you have the bridge API key):
+```python
+metrics = get_live_bot_metrics(bot_name="MNQ_Upgraded_Scalper")
+```
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    AlgoChains MCP Server v21                    │
-│                                                                 │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────────┐  │
-│  │ MCP 2025-11 │  │ AlphaLoop    │  │ 7-AI Debate Engine    │  │
-│  │ Compliance  │  │ Self-Improve │  │ GPT4o·Claude·Gemini   │  │
-│  │ Elicitation │  │ Trade Memory │  │ Llama·Mistral·Qwen    │  │
-│  │ Tasks+SSE   │  │ RL Reward    │  │ Foundation Model RAG  │  │
-│  └─────────────┘  └──────────────┘  └───────────────────────┘  │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                  Data Provider Stack                       │  │
-│  │  Databento(tick) │ Polygon(bars) │ FRED │ CBOE │ FINRA   │  │
-│  │  SEC EDGAR │ Polymarket │ Kalshi │ Binance │ Hyperliquid  │  │
-│  │  Lido │ Cosmos │ Ethereum Beacon │ Massive.com (white-label) │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │                   Broker Layer                             │  │
-│  │        Tradovate (futures) │ Alpaca (equities/crypto)     │  │
-│  │        OANDA (forex) │ Binance │ Bybit │ Hyperliquid       │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│                                                                 │
-│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────────┐  │
-│  │ Key Vault   │  │ Onyx RAG KB  │  │ Stripe Connect SaaS   │  │
-│  │ AES-256-GCM │  │ 400+ docs    │  │ Per-tenant isolation  │  │
-│  │ scrypt KDF  │  │ Semantic QA  │  │ Immutable audit log   │  │
-│  └─────────────┘  └──────────────┘  └───────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
+Your AI (Claude / Cursor / ChatGPT)
+         │
+         │ MCP protocol (stdio or HTTP)
+         ▼
+AlgoChains MCP Server
+  ├── 350+ tools (market data, execution, research, intelligence)
+  ├── Trading Guardrails (hard-coded limits, AI loop detection)
+  ├── Account Protection (12 pre-trade guards)
+  ├── Onyx RAG Knowledge Base (semantic search over 400+ docs)
+  └── Circuit Breakers (per-tool rate limits, daily loss stops)
+         │
+         ├── Tradovate (MNQ, CL, MES, NQ futures)
+         ├── Alpaca (equities, crypto, options)
+         ├── OANDA (forex)
+         ├── Polygon (real-time bars, options)
+         ├── Databento (tick-level data)
+         └── FRED, CBOE, Polymarket, SEC EDGAR (macro/alt data)
 ```
+
+### Data Policy
+
+**No synthetic data. No mock fills. No placeholder values. Everywhere.**
+
+- Every tool connects to a real API or fails closed with an explicit error
+- If a data source is unavailable: the tool returns an error, not fake data
+- Backtest metrics are computed on real historical data (Databento tick archives)
+- P&L figures are from real broker fills (Tradovate/Alpaca)
 
 ---
 
-## Real Data Policy
+## Failure Modes — What Happens If Things Go Wrong
 
-**This server enforces a strict real-data-only policy across every tool.**
+| Failure | What Happens | What To Do |
+|---------|-------------|-----------|
+| AI sends wrong order | Guardrails reject if outside limits; elicitation confirmation required above $10K | Review guardrail config; start with paper mode |
+| Server crashes mid-trade | Open positions REMAIN — not auto-closed | Check broker app directly; close manually |
+| Token expires | Orders blocked with 401 error; positions unaffected | Run `python3 tradovate_token_guardian.py` |
+| AI loops | 5 identical calls → all orders blocked 30min | Restart bot process to reset |
+| Max daily loss hit | All orders blocked until midnight | Wait or reset manually (owner only) |
 
-- ❌ No synthetic fills
-- ❌ No placeholder P&L
-- ❌ No mock market data
-- ❌ No hardcoded fallback prices
-- ✅ All data from live brokers, real APIs, real tick feeds
-- ✅ If a source is unavailable → tool fails closed with explicit error
-- ✅ Every tool documents its real data source
-
----
-
-## Account Protection System (12 Guards)
-
-AlgoChains ships with 12 hardened trading safeguards:
-
-| Guard | Trigger | Action |
-|-------|---------|--------|
-| **Daily Loss Limit** | Net P&L < -$500 | Block all new trades |
-| **VIX Gate** | VIX > 35 | Flatten positions + halt |
-| **Max Position Count** | > 3 concurrent | Reject new orders |
-| **Fat Finger** | Size > 3x normal | Require confirmation |
-| **Bracket Integrity** | Stop or target missing | Auto-attach bracket |
-| **Flash Crash** | Price move > 2% in 60s | Emergency flatten |
-| **Drawdown Circuit Breaker** | Drawdown > 15% | Halt trading |
-| **Correlation Exposure** | Portfolio corr > 0.85 | Reduce size |
-| **Consecutive Loss Guard** | 3 losses in a row | Force cooldown |
-| **Daily Loss Proximity** | Within 80% of limit | Reduce position sizes |
-| **Cancel-on-Disconnect** | WebSocket drops | Auto-cancel working orders |
-| **Earnings Event Risk** | Earnings within 24h | Restrict position size |
-
----
-
-## MCP 2025-11-25 Spec Compliance
-
-AlgoChains implements the full MCP 2025-11-25 specification:
-
-### Elicitation — Structured User Confirmation
-```python
-# High-value trades require explicit confirmation before execution
-result = request_trade_confirmation(
-    symbol="MNQ",
-    side="BUY",
-    quantity=4,
-    estimated_notional=97600
-)
-# → MCP client shows a structured form; execution waits for approval
-```
-
-### Durable Tasks — Long-Running Operations
-```python
-task = submit_long_running_task(
-    operation="full_backtest",
-    strategy_id="my-mnq-scalper",
-    date_range={"start": "2023-01-01", "end": "2025-12-31"}
-)
-# → Returns task ID immediately; runs in background; notifies on completion
-status = get_task_status(task_id=task["task_id"])
-```
-
-### Resource Subscriptions — Real-Time Push
-```python
-subscribe_resource(uri="algochains://bots/mnq/metrics")
-# → Client receives push notifications on every fill, signal, and P&L update
-
-subscribe_resource(uri="algochains://alerts/price")
-# → Client notified when price alerts trigger
-```
-
-### OpenID Connect Discovery
-```
-GET /.well-known/openid-configuration
-→ Returns OIDC metadata for enterprise SSO integration
-```
-
----
-
-## AlphaLoop — Autonomous Strategy Evolution
-
-AlgoChains implements a 4-stage self-improvement cycle inspired by DeepMind AlphaLoop:
-
-```
-SCAN  →  MUTATE  →  VALIDATE  →  PROMOTE
-  ↑                                 |
-  └──────── (if better) ────────────┘
-```
-
-1. **SCAN**: Identifies underperforming strategies (Sharpe < 1.5 or win rate < 50%)
-2. **MUTATE**: Uses Optuna to generate parameter variations (TP/SL ratios, thresholds)
-3. **VALIDATE**: Tests mutations against real trade history via RL reward model
-4. **PROMOTE**: Swaps in better-performing variant; keeps rollback checkpoint
-
-```python
-# Trigger an evolution cycle
-result = run_evolution_cycle(
-    strategy_id="mnq-upgraded-scalper",
-    generations=5,
-    min_trades_required=20
-)
-# → Returns promoted variant or keeps current if no improvement
-```
-
----
-
-## Order Flow Intelligence
-
-Real institutional-grade microstructure analysis:
-
-```python
-# Footprint chart — bid/ask volume at each price level
-chart = get_footprint_chart(symbol="MNQ", timeframe="5min", bars=20)
-# → Detects absorption (sellers absorbed at support), imbalances, delta exhaustion
-
-# Dark pool volume — real FINRA ATS + Polygon off-exchange data  
-dp = get_dark_pool_volume(symbol="NVDA", date="2026-04-05")
-# → Returns actual dark pool % from FINRA ATS weekly reports + Polygon trade conditions
-
-# Cumulative delta with divergence detection
-cd = compute_cumulative_delta(symbol="MNQ", timeframe="5min")
-# → Real-time bid/ask pressure with bearish/bullish divergence alerts
-```
-
----
-
-## Macro Signal Fabric
-
-Pre-computed macro alpha signals from real sources:
-
-| Signal | Source | Update Frequency |
-|--------|--------|-----------------|
-| Yield Curve (2y-10y spread) | FRED API | Daily |
-| Credit Spreads (HY-IG) | FRED API | Daily |
-| DXY Momentum | Polygon | Real-time |
-| PMI Regime | FRED API | Monthly |
-| VIX Term Structure | CBOE public CSV | Daily |
-| Congressional Trades | Capitol Trades / SEC | Weekly |
-| Prediction Market Odds | Polymarket + Kalshi | Real-time |
-
-```python
-signals = get_macro_signals()
-# → Returns composite regime score, trend bias, risk-on/off state
-```
-
----
-
-## Onyx Intelligence — Semantic Strategy Search
-
-AlgoChains integrates with a self-hosted Onyx knowledge base for natural language strategy research:
-
-```python
-# Ask natural language questions about your trading system
-answer = onyx_ask("What's the best CL swing setup from the last 90 days?")
-# → Searches 400+ strategy research JSONs, returns cited answer
-
-answer = onyx_ask("How do I configure the Token Guardian for Tradovate?")
-# → Searches blueprints, skills, runbooks; returns step-by-step answer
-
-results = onyx_search("MNQ regime detection CUSUM", limit=5)
-# → Returns top matching documents with relevance scores
-```
-
-**Knowledge base includes:**
-- 400+ strategy research JSONs from AlphaLoop runs
-- 45+ implementation blueprints
-- 126 OpenClaw skills with full context
-- 7 days of live bot logs (rolling window)
-- Marketplace strategy listings and audit reports
-
----
-
-## Supported Brokers
-
-| Broker | Asset Classes | Status |
-|--------|--------------|--------|
-| **Tradovate** | Futures (MNQ, CL, MES, NQ, ES, GC, SI) | ✅ Live |
-| **Alpaca** | Equities, Options, Crypto | ✅ Live |
-| **OANDA** | Forex (50+ pairs) | ✅ Live |
-| **Binance** | Crypto Spot + Perpetuals | ✅ Live |
-| **Bybit** | Crypto Perpetuals | ✅ Live |
-| **Hyperliquid** | Decentralized Perpetuals | ✅ Live |
+Full failure mode documentation: [SAFETY_MODEL.md](SAFETY_MODEL.md)
 
 ---
 
 ## Configuration Reference
 
+### Required (for live trading)
 ```bash
-# Required: at least one broker
-TRADOVATE_USERNAME=...        TRADOVATE_PASSWORD=...
-TRADOVATE_APP_ID=...          TRADOVATE_APP_SECRET=...
-ALPACA_API_KEY=...            ALPACA_SECRET_KEY=...
+# Tradovate (futures)
+TRADOVATE_USERNAME=...         # login email
+TRADOVATE_PASSWORD=...         # login password
+TRADOVATE_APP_ID=...           # from https://trader.tradovate.com/account
+TRADOVATE_APP_SECRET=...
 
-# Market data (real data sources)
-POLYGON_API_KEY=...           DATABENTO_API_KEY=...
-FRED_API_KEY=...
+# Alpaca (equities/crypto)
+ALPACA_API_KEY=...
+ALPACA_SECRET_KEY=...
+ALPACA_PAPER=true              # set false only for live trading
+```
 
-# Strategy intelligence
-ONYX_API_URL=http://your-onyx:8085    ONYX_API_KEY=...
+### Optional (enhances capabilities)
+```bash
+# Market data
+POLYGON_API_KEY=...            # https://polygon.io — real-time bars
+DATABENTO_API_KEY=...          # https://databento.com — tick data
+FRED_API_KEY=...               # https://fred.stlouisfed.org — free
 
-# Streaming & notifications
-SLACK_WEBHOOK_URL=...         SIGNAL_URL=...
-METRICS_INGEST_API_KEY=...
+# Knowledge base
+ONYX_API_URL=http://...        # self-hosted Onyx instance URL
+ONYX_API_KEY=...               # Onyx API key
 
 # AI ensemble
-OPENAI_API_KEY=...            ANTHROPIC_API_KEY=...
-CEREBRAS_API_KEY=...          GROQ_API_KEY=...
+OPENAI_API_KEY=...             # for GPT-4o in debate engine
+ANTHROPIC_API_KEY=...          # for Claude in debate engine
 
-# Payments (marketplace)
-STRIPE_SECRET_KEY=...         STRIPE_WEBHOOK_SECRET=...
+# Notifications
+SLACK_WEBHOOK_URL=...          # alert channel
+ALGOCHAINS_BRIDGE_API_KEY=...  # HTTP bridge authentication
 
 # Security
-KEY_VAULT_PASSPHRASE=...      # AES-256-GCM vault master key
+KEY_VAULT_PASSPHRASE=...       # AES-256-GCM vault master key
+
+# Marketplace
+STRIPE_SECRET_KEY=...          # Stripe Connect billing
+LISTING_API_KEY=...            # algochains.ai marketplace API
 ```
 
 ---
 
-## Quick Test
+## Supported Brokers
 
-```bash
-# Verify all modules load correctly
-python -m pytest tests/test_tool_registration.py -v
-
-# Check broker connectivity
-python -c "
-from algochains_mcp import server
-print(f'Tools registered: {len(server._get_registered_tools())}')
-"
-
-# Start HTTP server with SSE streaming
-python -m algochains_mcp.http_transport --port 8765
-
-# Run single MCP query via CLI
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_account_balance","arguments":{}}}' \
-  | uvx algochains-mcp-server
-```
+| Broker | Asset Classes | Notes |
+|--------|--------------|-------|
+| **Tradovate** | Futures (MNQ, CL, MES, NQ, ES, GC) | Tyler's primary live account |
+| **Alpaca** | Equities, Options, Crypto | Paper + live; free paper account |
+| **OANDA** | Forex (50+ pairs) | Live |
+| **Interactive Brokers** | Stocks, Futures, Options, Forex | Requires `ib_async` |
+| **QuantConnect** | Cloud algorithm management | Backtesting/deployment only |
 
 ---
 
-## What Makes This Different
+## Marketplace
 
-| Feature | AlgoChains MCP | Generic trading APIs |
-|---------|---------------|---------------------|
-| **MCP 2025-11-25 spec** | ✅ Full (Elicitation, Tasks, SSE) | ❌ None |
-| **Self-improving strategies** | ✅ AlphaLoop 4-stage evolution | ❌ Static |
-| **Order flow data** | ✅ Footprint, delta, dark pool | ❌ OHLCV only |
-| **Multi-broker** | ✅ 6 brokers + DeFi | ❌ 1 broker |
-| **Macro signals** | ✅ FRED, CBOE, Polymarket | ❌ None |
-| **Institutional AI** | ✅ 7-model debate ensemble | ❌ Single model |
-| **Real data policy** | ✅ Enforced, fails closed | ⚠️ Often mock |
-| **Account guards** | ✅ 12 hardened protections | ⚠️ Basic limits |
-| **Semantic search** | ✅ Onyx RAG knowledge base | ❌ None |
-| **Private marketplace** | ✅ Creator + subscriber model | ❌ None |
+The AlgoChains marketplace allows strategy creators to publish validated bots and charge subscribers.
+
+**For creators:** [MARKETPLACE_CREATOR_GUIDE.md](MARKETPLACE_CREATOR_GUIDE.md)
+
+**Submission requirements:**
+- Sharpe Ratio > 2.0 (out-of-sample)
+- Win Rate > 55%
+- Max Drawdown < 15%
+- Minimum 50 trades in test period
+- Pass Deflated Sharpe (MCPT) test
+
+**Revenue split:** Creator 70% / Platform 30% via Stripe Connect.
 
 ---
 
@@ -527,68 +445,346 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_accoun
 ### Adding a New Tool
 
 ```python
-# In server.py, add to _TOOL_MAP:
-"my_new_tool": {
-    "description": "What it does and what real data source it uses",
-    "inputSchema": {
-        "type": "object",
-        "properties": {
-            "symbol": {"type": "string", "description": "Ticker symbol"},
-        },
-        "required": ["symbol"],
-    },
-}
+# 1. Register in server.py TOOLS_ANNOTATED list
+Tool(
+    name="my_new_tool",
+    description="What it does. What real data source it uses. Never synthetic.",
+    inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}}, "required": ["symbol"]},
+    annotations=ANNOT_READ_EXTERNAL,  # Use appropriate annotation
+)
 
-# In _dispatch_tool():
-if name == "my_new_tool":
-    # Always use real API, never return synthetic data
-    result = await real_api_client.fetch(args["symbol"])
+# 2. Add dispatch in _dispatch_tool()
+elif name == "my_new_tool":
+    # Always real API, never synthetic
+    result = await real_api.fetch(arguments["symbol"])
     if result is None:
-        raise ToolError("Real data unavailable — check API key")
-    return result
+        return _text({"error": "Real data unavailable — check API key"})
+    return _text(result)
+
+# 3. Add danger tier in tool_danger_tiers.py
+"my_new_tool": TIER_READ_ONLY,  # or appropriate tier
+
+# 4. Update tool_manifest.py if needed for CI visibility
 ```
 
-### Builder SDK — Create Strategy Templates
+### Builder SDK — Strategy Templates
 
 ```python
-from algochains_mcp.builder_sdk import StrategyTemplate
+from algochains_mcp.builder_sdk.templates.sma_crossover import SMACrossover
+import backtrader as bt
 
-template = StrategyTemplate(
-    name="My EMA Breakout",
-    symbol="MNQ",
-    timeframe="5min",
-    indicators=["EMA(9)", "EMA(21)", "ATR(14)", "Volume(20)"],
-    entry_logic="ema9 > ema21 AND volume > 1.5x AND momentum > 0",
-    exit_logic="stop_atr_2x OR target_atr_4x OR 60min_max",
-    risk_pct=0.01,
-)
-template.validate()
-template.submit_to_marketplace()
+cerebro = bt.Cerebro()
+cerebro.addstrategy(SMACrossover, fast=20, slow=50)
+cerebro.adddata(your_data_feed)
+cerebro.run()
 ```
+
+### Health Check
+
+```bash
+# Full health check
+python scripts/quickstart.py --health-check
+
+# Verify specific mode
+python scripts/quickstart.py --health-check --mode live
+
+# Quick module check
+python3 -c "from algochains_mcp import server; print('OK')"
+```
+
+---
+
+## Skills Bridge — 472 Skills Accessible via MCP (V22.7)
+
+All OpenClaw, Windsurf, Cursor, and Claude skills are now discoverable and readable through the AlgoChains MCP server. AI agents no longer need to switch contexts to find the right skill.
+
+### Skill Counts by Platform
+
+| Platform | Skills | Location |
+|----------|--------|----------|
+| OpenClaw | 334 | `~/.openclaw/skills/` |
+| Windsurf | 126 | `.windsurf/skills/` (control-tower) |
+| Cursor | 7 | `~/.cursor/skills-cursor/` |
+| Claude | 5 | `.claude/skills/` (control-tower) |
+| **Total** | **472** | |
+
+### Skill Categories Available
+
+`trading` · `research` · `operations` · `intelligence` · `agent` · `comms` · `risk` · `data` · `ml` · `marketplace`
+
+### How to Use (for AI agents)
+
+```python
+# 1. Discover skills for your task
+get_skills_for_task(task_description="detect regime change and adjust position sizing")
+
+# 2. Browse all skills in a category
+list_skills(category="trading", limit=20)
+
+# 3. Read full SKILL.md instructions
+get_skill_detail(name="moltbook-debate")
+
+# 4. Search by keyword
+search_skills(query="dark pool unusual options regime")
+
+# 5. Invoke the debate engine directly
+invoke_moltbook_debate(symbol="MNQ", direction="LONG", confidence=72.5)
+
+# 6. Run MCPT pipeline
+run_mcpt_pipeline(step="decay", dry_run=True)
+
+# 7. Read agent memory
+get_openclaw_memory(key_prefix="trade")
+
+# 8. Read current regime
+get_current_regime()
+```
+
+### Onyx Now Indexes All Skills
+
+The Onyx knowledge brain at `100.89.114.31:8085` now indexes all 472 skills plus OpenClaw memory state files. Ask Onyx questions like:
+
+- "Which skills handle regime detection?"
+- "What is the moltbook-debate skill and when should I use it?"
+- "What are the backtest governance rules?"
+- "What has the agent memory stored about MNQ trades?"
+
+Configuration: [config/onyx_connectors.json](../algochains-control-tower/config/onyx_connectors.json)
+
+Blueprint: [blueprints/SKILLS_BRIDGE_BLUEPRINT.md](blueprints/SKILLS_BRIDGE_BLUEPRINT.md)
+
+---
+
+## Prediction markets + Django signal propagation (Roo / Michael)
+
+**v22.8 update** — Gap analysis vs [berlinbra/polymarket-mcp](https://github.com/berlinbra/polymarket-mcp) (⭐130) and [9crusher/mcp-server-kalshi](https://github.com/9crusher/mcp-server-kalshi) (⭐18) identified and filled 4 genuine gaps. We now go beyond both external MCPs.
+
+### Full Prediction Market Tool Suite
+
+| Tool | Platform | Auth | Description |
+|------|----------|------|-------------|
+| `get_prediction_markets` | Both | None | Live macro signals (Fed, elections) mapped to equity signals |
+| `search_prediction_markets` | Both | None | Keyword search with YES/NO prices, volume, URLs |
+| `get_polymarket_high_volume` | Polymarket | None | Top 24h-volume markets |
+| `get_polymarket_market` | Polymarket | None | **NEW** — Specific market by slug or ID (title, prices, vol, liquidity) |
+| `get_polymarket_market_history` | Polymarket | None | **NEW** — Price history 1d/7d/30d/all; auto-resolves CLOB token ID |
+| `list_polymarket_markets` | Polymarket | None | **NEW** — Filter open/closed/resolved + pagination |
+| `get_kalshi_settlements` | Kalshi | RSA-PSS | **NEW** — Recently settled contracts, results, profit-per-contract |
+| `place_kalshi_order` | Kalshi | RSA-PSS | **NEW** — Limit order placement via signed POST |
+| `place_polymarket_order` | Polymarket | CLOB creds | Limit order via py-clob-client |
+| `record_prediction_market_bot_metric` | Both | None | Append JSONL audit snapshot for marketplace promotion |
+| `get_prediction_market_bot_metrics` | Both | None | Read bot performance history |
+| `propagate_trade_signal` | Django | HMAC | Fan-out signals to subscriber paper accounts |
+
+### Environment Variables
+
+```bash
+# Kalshi (RSA-PSS signing — no API token auth for trade APIs)
+KALSHI_ACCESS_KEY=your-api-key-id
+KALSHI_PRIVATE_KEY_PATH=/path/to/kalshi_private.pem   # or KALSHI_PRIVATE_KEY_PEM
+KALSHI_API_HOST=https://api.elections.kalshi.com       # demo: https://demo-api.kalshi.co
+
+# Polymarket CLOB (for order placement only — data is public)
+POLYMARKET_API_KEY=...
+POLYMARKET_API_SECRET=...
+POLYMARKET_API_PASSPHRASE=...
+```
+
+### Comparison vs External MCPs
+
+The external MCPs we evaluated are simpler standalone servers. Our implementation is a superset:
+
+- **History endpoint** (`get_polymarket_market_history`): auto-resolves slug → CLOB YES token → prices-history. Handles Gamma's double-encoded JSON `clobTokenIds` field. Validated: `1d` (131 candles), `7d` (132 candles), `all` (704 candles).
+- **Kalshi**: we use `kalshi_signed_get` + new `kalshi_signed_post` for order placement. The `get_kalshi_settlements` tool uses the `/trade-api/v2/settlements` endpoint (9crusher's latest feature).
+- **Sort bug fix**: Gamma API's correct sort param is `sort=volume24hr` (not `order=volume_24hr`). Fixed in `get_top_markets` and `list_polymarket_markets`.
+
+- **Subscriber fan-out:** `propagate_trade_signal` — same HMAC contract as `examples/trade_propagation/send_signal.py`; requires `ALGOCHAINS_SIGNAL_URL` + `ALGOCHAINS_SIGNAL_SECRET` (fail closed if unset).
+- **Agent docs:** [MEGA_PROMPT_PREDICTION_MARKETS_V1.md](MEGA_PROMPT_PREDICTION_MARKETS_V1.md), [blueprints/PREDICTION_MARKET_BOTS_BLUEPRINT.md](blueprints/PREDICTION_MARKET_BOTS_BLUEPRINT.md).
+- **BYOK:** `polymarket` and `kalshi` entries in `byok/provider_registry.py`.
+
+---
+
+## PAI Integration — Business Identity OS + US Economics + Learning Signals
+
+**v22.9** — Gap analysis vs [danielmiessler/Personal_AI_Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) (⭐11.2k). We already surpass PAI on skills (472 vs 63), memory, MCP tools (371 vs handful), multi-agent debate (Moltbook >> PAI's council), and BYOK. Four genuinely novel additions integrated:
+
+### AlgoChains TELOS (Business Identity OS)
+
+Every AI agent (Cursor, Claude, Windsurf, OpenClaw) now has instant access to AlgoChains' mission, goals, strategies, mental models, lessons learned, challenges, and KPIs — without re-explaining every session.
+
+```python
+get_algochains_telos(section="all")           # Full business context
+get_algochains_telos(section="goals")         # Q2 2026 targets
+get_algochains_telos(section="learned")       # Lessons from live trading
+update_algochains_telos(section="learned", entry="New lesson from live trading")
+```
+
+**TELOS files** live in `algochains-control-tower/TELOS/`:
+
+| File | Contents |
+|------|----------|
+| `MISSION.md` | Why AlgoChains exists |
+| `GOALS.md` | Q2 2026 targets (AUM, marketplace, subscribers) |
+| `STRATEGIES.md` | How goals are achieved (bot quality, Roo's signal prop, MCP moat) |
+| `MODELS.md` | Trading & business mental models (Kelly, Sharpe, Regime-First, MCPT) |
+| `LEARNED.md` | Key lessons from live trading (volume threshold, WebSocket, MCPT) |
+| `CHALLENGES.md` | Current blockers and risks |
+| `IDEAS.md` | Future expansion ideas (GEX, congressional trading, eToro) |
+| `METRICS.md` | KPIs: bots, marketplace, platform, macro indicators |
+
+### US Economic Indicators (FRED + EIA Macro Layer)
+
+68 US economic indicators adapted from PAI's USMetrics pack. Critical for trading:
+- **CL bot:** EIA weekly crude oil inventories (biggest crude mover — released Wednesdays)
+- **MNQ/NQ:** CPI, PCE, Fed Funds Rate, 10Y-2Y spread for rate regime detection
+- **All bots:** VIX with pre-computed regime signal (crisis/elevated/normal)
+
+```python
+get_us_economic_indicators(categories=["volatility", "rates"])  # FRED data
+get_crude_oil_inventories()    # EIA weekly crude — cl_signal: BULLISH/BEARISH/NEUTRAL
+get_fed_policy_signals()       # 7 Fed indicators + AI regime interpretation
+```
+
+**Required env vars** (both free):
+```bash
+FRED_API_KEY=<from https://fred.stlouisfed.org/docs/api/api_key.html>
+EIA_API_KEY=<from https://www.eia.gov/opendata/register.php>
+```
+
+### Learning Signals (Continuous Improvement)
+
+Capture agent outcome ratings for every significant action. After 30+ signals, patterns emerge: which skills produce the best outcomes, where failure is common, what to improve.
+
+```python
+capture_learning_signal(
+    action_type="bot_diagnosis",
+    action_description="Fixed MNQ volume threshold 3.02x → 1.5x",
+    outcome="success",
+    rating=9,
+    skill_used="bot-diagnostics",
+    bot="MNQ",
+    agent="cursor"
+)
+get_learning_signals(summarize=True)  # Success rates, top skills, bot activity
+```
+
+Storage: `state/learning_signals.jsonl` (append-only, never deleted).
+
+### ntfy Mobile Push Notifications
+
+Instant mobile push for trading events — no app install required. Users subscribe at `ntfy.sh/algochains/bots` etc.
+
+```python
+send_ntfy_notification(title="MNQ Bot Crashed", message="Process not found", topic="bots", priority="urgent")
+send_ntfy_notification(title="Daily P&L", message="MNQ: +$340, CL: +$180", topic="bots", priority="low")
+```
+
+| Topic | Events |
+|-------|--------|
+| `algochains/bots` | Bot up/down, trade events, reconnects |
+| `algochains/risk` | Circuit breaker, daily loss limit hit |
+| `algochains/marketplace` | New subscriber, bot promoted/demoted |
+| `algochains/ops` | Deploy complete, system health |
+| `algochains/alpha` | High-confidence signal detected |
+
+**Required env vars:** `NTFY_BASE_URL` (default: `https://ntfy.sh`), optional `NTFY_AUTH_TOKEN` for private topics.
+
+### What We Skipped From PAI (Already Have Better)
+
+| PAI Feature | Why Skipped |
+|-------------|-------------|
+| Skill System (63 skills) | We have 472 — 7.5× more |
+| Memory (flat JSON) | OpenClaw memory.json already running |
+| Multi-agent debates | Moltbook (PostgreSQL + NATS + LangGraph) is far more sophisticated |
+| Hook system | autonomous_watchdog.py + adaptive_brain.py already live |
+| Dashboard | algochains-command-center (Next.js) already deployed |
+| Voice (ElevenLabs) | Slack + ntfy sufficient for trading ops |
+| Context Search | Onyx knowledge brain provides semantic search |
+| Algorithm v3.7.0 rigid protocol | Moltbook debate engine is our specialized equivalent |
 
 ---
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full history.
+**v22.9** (2026-04-07) — PAI Integration: TELOS + US Economics + Learning Signals + ntfy
+- Evaluated [danielmiessler/Personal_AI_Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) (⭐11.2k) — identified 4 genuine gaps vs AlgoChains stack
+- **TELOS System**: 8-file business identity OS in `algochains-control-tower/TELOS/` — mission, goals, strategies, models, learned, challenges, ideas, metrics
+- **`telos.py`**: `get_algochains_telos(section)` + `update_algochains_telos(section, entry)` — instant business context for all AI agents
+- **`us_economics.py`**: `get_us_economic_indicators` (16 FRED series, 6h cache), `get_crude_oil_inventories` (EIA weekly, critical for CL), `get_fed_policy_signals` (7 Fed indicators + AI regime interpretation)
+- **`learning_signals.py`**: `capture_learning_signal` + `get_learning_signals` — outcome capture, success rate analysis, skill effectiveness tracking
+- **`notifications/ntfy_push.py`**: `send_ntfy_notification` — mobile push via ntfy.sh, 5 topic channels, priority routing
+- All 8 new tools added to smart-mode list; danger tiers updated (READ_ONLY, READ_EXTERNAL, WRITE_LOCAL)
+- Blueprint: [blueprints/PAI_INTEGRATION_BLUEPRINT.md](blueprints/PAI_INTEGRATION_BLUEPRINT.md)
+- Tools badge: **371** registered (was 363)
 
-**v21.0.0** (2026-04-06) — The "Holy Fuck Factor" Release
-- MCP 2025-11-25 full spec compliance (Elicitation, Tasks, SSE, OIDC)
-- AlphaLoop self-improving strategy evolution daemon (real RL reward model)
-- Order flow stack: footprint charts, cumulative delta, volume profile, dark pool
-- Earnings NLP: SEC EDGAR + FinBERT sentiment pipeline
-- Prediction markets: Polymarket + Kalshi integration
-- Macro signal fabric: FRED, CBOE, Polygon
-- Encrypted local key vault (AES-256-GCM + scrypt)
-- Per-agent sub-account provisioning (Alpaca Broker API)
-- Price alert engine with Polygon real-time polling
-- Earnings event subscription system
-- Onyx intelligence layer (self-hosted RAG knowledge base)
-- Crypto parity: copy trading, staking, DCA, perp futures
-- Stripe Connect billing engine (real payments, 70/30 split)
-- Per-tenant rate limiting + immutable audit log
-- Registry.json for MCP marketplace discovery
-- Bot metrics streaming daemon for live showcase
+**v22.8** (2026-04-07) — Prediction Market Gap Fill (vs mcp-server-kalshi + polymarket-mcp)
+- Evaluated [berlinbra/polymarket-mcp](https://github.com/berlinbra/polymarket-mcp) (⭐130) and [9crusher/mcp-server-kalshi](https://github.com/9crusher/mcp-server-kalshi) (⭐18)
+- `get_polymarket_market(slug_or_id)` — fetch specific Polymarket market by slug/numeric ID via Gamma query params (path-based lookups return 422)
+- `get_polymarket_market_history(slug, timeframe)` — price history 1d/7d/30d/all via `clob.polymarket.com/prices-history`; auto-resolves slug → CLOB YES token ID; handles double-encoded `clobTokenIds` JSON string
+- `list_polymarket_markets(status, limit, offset)` — filter open/closed/resolved with pagination; sort by `sort=volume24hr` (fixed from broken `order=volume_24hr`)
+- `get_kalshi_settlements(limit)` — signed GET to `/trade-api/v2/settlements`; returns results, timestamps, profit-per-contract
+- `place_kalshi_order(ticker, side, action, count, limit_price_cents)` — signed POST to `/trade-api/v2/orders` via new `kalshi_signed_post()` in `kalshi_signed.py`
+- **Bug fix**: `get_top_markets` was using `order=volume_24hr` which returns HTTP 422; corrected to `sort=volume24hr`
+- All 5 new tools added to smart-mode list; danger tiers updated (4× READ_ONLY, 1× ORDER_EXEC)
+- Tools badge: **363** registered (was 358)
+
+**v22.7** (2026-04-07) — Skills Bridge + Agent Memory + Onyx Expansion
+- `skills_registry.py` — indexes 472 skills across OpenClaw (334), Windsurf (126), Cursor (7), Claude (5); keyword search + category filter + task-matching
+- `agent_memory.py` — reads real OpenClaw memory.json, current_regime.json, bot_heartbeat.json, agent_evaluations.json, ai_cost_state.json
+- 17 new MCP tools: `list_skills`, `get_skill_detail`, `search_skills`, `get_skills_for_task`, `reload_skills_registry`, `get_openclaw_memory`, `store_trade_lesson`, `get_current_regime`, `get_bot_heartbeat_openclaw`, `get_agent_evaluations`, `get_openclaw_state_summary`, `invoke_moltbook_debate`, `run_mcpt_pipeline`, `run_regime_detection` + skill execution shortcuts
+- All 17 tools added to smart-mode list (visible by default)
+- `onyx_connectors.json` — expanded to index `~/.openclaw/skills/` (363 skills), `~/.openclaw/memory.json` + state files, `~/.cursor/skills-cursor/`, `algochains-mcp-server/blueprints/`
+- Onyx persona updated: knows about 472 skills, can answer skill-related questions with citations
+- Blueprint: [blueprints/SKILLS_BRIDGE_BLUEPRINT.md](blueprints/SKILLS_BRIDGE_BLUEPRINT.md)
+- Tools badge: **358** registered (was 344)
+
+**v22.6** (2026-04-08) — Prediction Markets + Trade Propagation
+- Fixed `get_prediction_markets`: was calling non-existent async `get_signals` on wrong class name — now uses `PredictionMarketsEngine.get_signals()` (sync) with thematic category queries
+- `search_prediction_markets`, `get_polymarket_high_volume`, `propagate_trade_signal`, `record_prediction_market_bot_metric`, `get_prediction_market_bot_metrics` MCP tools
+- `trade_propagation.py` — HMAC POST to Django; no default secrets
+- `prediction_market_metrics.py` — JSONL audit log for subscribable PM bot promotion path
+- `PredictionMarketEngine` alias for backwards-compatible lazy imports
+- `examples/trade_propagation/` — env-only `send_signal.py`, `dummy_signal_test.py`, TRADE_PROPAGATION stub
+- BYOK registry extended for Polymarket + Kalshi
+- **v22.6.1** — Audit hardening: no synthetic 0.5 Polymarket prices; Gamma sort params `order=volume_24hr` + `ascending=false`; Kalshi **RSA-PSS** via `order_flow/kalshi_signed.py` (replaces broken Token auth); `place_polymarket_order` requires explicit `limit_price`; [blueprints/PREDICTION_MARKETS_GAP_ANALYSIS.md](blueprints/PREDICTION_MARKETS_GAP_ANALYSIS.md)
+
+**v22.5** (2026-04-07) — Soft-Launch Platform Release (Oleg / Planex Tasks)
+- `support_tickets.py` — IT support ticket system: Supabase-backed, Notion sync, Resend confirmation emails. MCP tools: `create_support_ticket`, `get_support_ticket`, `list_support_tickets`, `update_ticket_status`, `get_ticket_stats`
+- `brokers/oauth_manager.py` — Generic OAuth 2.0 PKCE manager for broker connections. Supports Schwab, Alpaca, Tradovate, OANDA. Tokens persisted in Supabase + local fallback
+- `brokers/schwab_connector.py` — Full Charles Schwab (TD Ameritrade successor) connector: accounts, positions, orders, quotes, options chain. Uses `api.schwabapi.com`
+- `waitlist.py` — Join Waitlist with Supabase persistence + Resend welcome email. `join_waitlist`, `get_waitlist_stats`, `send_waitlist_invite` (with unique invite codes)
+- `verification.py` — Email/SMS code verification (6-digit, SHA-256 hashed, 10min TTL): `send_email_verification_code`, `send_sms_verification_code`, `verify_code`. Rate-limited 3/hour. Twilio for SMS
+- `platform_analytics.py` — Soft-launch analytics: `track_platform_event`, `get_analytics_summary`. Tracks full signup→verify→connect→purchase funnel with by-day breakdown
+- `auth/password_reset.py` — Supabase Auth password reset + account recovery flow: `initiate_password_reset`, `complete_password_reset`, `initiate_account_recovery`. Password policy: 12 chars + upper/lower/number/special
+- `live_bot_intelligence/multi_account_metrics.py` — Multi-bot account metrics: `get_user_bot_metrics`, `get_all_user_bots`, `upsert_bot_performance`. Handles 4 fallback states: LIVE, METRICS_PENDING, BROKER_NOT_CONNECTED, DATA_STALE
+- `supabase/migrations/20260406_platform_tables.sql` — 7 new tables with RLS policies: `algochains_support_tickets`, `algochains_oauth_tokens`, `algochains_waitlist`, `algochains_verification_codes`, `algochains_analytics_events`, `algochains_bot_performance`, `algochains_subscriptions`
+- `config.py` — Added `SupabaseConfig`, `EmailConfig`, `SchwabConfig`, `TwilioConfig`, `NotionConfig` dataclasses
+- `.env.example` — Added `SUPABASE_SERVICE_KEY`, `RESEND_API_KEY`, `TWILIO_*`, `NOTION_*`, `SCHWAB_*` env vars
+- Total: 25 new MCP tools, 386 tools total
+
+**v22.4** (2026-04-06) — UX & Team Onboarding Release
+- Complete README rewrite — plain English explanation, team access docs
+- `scripts/quickstart.py` — interactive setup wizard with health checks
+- `SAFETY_MODEL.md` — answers "is this safe?" for every failure mode
+- `MARKETPLACE_CREATOR_GUIDE.md` — step-by-step bot submission guide for Roo's request
+- `tool_danger_tiers.py` — machine-readable danger classification (0-3) for all 350+ tools
+- HTTP bridge `/tools` endpoint now returns `danger_tier`, `safe_in_demo_mode`, etc. for every tool
+- Fixed 3 undefined `ANNOT_*` constants in `server.py` causing import failure
+- Deployment persistence: `StrategyDeployer` now persists to `state/deployments.json`
+- SaaS persistence: `StrategyMarketplace`, `TenantManager`, `WhiteLabelEngine` all persist to state dir
+- Tool manifest: `optimize_strategy`, `deploy_strategy`, `create_shadow_portfolio` corrected from `stub` → `partial`
+
+**v22.3** (2026-04-06) — Proprietary Data Ingestion
+- `data_ingestion.py` — 5 ingestion tools: ingest_csv_data, ingest_json_signals, connect_onyx_docs, register_strategy, list_ingested_data
+- Path traversal protection on all user-supplied file paths
+
+**v22.0** (2026-04-05) — MCP 2025-11-25 Full Compliance
+- Elicitation (human confirmation for high-value trades)
+- Durable Tasks (background backtest/optimization jobs)
+- SSE streaming transport
+- OIDC discovery endpoint
+- Trading guardrails with circuit breakers
+- AlphaLoop evolution daemon
 
 ---
 
@@ -600,8 +796,10 @@ MIT — use freely, build great things.
 
 <div align="center">
 
-**Built for traders who demand real data, real execution, and real autonomy.**
+**Built by Tyler Reynolds as an experimental AI trading infrastructure platform.**
 
-[GitHub](https://github.com/AlgoChains/algochains-mcp-server) · [Docs](https://docs.algochains.ai) · [Marketplace](https://algochains.ai/marketplace) · [Discord](https://discord.gg/algochains)
+[SAFETY_MODEL.md](SAFETY_MODEL.md) · [MARKETPLACE_CREATOR_GUIDE.md](MARKETPLACE_CREATOR_GUIDE.md) · [UX_BLUEPRINT.md](UX_BLUEPRINT.md)
+
+*This is experimental software connected to live trading accounts. Use at your own risk.*
 
 </div>
