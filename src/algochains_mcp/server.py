@@ -297,9 +297,11 @@ app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
 # ═══════════════════════════════════════════════════════════════════
 # IDEs use these to auto-approve safe tools and show confirmation for dangerous ones.
 ANNOT_READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+ANNOT_READ_SAFE = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 ANNOT_READ_EXTERNAL = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 ANNOT_WRITE_SAFE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 ANNOT_WRITE_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
+ANNOT_DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
 ANNOT_TRADE_EXEC = ToolAnnotations(title="Trade Execution", readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
 ANNOT_SEARCH = ToolAnnotations(title="Search", readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 ANNOT_COMPUTE = ToolAnnotations(title="Computation", readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -4048,6 +4050,7 @@ def _require_broker(registry: BrokerRegistry, broker_name: str):
 
 async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -> list[TextContent]:
     """Route tool calls to their implementations."""
+    args = arguments  # alias used by some handlers
 
     # ── Trading ──────────────────────────────────────────────
     if name == "place_order":
@@ -8045,7 +8048,6 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "check_rithmic_status":
         try:
             # check_rithmic_status is synchronous — no async needed
-            import os
             system_name = os.environ.get("RITHMIC_SYSTEM_NAME", "")
             plant_name = os.environ.get("RITHMIC_PLANT_NAME", "Chicago")
             user_id = os.environ.get("RITHMIC_USER_ID", "")
@@ -8111,7 +8113,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     # ── AlgoClaw Agent Skill System (v25.0) ─────────────────────────────────
     elif name == "run_algoclaw_skill":
         try:
-            import sys, os
+            import sys
             _ac_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "algoclaw")
             if _ac_dir not in sys.path:
                 sys.path.insert(0, _ac_dir)
@@ -8126,7 +8128,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "list_algoclaw_skills":
         try:
-            import sys, os
+            import sys
             _ac_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "algoclaw")
             if _ac_dir not in sys.path:
                 sys.path.insert(0, _ac_dir)
@@ -8137,7 +8139,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_algoclaw_status":
         try:
-            import sys, os
+            import sys
             _ac_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "algoclaw")
             if _ac_dir not in sys.path:
                 sys.path.insert(0, _ac_dir)

@@ -21,6 +21,14 @@ import logging
 import os
 from typing import Any
 
+# FastAPI imports at module level so inner functions can resolve Request type
+try:
+    from fastapi import FastAPI, HTTPException, Header, Request
+    from fastapi.middleware.cors import CORSMiddleware
+    _FASTAPI_AVAILABLE = True
+except ImportError:
+    _FASTAPI_AVAILABLE = False
+
 log = logging.getLogger(__name__)
 
 # ─── Tool whitelist (what the site is allowed to call) ───────────────────────
@@ -94,10 +102,10 @@ async def handle_mcp_request(tool_name: str, arguments: dict, is_owner: bool = F
 def create_fastapi_app():
     """Create FastAPI app for standalone HTTP bridge. Install: pip install fastapi uvicorn"""
     try:
-        from fastapi import FastAPI, HTTPException, Header
-        from fastapi.middleware.cors import CORSMiddleware
         from pydantic import BaseModel
     except ImportError:
+        raise ImportError("Install fastapi and uvicorn: pip install fastapi uvicorn")
+    if not _FASTAPI_AVAILABLE:
         raise ImportError("Install fastapi and uvicorn: pip install fastapi uvicorn")
 
     app_http = FastAPI(
@@ -197,14 +205,23 @@ def create_fastapi_app():
 
     @app_http.post("/api/mcp")
     async def mcp_endpoint(
-        req: McpRequest,
+        request: Request,
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
     ):
-        key_valid, is_owner = _resolve_auth(x_api_key, authorization, req.user_email)
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        tool = body.get("tool")
+        arguments = body.get("arguments", {})
+        user_email = body.get("user_email")
+        if not tool:
+            raise HTTPException(status_code=400, detail="Missing 'tool' field")
+        key_valid, is_owner = _resolve_auth(x_api_key, authorization, user_email)
         if not key_valid:
             raise HTTPException(status_code=401, detail="Invalid API key")
-        result = await handle_mcp_request(req.tool, req.arguments, is_owner=is_owner)
+        result = await handle_mcp_request(tool, arguments, is_owner=is_owner)
         return result
 
     # SECURITY FIX (V22 audit): All GET convenience endpoints now require API key.
