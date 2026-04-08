@@ -7962,6 +7962,44 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
+    # ── AlgoClaw Agent Skill System (v25.0) ─────────────────────────────────
+    elif name == "run_algoclaw_skill":
+        try:
+            import sys, os
+            _ac_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "algoclaw")
+            if _ac_dir not in sys.path:
+                sys.path.insert(0, _ac_dir)
+            from algoclaw.cli import run_skill
+            skill = args.get("skill")
+            if not skill:
+                return _text({"error": "Provide 'skill' argument", "usage": "run_algoclaw_skill({'skill': 'bot-health'})"})
+            result = run_skill(skill, args.get("params", {}))
+            return _text(result)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "list_algoclaw_skills":
+        try:
+            import sys, os
+            _ac_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "algoclaw")
+            if _ac_dir not in sys.path:
+                sys.path.insert(0, _ac_dir)
+            from algoclaw.cli import list_skills
+            return _text(list_skills())
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_algoclaw_status":
+        try:
+            import sys, os
+            _ac_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "algoclaw")
+            if _ac_dir not in sys.path:
+                sys.path.insert(0, _ac_dir)
+            from algoclaw.cli import get_status
+            return _text(get_status())
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
     else:
         return _text({"error": f"Unknown tool: {name}"})
 

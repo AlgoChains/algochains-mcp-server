@@ -1,7 +1,7 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-398-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-401-green?style=flat-square)](#tool-categories)
 [![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
@@ -607,6 +607,68 @@ The AlgoChains marketplace allows strategy creators to publish validated bots an
 - Pass Deflated Sharpe (MCPT) test
 
 **Revenue split:** Creator 70% / Platform 30% via Stripe Connect.
+
+---
+
+## AlgoClaw — Agent Skill System (v25.0)
+
+AlgoClaw is the OpenClaw-like autonomous skill layer embedded in this MCP server.
+Every subscriber gets 21 trading-specific skills out of the box.
+
+**Run any skill:**
+```bash
+python algoclaw/cli.py bot-health          # check all 4 live bots
+python algoclaw/cli.py prop-fund-check     # check prop fund evaluation accounts
+python algoclaw/cli.py position-size --param symbol=MNQ entry=18050 stop=17990 capital=50000
+python algoclaw/cli.py security-posture    # CoSAI + SAFE-MCP coverage audit
+python algoclaw/cli.py --list              # all skills with tier + status
+```
+
+**From AI (Claude / Cursor):**
+```
+"Run bot-health AlgoClaw skill"       → run_algoclaw_skill("bot-health")
+"What AlgoClaw skills exist?"         → list_algoclaw_skills()
+"AlgoClaw status"                     → get_algoclaw_status()
+```
+
+| Tier | Skills | Purpose |
+|------|--------|---------|
+| 0 | bot-health, credential-audit, regime-scan, position-size, security-posture | Daily essentials |
+| 1 | mcpt-validate, tearsheet-gen, options-scan, gex-monitor | Research |
+| 2 | prop-fund-check, prop-fund-match, rithmic-status | Prop fund pipeline |
+| 3 | kill-switch | Emergency (owner-only) |
+| 4 | marketplace-audit, portfolio-optimize | Marketplace |
+
+See: [`algoclaw/README.md`](algoclaw/README.md) | Full blueprint: `blueprints/ALGOCLAW_BLUEPRINT.md`
+
+---
+
+## Command Center (cc.algochains.io)
+
+The AlgoChains Command Center is a real-time Next.js dashboard at **https://cc.algochains.io**.
+
+**Run locally:**
+```bash
+cd algochains-command-center
+npm run dev              # starts on http://localhost:3333
+```
+
+**Expose via Cloudflare tunnel (subscribers):**
+```bash
+# One-time setup (your own Cloudflare account + domain)
+SUBDOMAIN=cc DOMAIN=yourdomain.com CC_PORT=3333 \
+  bash scripts/setup_cc_tunnel.sh
+
+# Start tunnel
+cloudflared tunnel run algochains-cc
+```
+
+**Pages:**
+- `/` — Live bot dashboard (P&L, signals, AI confidence)
+- `/algoclaw` — AlgoClaw skill runner + ecosystem map
+- `/prop-funds` — Prop fund pipeline + evaluation accounts
+- `/marketplace` — Strategy marketplace + decay monitor
+- `/setup` — MCP server setup wizard
 
 ---
 
