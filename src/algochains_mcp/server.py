@@ -7812,6 +7812,135 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
+    elif name == "verify_hmac_signature":
+        try:
+            from .security.replay_guard import verify_hmac_signature
+            return _text(verify_hmac_signature(
+                payload=str(args["payload"]),
+                secret=str(args["secret"]),
+                timestamp=str(args["timestamp"]),
+                nonce=str(args["nonce"]),
+                signature=str(args["signature"]),
+                algorithm=str(args.get("algorithm", "sha256")),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "compute_r_multiple_size":
+        try:
+            from .brokers.etrade_connector import compute_r_multiple_size
+            return _text(compute_r_multiple_size(
+                symbol=str(args["symbol"]),
+                entry_price=float(args["entry_price"]),
+                stop_loss_price=float(args["stop_loss_price"]),
+                capital_usd=float(args["capital_usd"]),
+                risk_pct=float(args.get("risk_pct", 1.0)),
+                asset_type=str(args.get("asset_type", "equity")),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "compute_option_greeks":
+        try:
+            from .brokers.etrade_connector import compute_option_greeks
+            return _text(compute_option_greeks(
+                option_type=str(args["option_type"]),
+                underlying_price=float(args["underlying_price"]),
+                strike=float(args["strike"]),
+                time_to_expiry_years=float(args["time_to_expiry_years"]),
+                risk_free_rate=float(args.get("risk_free_rate", 0.05)),
+                implied_vol=float(args["implied_vol"]),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "find_optimal_strike":
+        try:
+            from .brokers.etrade_connector import find_optimal_strike
+            return _text(find_optimal_strike(
+                option_type=str(args["option_type"]),
+                underlying_price=float(args["underlying_price"]),
+                target_delta=float(args["target_delta"]),
+                expiry_str=str(args["expiry"]),
+                risk_free_rate=float(args.get("risk_free_rate", 0.05)),
+                implied_vol=float(args.get("implied_vol", 0.25)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "check_broker_credentials":
+        try:
+            from .brokers.credential_vault import check_broker_credentials as _check_creds
+            broker = args.get("broker")
+            if broker:
+                return _text(_check_creds(broker))
+            from .brokers.credential_vault import check_all_broker_credentials
+            return _text(check_all_broker_credentials())
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_broker_onboarding_guide":
+        try:
+            from .brokers.credential_vault import get_broker_onboarding_guide
+            return _text(get_broker_onboarding_guide(str(args["broker"])))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "check_rithmic_status":
+        try:
+            from .brokers.rithmic_connector import check_rithmic_status
+            import asyncio
+            loop = asyncio.get_event_loop()
+            result = loop.run_until_complete(check_rithmic_status()) if not loop.is_running() else check_rithmic_status()
+            if asyncio.iscoroutine(result):
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(asyncio.run, result).result()
+            return _text(result)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "register_prop_fund_account":
+        try:
+            from .brokers.prop_fund_drawdown_monitor import register_prop_fund_account
+            return _text(register_prop_fund_account(
+                account_id=str(args["account_id"]),
+                fund_name=str(args["fund_name"]),
+                broker=str(args["broker"]),
+                starting_balance=float(args["starting_balance"]),
+                max_daily_loss_usd=args.get("max_daily_loss_usd"),
+                max_trailing_drawdown_usd=args.get("max_trailing_drawdown_usd"),
+                profit_target_usd=args.get("profit_target_usd"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_prop_fund_monitor_status":
+        try:
+            from .brokers.prop_fund_drawdown_monitor import get_prop_fund_monitor_status
+            return _text(get_prop_fund_monitor_status())
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_prop_fund_broker_options":
+        try:
+            from .brokers.credential_vault import get_prop_fund_broker_options
+            return _text(get_prop_fund_broker_options())
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
     else:
         return _text({"error": f"Unknown tool: {name}"})
 

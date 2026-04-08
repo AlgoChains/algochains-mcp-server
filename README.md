@@ -1,7 +1,7 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-387-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-398-green?style=flat-square)](#tool-categories)
 [![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
@@ -705,6 +705,18 @@ send_ntfy_notification(title="Daily P&L", message="MNQ: +$340, CL: +$180", topic
 ---
 
 ## Changelog
+
+**v24.0** (2026-04-08) — Full Prop Fund Pipeline: Rithmic Connector, Drawdown Monitor Daemon, E*TRADE + Options, Credential Vault, Command Center /prop-funds
+
+*11 new tools. Tools: 387 → 398. Complete prop fund automation pipeline — from validated strategy to funded account.*
+
+- **Rithmic Connector** (`brokers/rithmic_connector.py`): Full R|Protocol connector for all 6 major US prop funds. DRY_RUN mode active until vendor agreement signed. Covers MNQ, NQ, MES, CL, ES, GC. Dry-run simulator validates all order logic.
+- **PropFundDrawdownMonitor** (`brokers/prop_fund_drawdown_monitor.py`): Real-time evaluation account monitoring daemon. Alerts at 70%/85%/95% of daily limits via ntfy + Slack. Emergency auto-flatten at 95%. Trailing drawdown tiers at 80%/90%/98%. Profit target detection with pass notification. State persisted across restarts.
+- **Autonomous Daemon** (`autonomous/prop_fund_monitor.py`, control tower): Control tower-level daemon with direct Tradovate REST API integration. CLI with `--check-now`, `--status`, `--interval` flags. Runs every 30 min during market hours (9:30-16:00 ET, Mon-Fri).
+- **E*TRADE Connector** (`brokers/etrade_connector.py`): Full OAuth 1.0a connector for equities + options. R-Multiple sizing (Van Tharp methodology). Black-Scholes Greeks computation (pure Python, no scipy). `find_optimal_strike()` by target delta. Options chain fetching with full Greeks.
+- **Credential Vault** (`brokers/credential_vault.py`): Centralized credential management for 15 brokers/data sources. `check_all_broker_credentials()` — masked status (never exposes values). Step-by-step onboarding guides per broker. Prop fund broker option selector.
+- **Command Center /prop-funds** (command center): Full React dashboard with fund cards, bot × fund compatibility matrix, pipeline visualization (6-phase), drawdown tier visualization, revenue model projections per account size. Rithmic vendor agreement status banner.
+- **New MCP Tools**: `verify_hmac_signature`, `compute_r_multiple_size`, `compute_option_greeks`, `find_optimal_strike`, `check_broker_credentials`, `get_broker_onboarding_guide`, `check_rithmic_status`, `register_prop_fund_account`, `get_prop_fund_monitor_status`, `get_prop_fund_broker_options`
 
 **v23.0** (2026-04-07) — GitHub Acceleration Research: Protection Patterns, Vol Targeting, Prop Funds, Security Hardening
 
