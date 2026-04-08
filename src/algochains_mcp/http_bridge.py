@@ -119,7 +119,9 @@ def create_fastapi_app():
         allow_origins=[
             "https://algochains.ai",
             "https://www.algochains.ai",
+            "https://cc.algochains.io",
             "http://localhost:3000",
+            "http://localhost:3333",
             "http://localhost:5173",
         ],
         allow_credentials=True,
