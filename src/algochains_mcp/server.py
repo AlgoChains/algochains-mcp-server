@@ -7898,14 +7898,35 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "check_rithmic_status":
         try:
-            from .brokers.rithmic_connector import check_rithmic_status
-            import asyncio
-            loop = asyncio.get_event_loop()
-            result = loop.run_until_complete(check_rithmic_status()) if not loop.is_running() else check_rithmic_status()
-            if asyncio.iscoroutine(result):
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    result = pool.submit(asyncio.run, result).result()
+            # check_rithmic_status is synchronous — no async needed
+            import os
+            system_name = os.environ.get("RITHMIC_SYSTEM_NAME", "")
+            plant_name = os.environ.get("RITHMIC_PLANT_NAME", "Chicago")
+            user_id = os.environ.get("RITHMIC_USER_ID", "")
+            password = os.environ.get("RITHMIC_PASSWORD", "")
+            dry_run = os.environ.get("RITHMIC_DRY_RUN", "true").lower() == "true"
+            all_configured = bool(system_name and user_id and password)
+            missing = []
+            if not system_name: missing.append("RITHMIC_SYSTEM_NAME")
+            if not user_id: missing.append("RITHMIC_USER_ID")
+            if not password: missing.append("RITHMIC_PASSWORD")
+            from .brokers.rithmic_connector import RITHMIC_GATEWAYS, RITHMIC_INSTRUMENTS
+            result = {
+                "dry_run_mode": dry_run,
+                "credentials_configured": all_configured,
+                "missing_credentials": missing,
+                "plant": plant_name,
+                "gateway": RITHMIC_GATEWAYS.get(plant_name, "Unknown"),
+                "supported_instruments": list(RITHMIC_INSTRUMENTS.keys()),
+                "supported_prop_funds": ["apex", "topstep", "myfundedfutures", "tradeday", "bulenox", "earn2trade"],
+                "vendor_agreement": "https://www.rithmic.com/contacts",
+                "note": (
+                    "DRY_RUN active — set RITHMIC_DRY_RUN=false after signing vendor agreement."
+                    if dry_run else
+                    ("Credentials configured. Connect via RithmicConnector().connect()" if all_configured
+                     else "Missing credentials — sign vendor agreement at rithmic.com/contacts")
+                ),
+            }
             return _text(result)
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})

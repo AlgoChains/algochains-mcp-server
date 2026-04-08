@@ -328,9 +328,27 @@ class PropFundDrawdownMonitor:
                 conn = RithmicConnector(account_id=acct.account_id)
                 return await conn.get_account(acct.account_id)
             elif acct.broker == "tradovate":
-                # Use existing Tradovate connector for Apex accounts
-                from algochains_mcp.brokers.tradovate import get_account_balance
-                return await get_account_balance()
+                # Use TradovateConnector.get_account() — the standard MCP broker interface
+                from algochains_mcp.brokers.tradovate import TradovateConnector, TradovateConfig
+                import os
+                cfg = TradovateConfig(
+                    cid=os.environ.get("TRADOVATE_CID", ""),
+                    secret=os.environ.get("TRADOVATE_SECRET", ""),
+                    device_id=os.environ.get("TRADOVATE_DEVICE_ID", ""),
+                    env=os.environ.get("TRADOVATE_ENV", "live"),
+                )
+                tv = TradovateConnector(cfg)
+                await tv.connect()
+                acct_info = await tv.get_account()
+                await tv.disconnect()
+                return {
+                    "account_id": acct_info.account_id,
+                    "balance": acct_info.equity,
+                    "daily_pnl": 0.0,   # Tradovate REST doesn't expose daily P&L directly
+                    "day_open_pnl": 0.0,
+                    "source": "tradovate",
+                    "note": "daily_pnl requires WebSocket streaming; use control tower daemon for live P&L",
+                }
             else:
                 logger.warning("Unsupported broker for live data: %s", acct.broker)
                 return None
@@ -339,7 +357,10 @@ class PropFundDrawdownMonitor:
             return None
 
     async def _emergency_flatten(self, acct: MonitoredAccount) -> dict:
-        """Execute emergency flatten for an account."""
+        """Execute emergency flatten for an account.
+
+        Cancels all working orders then places market orders to close all positions.
+        """
         try:
             if acct.broker == "rithmic":
                 from algochains_mcp.brokers.rithmic_connector import RithmicConnector
@@ -349,8 +370,49 @@ class PropFundDrawdownMonitor:
                 await conn.disconnect()
                 return result
             elif acct.broker == "tradovate":
-                from algochains_mcp.brokers.tradovate import cancel_all_orders_and_flatten
-                return await cancel_all_orders_and_flatten()
+                from algochains_mcp.brokers.tradovate import TradovateConnector, TradovateConfig
+                import os
+                cfg = TradovateConfig(
+                    cid=os.environ.get("TRADOVATE_CID", ""),
+                    secret=os.environ.get("TRADOVATE_SECRET", ""),
+                    device_id=os.environ.get("TRADOVATE_DEVICE_ID", ""),
+                    env=os.environ.get("TRADOVATE_ENV", "live"),
+                )
+                tv = TradovateConnector(cfg)
+                await tv.connect()
+                # Cancel all working orders first
+                orders = await tv.get_orders(status="Working")
+                cancelled = 0
+                for order in orders:
+                    if await tv.cancel_order(order.order_id):
+                        cancelled += 1
+                # Close all open positions with market orders
+                positions = await tv.get_positions()
+                closed = 0
+                errors = []
+                for pos in positions:
+                    if pos.quantity != 0:
+                        close_side = "Sell" if pos.quantity > 0 else "Buy"
+                        try:
+                            from algochains_mcp.brokers.base import OrderRequest, OrderType, OrderSide
+                            req = OrderRequest(
+                                symbol=pos.symbol,
+                                side=OrderSide.SELL if pos.quantity > 0 else OrderSide.BUY,
+                                quantity=abs(pos.quantity),
+                                order_type=OrderType.MARKET,
+                            )
+                            await tv.place_order(req)
+                            closed += 1
+                        except Exception as e:
+                            errors.append(str(e))
+                await tv.disconnect()
+                return {
+                    "flattened": True,
+                    "orders_cancelled": cancelled,
+                    "positions_closed": closed,
+                    "errors": errors,
+                    "account_id": acct.account_id,
+                }
             return {"error": f"No flatten handler for broker: {acct.broker}"}
         except Exception as exc:
             logger.error("Emergency flatten failed for %s: %s", acct.account_id, exc)

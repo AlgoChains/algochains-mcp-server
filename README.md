@@ -174,9 +174,9 @@ Full team guide: [SAFETY_MODEL.md — Team Access Setup](SAFETY_MODEL.md#team-ac
 
 ---
 
-## Tool Starter Pack — Start Here, Not With 350 Tools
+## Tool Starter Pack — Start Here, Not With 400 Tools
 
-Most first-time use cases are covered by these 12 tools:
+Most first-time use cases are covered by these tools. All are safe in demo mode unless marked.
 
 | Tool | What It Does | Safe In Demo? |
 |------|-------------|:---:|
@@ -190,10 +190,51 @@ Most first-time use cases are covered by these 12 tools:
 | `get_positions` | What am I currently holding? | ✅ |
 | `get_live_bot_metrics` | Tyler's live bot P&L (read-only) | ✅ |
 | `compute_gex` | Dealer gamma exposure for options | ✅ |
+| `check_all_broker_credentials` | Masked status for all 15 brokers | ✅ |
+| `evaluate_strategy_for_prop_fund` | Which prop funds fit your strategy? | ✅ |
+| `compute_r_multiple_size` | Van Tharp R-Multiple position sizing | ✅ |
+| `compute_option_greeks` | Black-Scholes delta/gamma/theta/vega | ✅ |
+| `check_rithmic_status` | Rithmic connector + vendor agreement status | ✅ |
 | `place_order` | Execute a real trade | ⚠️ Live money |
 | `flatten_all_positions` | Close everything | 🔴 Irreversible |
 
 Every tool has a `danger_tier` (0-3) accessible via the `/tools` endpoint. See [Tool Danger Tiers →](#tool-danger-tiers)
+
+### Agentic AI Quick-Start Patterns
+
+These are the exact prompts that work well in Claude / Cursor / GPT-4:
+
+```
+# Morning brief
+"Run get_macro_signals and get_live_bot_metrics. Summarize market conditions and P&L."
+
+# Prop fund compatibility check
+"Use evaluate_strategy_for_prop_fund for MNQ scalper with $600 max daily loss, $2500 max DD,
+ $120 avg daily profit, holds overnight. Which fund should I target?"
+
+# Prop fund risk sizing
+"Compute R-Multiple position size for MNQ entry at 18050, stop at 17990, capital $50K, 1% risk."
+
+# Pre-trade regime check
+"Before I place any orders, run detect_market_regime and check VIX. Should I trade today?"
+
+# Emergency system check
+"Run check_all_broker_credentials and check_rithmic_status. What's ready, what's missing?"
+
+# Research a new strategy
+"Use onyx_ask to find if we've ever backtested an MES mean-reversion strategy. Then run
+ search_ssrn_strategies for similar academic papers."
+
+# Validate a backtest
+"Run validate_strategy with these results: Sharpe 2.4, MaxDD 9%, WinRate 58%, 180 trades.
+ Does it pass the MCPT gate? What's the DSR?"
+
+# Options analysis
+"Compute option greeks for AAPL $185 call expiring 30 days out with spot at $182, IV 28%."
+
+# Full system health
+"Check bot health, token status, and all active positions. Any issues?"
+```
 
 ---
 
@@ -247,6 +288,44 @@ get_openclaw_state_summary
 **Skill Execution Shortcuts (V22.7)**
 ```
 invoke_moltbook_debate   run_mcpt_pipeline   run_regime_detection
+```
+
+**Position Sizing (v24.0)**
+```
+compute_r_multiple_size          compute_volatility_targeted_size
+compute_idm                      compute_forecast_scalar
+dual_size_conservative
+```
+
+**Options Analytics (v24.0)**
+```
+compute_option_greeks            find_optimal_strike
+```
+
+**Prop Fund Pipeline (v24.0)**
+```
+evaluate_strategy_for_prop_fund  simulate_prop_fund_evaluation
+list_prop_funds                  get_prop_fund_rules
+register_prop_fund_account       get_prop_fund_monitor_status
+run_prop_fund_check              check_rithmic_status
+```
+
+**Broker Credential Management (v24.0)**
+```
+check_broker_credentials         check_all_broker_credentials
+get_broker_onboarding_guide      get_prop_fund_broker_options
+```
+
+**Account Protection (v23.0)**
+```
+check_protection_status          record_stop_event
+lock_instrument                  unlock_instrument
+check_rate_limit_status
+```
+
+**Performance Reporting (v23.0)**
+```
+generate_bot_tearsheet           get_bot_metrics_full
 ```
 
 ### Infrastructure Tools (Tier 1 — Internal State)
@@ -413,13 +492,104 @@ LISTING_API_KEY=...            # algochains.ai marketplace API
 
 ## Supported Brokers
 
-| Broker | Asset Classes | Notes |
-|--------|--------------|-------|
-| **Tradovate** | Futures (MNQ, CL, MES, NQ, ES, GC) | Tyler's primary live account |
-| **Alpaca** | Equities, Options, Crypto | Paper + live; free paper account |
-| **OANDA** | Forex (50+ pairs) | Live |
-| **Interactive Brokers** | Stocks, Futures, Options, Forex | Requires `ib_async` |
-| **QuantConnect** | Cloud algorithm management | Backtesting/deployment only |
+| Broker | Asset Classes | Status | Connector |
+|--------|--------------|--------|-----------|
+| **Tradovate** | Futures (MNQ, CL, MES, NQ, ES, GC) | ✅ Live | `brokers/tradovate.py` |
+| **Alpaca** | Equities, ETFs, Options, Crypto | ✅ Live + Paper | `brokers/alpaca_connector.py` |
+| **OANDA** | Forex (50+ pairs) | ✅ Live | `brokers/oanda_connector.py` |
+| **Interactive Brokers** | Stocks, Futures, Options, Forex | ✅ Live (`ib_async`) | `brokers/ibkr_connector.py` |
+| **Kalshi** | Prediction markets (US events) | ✅ Live | `brokers/kalshi_connector.py` |
+| **Polymarket** | Prediction markets (crypto/global) | ✅ Live | `brokers/polymarket.py` |
+| **E*TRADE** | Equities, Options, ETFs | ✅ OAuth 1.0a | `brokers/etrade_connector.py` |
+| **Charles Schwab** | Equities, Options, Futures | ⚠️ Stubs (OAuth 2.0 PKCE) | `brokers/schwab_connector.py` |
+| **Rithmic** | Futures via prop fund platforms | ⏳ DRY_RUN (vendor NDA pending) | `brokers/rithmic_connector.py` |
+| **QuantConnect** | Cloud algorithm management | ✅ Research/deploy only | `brokers/quantconnect_connector.py` |
+
+**Credential status for all brokers:**
+```bash
+# In Claude / Cursor — ask the MCP server:
+check_all_broker_credentials()         # masked status for all 15 brokers
+get_broker_onboarding_guide("rithmic") # step-by-step setup for any broker
+get_prop_fund_broker_options()         # which brokers support prop funds
+```
+
+---
+
+## Prop Fund Pipeline (v24.0)
+
+AlgoChains automates the full path from validated strategy to funded prop account — no manual steps after setup.
+
+**Revenue math (Apex $50K, MNQ scalper):**
+
+```
+Evaluation fee:  $147 (subscriber pays once)
+Expected P&L:    ~$2,400/month → 90% split → $2,160/month to subscriber
+AlgoChains sub:  $149/month = $1,788/year ARR
+Pass rate:       ~78% of evaluations (based on drawdown simulation)
+Subscriber LTV:  $1,788 × 18 months = $3,218
+```
+
+**Supported prop funds (all use Rithmic infrastructure):**
+
+| Fund | Account Sizes | Daily Loss | Trailing DD | Overnight | Consistency Rule |
+|------|--------------|-----------|-------------|-----------|-----------------|
+| **Apex** | $25K–$300K | $1.5K–$5K | 6% of size | ✅ | None |
+| **TradeDay** | $10K–$150K | $500–$2K | 5% of size | ✅ | None |
+| **Bulenox** | $10K–$100K | $500–$2K | 5% of size | ✅ | None |
+| **Topstep** | $50K–$150K | $1K–$2K | 5% of size | ❌ | 30% daily limit |
+| **MyFundedFutures** | $10K–$200K | $500–$2K | 5% of size | ❌ | 40% daily limit |
+| **Earn2Trade** | $10K–$200K | $500–$2K | 6% of size | ❌ | 50% daily limit |
+| **FTMO** | $10K–$400K | $500–$4K | 5% of size | ✅ | None (forex only) |
+
+**MCP tools for prop fund workflow:**
+
+```python
+# Check which funds are compatible with your strategy
+evaluate_strategy_for_prop_fund(
+    strategy_name="MNQ Scalper",
+    symbol="MNQ",
+    max_daily_loss_usd=600,
+    max_drawdown_usd=2500,
+    avg_profit_per_day_usd=120,
+    holds_overnight=True,
+)
+
+# Simulate evaluation P&L against fund rules
+simulate_prop_fund_evaluation(
+    fund_name="apex",
+    daily_pnl_series=[-80, 120, 200, -150, 90, ...],
+    account_size_usd=50000,
+)
+
+# Register an account for real-time monitoring
+register_prop_fund_account(
+    account_id="ABC123",
+    fund_name="apex",
+    broker="rithmic",        # or "tradovate" for Apex demo
+    account_size_usd=50000,
+)
+
+# Check live evaluation status
+get_prop_fund_monitor_status()  # all registered accounts
+
+# Check Rithmic connection status
+check_rithmic_status()          # dry_run_mode, credentials_configured, vendor_agreement link
+```
+
+**Drawdown monitoring daemon** (`autonomous/prop_fund_monitor.py`):
+```bash
+# Runs every 30 min during market hours (9:30–16:00 ET, Mon–Fri)
+python autonomous/prop_fund_monitor.py --check-now   # immediate check
+python autonomous/prop_fund_monitor.py --status       # print current state
+python autonomous/prop_fund_monitor.py --daemon       # continuous mode
+```
+
+Alert tiers (ntfy + Slack):
+- `70%` daily limit → ⚠️ scale down size
+- `85%` daily limit → 🚨 stop new entries
+- `95%` daily limit → 🔴 **EMERGENCY FLATTEN** (automatic)
+
+**Status:** Rithmic connector built. Awaiting vendor NDA: https://www.rithmic.com/contacts
 
 ---
 
