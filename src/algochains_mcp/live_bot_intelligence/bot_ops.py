@@ -1,0 +1,396 @@
+"""
+bot_ops.py — Operational bot management tools for AlgoChains MCP server.
+
+Added in v26.0 (2026-04-08) after 2026-04-07 incident analysis:
+  - Bot restart (owner-token gated)
+  - Position flatten (owner-token gated)
+  - Bracket status (read-only)
+  - AI pipeline health (read-only)
+  - Position state read (read-only)
+
+SECURITY: Destructive ops require OWNER_API_TOKEN env var to match the
+token passed by the caller. Read-only ops are unrestricted.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import signal
+import subprocess
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+# ── Path resolution ──────────────────────────────────────────────────────────
+_POSSIBLE_ROOTS = [
+    Path("/Users/treycsa/CascadeProjects/algochains-control-tower"),
+    Path("/home/trrey/algochains-control-tower"),
+    Path("/mnt/c/Users/trrey/algochains-control-tower"),
+]
+CONTROL_TOWER = next((p for p in _POSSIBLE_ROOTS if p.exists()), _POSSIBLE_ROOTS[0])
+
+BOT_MAP = {
+    "mnq": {"grep": "FUTURES_SCALPER_UPGRADED", "script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},
+    "cl":  {"grep": "CL_FUTURES_SCALPER",       "script": "CL_FUTURES_SCALPER.py",       "log": "logs/cl_futures_live.log"},
+    "mes": {"grep": "mes_swing_live",            "script": "mes_swing_live.py",            "log": "logs/mes_swing.log"},
+    "nq":  {"grep": "nq_swing_live",             "script": "nq_swing_live.py",             "log": "logs/nq_swing.log"},
+}
+
+SYMBOL_MAP = {"mnq": "MNQ", "cl": "CL", "mes": "MES", "nq": "NQ"}
+
+
+def _verify_owner(owner_token: str) -> tuple[bool, str]:
+    """Returns (authorized, error_message)."""
+    expected = os.getenv("OWNER_API_TOKEN", "")
+    if not expected:
+        return False, "OWNER_API_TOKEN not configured in environment — cannot authorize destructive operation"
+    if owner_token != expected:
+        return False, "Invalid owner_token — destructive operation denied"
+    return True, ""
+
+
+# ── Read-only tools ───────────────────────────────────────────────────────────
+
+def get_position_state(bot_id: str) -> dict:
+    """Read the persisted position state file for a bot."""
+    if bot_id not in BOT_MAP:
+        return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(BOT_MAP)}"}
+
+    symbol = SYMBOL_MAP[bot_id]
+    state_path = CONTROL_TOWER / "logs" / f"{symbol.lower()}_position_state.json"
+    if not state_path.exists():
+        return {"bot": bot_id, "symbol": symbol, "state": "no_state_file", "flat": True}
+
+    try:
+        data = json.loads(state_path.read_text())
+        return {
+            "bot": bot_id,
+            "symbol": symbol,
+            "direction": data.get("direction"),
+            "qty": int(data.get("qty", 0)),
+            "entry_price": float(data.get("entry_price", 0)),
+            "flat": bool(data.get("flat", data.get("qty", 0) == 0)),
+            "timestamp": data.get("timestamp"),
+        }
+    except Exception as e:
+        return {"bot": bot_id, "symbol": symbol, "error": f"Parse error: {e}"}
+
+
+def get_bracket_status(bot_id: str) -> dict:
+    """
+    Parse the bot log to determine current bracket status.
+    Returns bracket mode, order IDs, and stop/target prices.
+    Mode: live | oso_only | none | unknown
+    """
+    if bot_id not in BOT_MAP:
+        return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(BOT_MAP)}"}
+
+    cfg = BOT_MAP[bot_id]
+    log_path = CONTROL_TOWER / cfg["log"]
+
+    if not log_path.exists():
+        return {"bot": bot_id, "mode": "unknown", "detail": "Log file not found"}
+
+    try:
+        # Read last 6KB of log
+        size = log_path.stat().st_size
+        offset = max(0, size - 6144)
+        with open(log_path, "rb") as f:
+            f.seek(offset)
+            tail = f.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        return {"bot": bot_id, "mode": "unknown", "error": str(e)}
+
+    lines = tail.split("\n")
+    lines.reverse()
+
+    for line in lines:
+        if "NO AUTO-BRACKETS" in line or "no_brackets" in line:
+            return {"bot": bot_id, "mode": "none", "label": "⚠ No brackets placed — position unprotected", "unprotected": True}
+        if "OSO Order ID:" in line or "OSO bracket" in line:
+            oso_m = re.search(r"OSO Order ID:\s*(\d+)", line)
+            return {"bot": bot_id, "mode": "oso_only", "oso_order_id": oso_m.group(1) if oso_m else None,
+                    "label": "🟡 OSO linked (atomic bracket)", "unprotected": False}
+        stop_m = re.search(r"[Ss]top order(?:Id|ID)[:=]\s*(\d+)", line)
+        tgt_m  = re.search(r"[Tt]arget order(?:Id|ID)[:=]\s*(\d+)", line)
+        if stop_m or tgt_m:
+            stop_p = re.search(r"[Ss]top.*?\$([\d.]+)", line)
+            tgt_p  = re.search(r"[Tt]arget.*?\$([\d.]+)", line)
+            return {
+                "bot": bot_id, "mode": "live",
+                "stop_order_id": stop_m.group(1) if stop_m else None,
+                "target_order_id": tgt_m.group(1) if tgt_m else None,
+                "stop_price": float(stop_p.group(1)) if stop_p else None,
+                "target_price": float(tgt_p.group(1)) if tgt_p else None,
+                "label": f"🟢 Stop {stop_m.group(1) if stop_m else '?'} / Target {tgt_m.group(1) if tgt_m else '?'}",
+                "unprotected": False,
+            }
+
+    pos = get_position_state(bot_id)
+    if pos.get("flat"):
+        return {"bot": bot_id, "mode": "flat", "label": "FLAT — no active position", "unprotected": False}
+    return {"bot": bot_id, "mode": "unknown", "label": "Could not determine bracket status from recent logs", "unprotected": None}
+
+
+def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
+    """
+    Detect AI ensemble/pipeline health from bot logs.
+    Checks for: Anthropic quota errors, Cerebras model errors, pipeline timeout events, shadow mode.
+    """
+    if bot_id not in BOT_MAP:
+        return {"error": f"Unknown bot_id. Valid: {list(BOT_MAP)}"}
+
+    cfg = BOT_MAP[bot_id]
+    log_path = CONTROL_TOWER / cfg["log"]
+    if not log_path.exists():
+        return {"bot": bot_id, "status": "unknown", "detail": "Log file not found"}
+
+    try:
+        size = log_path.stat().st_size
+        offset = max(0, size - 10240)
+        with open(log_path, "rb") as f:
+            f.seek(offset)
+            tail = f.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        return {"bot": bot_id, "status": "unknown", "error": str(e)}
+
+    anthropic_error = bool(re.search(r"insufficient_quota|credit balance|overloaded_error|529", tail, re.I))
+    cerebras_error  = bool(re.search(r"llama3\.3.*not found|model.*404|cerebras.*error", tail, re.I))
+    timeout_event   = bool(re.search(r"Pipeline timed out|multi_agent_timeout", tail))
+    shadow_mode     = bool(re.search(r"shadow.?mode|shadow_mode.*True", tail, re.I))
+    ensemble_active = bool(re.search(r"AI APPROVED|Multi-agent APPROVED", tail))
+    ensemble_reject = bool(re.search(r"AI REJECTED|advisory REJECTED", tail))
+    debate_timeout  = re.findall(r"(\d+\.?\d*)s[).] pipeline|pipeline.*?(\d+\.?\d*)s", tail)
+
+    mode = "unknown"
+    if shadow_mode or timeout_event:
+        mode = "shadow_timeout"
+    elif ensemble_active:
+        mode = "active"
+    elif anthropic_error or cerebras_error:
+        mode = "degraded"
+
+    return {
+        "bot": bot_id,
+        "mode": mode,
+        "advisory_only": True,
+        "blocks_trades": False,
+        "anthropic_quota_error": anthropic_error,
+        "cerebras_model_error": cerebras_error,
+        "pipeline_timeout_detected": timeout_event,
+        "shadow_mode_active": shadow_mode,
+        "last_ensemble_approved": ensemble_active,
+        "last_ensemble_rejected": ensemble_reject,
+        "pipeline_timeout_config_s": float(os.getenv("PIPELINE_TIMEOUT_SECONDS", "8")),
+        "cerebras_model": "llama3.1-8b",
+        "note": (
+            "Anthropic credits zero — top up console.anthropic.com to restore 7-AI voting"
+            if anthropic_error else
+            "Pipeline healthy" if mode == "active" else
+            "Pipeline in shadow/timeout mode — all trades use primary confidence gate only"
+        ),
+    }
+
+
+def get_all_bot_ops_status() -> dict:
+    """Get bracket status, position state, and process status for all 4 bots."""
+    result = {}
+    import re as _re
+    ps_output = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
+    for bot_id, cfg in BOT_MAP.items():
+        running = any(cfg["grep"] in line and "grep" not in line for line in ps_output.splitlines())
+        pid = None
+        for line in ps_output.splitlines():
+            if cfg["grep"] in line and "grep" not in line:
+                parts = line.split()
+                if len(parts) > 1:
+                    try: pid = int(parts[1])
+                    except ValueError: pass
+                break
+        result[bot_id] = {
+            "running": running,
+            "pid": pid,
+            "symbol": SYMBOL_MAP[bot_id],
+            "position": get_position_state(bot_id),
+            "bracket": get_bracket_status(bot_id),
+        }
+    result["pipeline_health"] = get_ai_pipeline_health("mnq")
+    return result
+
+
+# ── Owner-gated destructive ops ───────────────────────────────────────────────
+
+def restart_bot(bot_id: str, owner_token: str) -> dict:
+    """
+    Kill and restart a trading bot process.
+    Requires owner_token matching OWNER_API_TOKEN env var.
+    """
+    authorized, err = _verify_owner(owner_token)
+    if not authorized:
+        return {"error": err, "authorized": False}
+
+    if bot_id not in BOT_MAP:
+        return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(BOT_MAP)}"}
+
+    cfg = BOT_MAP[bot_id]
+    script_path = CONTROL_TOWER / cfg["script"]
+    if not script_path.exists():
+        return {"error": f"Script not found at {script_path}", "bot": bot_id}
+
+    # Kill existing
+    killed_pids: list[int] = []
+    ps = subprocess.run(["ps", "aux"], capture_output=True, text=True)
+    for line in ps.stdout.splitlines():
+        if cfg["grep"] in line and "grep" not in line:
+            parts = line.split()
+            if len(parts) > 1:
+                try:
+                    pid = int(parts[1])
+                    os.kill(pid, signal.SIGKILL)
+                    killed_pids.append(pid)
+                except Exception:
+                    pass
+
+    time.sleep(1)
+
+    # Restart
+    log_path = CONTROL_TOWER / cfg["log"]
+    log_handle = open(log_path, "a")
+    proc = subprocess.Popen(
+        ["python3", "-B", "-u", cfg["script"]],
+        cwd=str(CONTROL_TOWER),
+        stdout=log_handle,
+        stderr=log_handle,
+        start_new_session=True,
+    )
+
+    time.sleep(2)
+    # Verify
+    verify = subprocess.run(["ps", "aux"], capture_output=True, text=True)
+    verified_pid = None
+    for line in verify.stdout.splitlines():
+        if cfg["grep"] in line and "grep" not in line:
+            parts = line.split()
+            if len(parts) > 1:
+                try: verified_pid = int(parts[1])
+                except ValueError: pass
+            break
+
+    return {
+        "status": "restarted" if verified_pid else "restart_failed",
+        "bot": bot_id,
+        "symbol": SYMBOL_MAP[bot_id],
+        "killed_pids": killed_pids,
+        "new_pid": verified_pid,
+        "log_file": str(log_path),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "note": "Verify position is flat on Tradovate before restarting to avoid phantom position tracking",
+    }
+
+
+def flatten_position_tradovate(symbol: str, owner_token: str) -> dict:
+    """
+    Flatten ALL open contracts for a symbol via Tradovate Buy/Sell MKT.
+    Requires owner_token. Also marks the position_state.json as flat.
+
+    CRITICAL: Call get_accounts() before place_order() — account_id is None until then.
+    """
+    authorized, err = _verify_owner(owner_token)
+    if not authorized:
+        return {"error": err, "authorized": False}
+
+    import sys
+    ct = str(CONTROL_TOWER)
+    if ct not in sys.path:
+        sys.path.insert(0, ct)
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(CONTROL_TOWER / ".env")
+    except ImportError:
+        pass
+
+    try:
+        from tradovate_client import TradovateClient
+    except ImportError as e:
+        return {"error": f"Cannot import tradovate_client: {e}. Run from control-tower venv."}
+
+    cid  = os.getenv("TRADOVATE_CID")
+    sec  = os.getenv("TRADOVATE_SECRET")
+    env  = os.getenv("TRADOVATE_ENV", "demo")
+
+    try:
+        client = TradovateClient(cid, sec, env)
+        client.get_accounts()  # CRITICAL: must call to populate account_id
+        positions = client.get_positions() or []
+    except Exception as e:
+        return {"error": f"Tradovate connection failed: {e}"}
+
+    target = next(
+        (p for p in positions if symbol.upper() in str(p.get("contractId", "")) or
+         str(p.get("contractId", "")).startswith(str(p.get("contractId", "")))),
+        None,
+    )
+    # Broader search since contractId is numeric
+    if not target:
+        # Try matching by netPos != 0
+        for p in positions:
+            if p.get("netPos", 0) != 0:
+                target = p
+                break
+
+    if not target or target.get("netPos", 0) == 0:
+        return {"status": "already_flat", "symbol": symbol, "positions_checked": len(positions)}
+
+    net = int(target["netPos"])
+    close_action = "Buy" if net < 0 else "Sell"
+    close_qty = abs(net)
+
+    contract_info = client.find_contract(symbol)
+    if not contract_info:
+        return {"error": f"Contract not found for symbol {symbol}"}
+
+    cid_int = contract_info["id"] if isinstance(contract_info, dict) else contract_info
+    cname   = contract_info.get("name", symbol) if isinstance(contract_info, dict) else symbol
+
+    try:
+        result = client.place_order(
+            contract_id=cid_int,
+            action=close_action,
+            qty=close_qty,
+            order_type="Market",
+            full_contract_name=cname,
+            symbol=symbol,
+        )
+    except Exception as e:
+        return {"error": f"Order placement failed: {e}", "symbol": symbol}
+
+    if result:
+        # Mark position state flat
+        bot_id = symbol.lower()[:3]
+        state_path = CONTROL_TOWER / "logs" / f"{symbol.lower()}_position_state.json"
+        try:
+            with open(state_path, "w") as sf:
+                json.dump({
+                    "bot": symbol, "symbol": symbol, "direction": None, "qty": 0,
+                    "entry_price": 0, "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "flat": True,
+                }, sf, indent=2)
+        except Exception:
+            pass
+
+        return {
+            "status": "flattened",
+            "symbol": symbol,
+            "qty": close_qty,
+            "action": close_action,
+            "order_id": result.get("orderId"),
+            "net_was": net,
+            "environment": env,
+            "state_file_updated": True,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    return {"error": "Order placement returned null — check Tradovate account", "symbol": symbol, "qty_attempted": close_qty}

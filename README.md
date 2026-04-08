@@ -1,10 +1,12 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-401-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-407-green?style=flat-square)](#tool-categories)
 [![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/badge/version-26.0-blueviolet?style=flat-square)](#changelog)
+[![Docs](https://img.shields.io/badge/gotchas-docs%2FGOTCHAS__AND__BUGS.md-red?style=flat-square)](docs/GOTCHAS_AND_BUGS.md)
 
 ---
 
@@ -643,10 +645,17 @@ See: [`algoclaw/README.md`](algoclaw/README.md) | Full blueprint: `blueprints/AL
 
 ---
 
-## Command Center (cc.algochains.ai)
+## Command Center (cc.algochains.io)
 
-The AlgoChains Command Center is a real-time Next.js dashboard at **https://cc.algochains.ai**.
-Live site: **https://algochains.ai**
+The AlgoChains Command Center is a real-time Next.js dashboard.
+
+| URL | Status | Notes |
+|-----|--------|-------|
+| **https://cc.algochains.io** | Live (Cloudflare Access) | Authenticate with tyler@algochains.io |
+| **https://cc.algochains.ai** | Live (same tunnel) | Alternative domain |
+| http://localhost:3333 | Local dev | Always accessible without auth |
+
+**Marketplace subscribe links** point to **https://algochains.ai** (separate marketing site).
 
 **Run locally:**
 ```bash
@@ -654,21 +663,37 @@ cd algochains-command-center
 npm run dev              # starts on http://localhost:3333
 ```
 
-**Expose via Cloudflare tunnel (subscribers):**
+**Start Cloudflare tunnel (required for external access):**
 ```bash
-# One-time setup (your own Cloudflare account + domain)
-SUBDOMAIN=cc DOMAIN=yourdomain.com CC_PORT=3333 \
-  bash scripts/setup_cc_tunnel.sh
+# Start tunnel (run after every Mac restart)
+cloudflared tunnel run def269f2-6c52-471a-9648-c2fe631bc9bf >> logs/cloudflared_cc.log 2>&1 &
 
-# Start tunnel
-cloudflared tunnel run algochains-cc
+# Verify
+curl -sI https://cc.algochains.io | head -3
+# Expected: HTTP/2 200 (if authenticated in browser) or HTTP/2 403 (Cloudflare Access gate)
 ```
 
+> ⚠ **403 from curl is EXPECTED.** Cloudflare Access blocks unauthenticated requests. Open in browser and authenticate with Google SSO (`tyler@algochains.io`).
+
+**V22 Dashboard rows:**
+- Row 1: Bot Status Cards (process, uptime, last signal, AI confidence, errors)
+- Row 2: P&L Chart + Positions Table + Risk Dashboard
+- Row 3: **Bracket Status Panel** + **AI Ensemble Health** + **Live Trade Validation Feed (SSE)**
+- Row 4: **Subscriber Protection Panel** + System Health
+- Row 5: Skills Panel + MCP Tools
+
+**V22 New capabilities:**
+- `GET /api/bots/stream` — Server-Sent Events feed: entry→fill→bracket→exit in real time
+- `POST /api/bots/restart` — Kill + restart any bot (confirm: "RESTART")
+- `GET /api/bots` — Includes `bracketStatus`, `positionState`, `pipelineHealth` per bot
+- Marketplace cards link to `algochains.ai/marketplace/{symbol}?ref=cc`
+
 **Pages:**
-- `/` — Live bot dashboard (P&L, signals, AI confidence)
+- `/` — V22 dashboard (brackets, AI ensemble, live trade feed)
 - `/algoclaw` — AlgoClaw skill runner + ecosystem map
 - `/prop-funds` — Prop fund pipeline + evaluation accounts
-- `/marketplace` — Strategy marketplace + decay monitor
+- `/marketplace` — Strategy cards with subscribe → algochains.ai
+- `/subscribers` — Subscriber protection metrics + risk flags
 - `/setup` — MCP server setup wizard
 
 ---
@@ -941,6 +966,30 @@ send_ntfy_notification(title="Daily P&L", message="MNQ: +$340, CL: +$180", topic
 ---
 
 ## Changelog
+
+**v26.0** (2026-04-08) — Bot Ops Module, Live Incident Fixes, Command Center V22, Pipeline Hardening
+
+*6 new tools. All critical production fixes from 2026-04-07 incident. Command Center V22.*
+
+- **Bot Ops Module** (`live_bot_intelligence/bot_ops.py`): Operational management tools for all 4 bots
+  - `get_bot_position_state` — read persisted position state (flat/qty/entry_price)
+  - `get_bot_bracket_status` — detect bracket mode (live/oso_only/none/unknown) from logs
+  - `get_ai_pipeline_health` — Anthropic quota status, Cerebras model health, shadow mode
+  - `get_all_bot_ops_status` — full snapshot (process + position + bracket + pipeline) for all 4 bots
+  - `restart_trading_bot` — kill + restart a bot (owner-token gated, owner: OWNER_API_TOKEN)
+  - `flatten_bot_position` — close all contracts via Tradovate MKT (owner-token gated)
+- **P0 Fix: qty=1 close bug** (`trading_safeguards.py`): `close_position_with_validation()` was hardcoded `qty=1`. Now reads from `position_size`/`qty`. Orphaned 3 contracts on 2026-04-07.
+- **P0 Fix: Demo path bypass** (`FUTURES_SCALPER_UPGRADED.py`): `TRADING_MODE=DEMO` bypassed all safeguards. Unified path: always runs coordinator, fill tracking, brackets, mutex.
+- **P0 Fix: Scale-in bracket tracking**: Scale-in bracket IDs (`scale_stop_order_id`, `scale_target_order_id`) now stored and cancelled on position exit.
+- **P0 Fix: Pipeline 102s stall**: `concurrent.futures` 8s timeout on `pipeline.analyze()`. Shadow mode returns signal as-is, never blocks trade.
+- **P0 Fix: Cerebras model** (`debate_layer.py`, `specialized_agents.py`): `llama3.3-70b` removed from API → `llama3.1-8b`
+- **P0 Fix: Order mutex** (`core/order_mutex.py`): SQLite-backed cross-process lock prevents bot+MCP duplicate orders. 15s TTL, auto-expire.
+- **Command Center V22**: Bracket Status Panel, AI Ensemble Panel, SSE Trade Validation Feed, Subscriber Protection Panel. Restart Bot endpoint. Subscribe → algochains.ai.
+- **Cloudflare tunnel**: cc.algochains.io + cc.algochains.ai now both served via tunnel `def269f2`. Tunnel must be running (`cloudflared tunnel run def269f2-...`).
+- **GOTCHAS_AND_BUGS.md**: New doc in `docs/` cataloging all confirmed bugs, gotchas, and operational surprises.
+- **Tools: 401 → 407**
+
+**v25.0** (2026-04-07) — AlgoClaw v1.0: Full Agent Skill System + Roo Trade Propagation
 
 **v24.0** (2026-04-08) — Full Prop Fund Pipeline: Rithmic Connector, Drawdown Monitor Daemon, E*TRADE + Options, Credential Vault, Command Center /prop-funds
 

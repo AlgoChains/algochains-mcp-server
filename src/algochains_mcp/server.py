@@ -3340,6 +3340,36 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq. Use 'all' for every bot.", "default": "all"}}, "required": []},
          annotations=ANNOT_READ_ONLY),
 
+    # V26.0: Bot Ops — Bracket status, position state, pipeline health, restart, flatten
+    # ═══════════════════════════════════════════════════════════════════════════════════
+    # Added after 2026-04-07 incident: missing brackets + pipeline 102s stall + qty=1 bug.
+    # Read-only tools are public. Destructive tools require OWNER_API_TOKEN.
+    # ═══════════════════════════════════════════════════════════════════════════════════
+    Tool(name="get_bot_position_state",
+         description="Read the persisted position state file for a bot. Returns direction (BUY/SELL/null), qty, entry_price, and flat status. This is the bot's internal tracking — compare to Tradovate get_positions() to detect drift.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_bot_bracket_status",
+         description="Parse the bot log to determine current bracket order status. Returns mode (live/oso_only/none/unknown), stop/target order IDs and prices, and whether the position is unprotected. Critical for detecting missing stops after an entry.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_ai_pipeline_health",
+         description="Check AI ensemble/debate pipeline health. Detects Anthropic quota errors, Cerebras model errors (llama3.1-8b), pipeline timeout events, and shadow mode. The pipeline is ADVISORY ONLY — primary confidence gate controls all trades regardless of pipeline state.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "cl", "mes", "nq"], "default": "mnq"}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_all_bot_ops_status",
+         description="Full operational snapshot for all 4 bots: process status, PIDs, position states, bracket status, and AI pipeline health. Use to triage any bot integrity issue in one call.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="restart_trading_bot",
+         description="Kill and restart a trading bot process. REQUIRES owner_token matching OWNER_API_TOKEN env var. Kills existing PID(s), restarts with python3 -B -u, verifies new PID, returns status. NOTE: Verify position is flat on Tradovate before restarting to avoid phantom position tracking.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "cl", "mes", "nq"]}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"}}, "required": ["bot_id", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+    Tool(name="flatten_bot_position",
+         description="Close ALL open contracts for a symbol via Tradovate Market order, then mark position_state.json as flat. REQUIRES owner_token. CRITICAL: Only call after confirming the bot is stopped or between its scans. Environment is determined by TRADOVATE_ENV (.env).",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Symbol to flatten: MNQ | CL | MES | NQ"}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"}}, "required": ["symbol", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
     # V22.2: Onboarding — guided setup wizard for new users
     # ═══════════════════════════════════════════════════════════════
     # Compliance-gated broker connection, key validation, smoke test.
@@ -3786,6 +3816,11 @@ TIER1_TOOL_NAMES = {
     "get_strategy_academic_citations",
     "get_bot_card_data",
     "list_bot_research_attachments",
+    # V26.0 — Bot Ops (Tier 1: read-only; destructive need owner_token)
+    "get_bot_position_state",
+    "get_bot_bracket_status",
+    "get_ai_pipeline_health",
+    "get_all_bot_ops_status",
     # V22.1 — Guardrails status (always Tier 1 — safety awareness)
     "get_circuit_breaker_status",
     "get_agent_loop_status",
@@ -7007,6 +7042,55 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 })
         except Exception as exc:
             return _text({"error": f"Research attachments error: {exc}"})
+
+    # V26.0 Bot Ops handlers ─────────────────────────────────────────────
+    elif name == "get_bot_position_state":
+        try:
+            from .live_bot_intelligence.bot_ops import get_position_state
+            return _text(get_position_state(args.get("bot_id", "mnq").lower()))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_bot_bracket_status":
+        try:
+            from .live_bot_intelligence.bot_ops import get_bracket_status
+            return _text(get_bracket_status(args.get("bot_id", "mnq").lower()))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_ai_pipeline_health":
+        try:
+            from .live_bot_intelligence.bot_ops import get_ai_pipeline_health
+            return _text(get_ai_pipeline_health(args.get("bot_id", "mnq").lower()))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_all_bot_ops_status":
+        try:
+            from .live_bot_intelligence.bot_ops import get_all_bot_ops_status
+            return _text(get_all_bot_ops_status())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "restart_trading_bot":
+        try:
+            from .live_bot_intelligence.bot_ops import restart_bot
+            return _text(restart_bot(
+                bot_id=args.get("bot_id", "").lower(),
+                owner_token=args.get("owner_token", ""),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "flatten_bot_position":
+        try:
+            from .live_bot_intelligence.bot_ops import flatten_position_tradovate
+            return _text(flatten_position_tradovate(
+                symbol=args.get("symbol", "").upper(),
+                owner_token=args.get("owner_token", ""),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
 
     # ═══════════════════════════════════════════════════════════════
     # V22.2: Onboarding Tools

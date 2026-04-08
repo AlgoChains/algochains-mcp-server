@@ -6,6 +6,41 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [26.0.0] — 2026-04-08
+
+### Added
+
+#### Bot Ops Module (`live_bot_intelligence/bot_ops.py`)
+- `get_bot_position_state(bot_id)` — Read persisted position state file (flat/qty/entry_price)
+- `get_bot_bracket_status(bot_id)` — Detect bracket mode (live/oso_only/none/unknown) from log parse
+- `get_ai_pipeline_health(bot_id)` — Detect Anthropic quota errors, Cerebras model errors, shadow mode
+- `get_all_bot_ops_status()` — Full snapshot of process + position + bracket + pipeline health for all 4 bots
+- `restart_trading_bot(bot_id, owner_token)` — Kill + restart (owner-token gated via OWNER_API_TOKEN)
+- `flatten_bot_position(symbol, owner_token)` — Close all contracts via Tradovate MKT (owner-token gated)
+
+#### Documentation
+- `docs/GOTCHAS_AND_BUGS.md` — Comprehensive bug registry: P0/P1/P2 issues, operational gotchas, version history of fixes
+
+#### Server Tool Registration
+- All 6 new tools registered in `server.py` with proper ANNOT_READ_ONLY / ANNOT_DESTRUCTIVE annotations
+- 4 read-only tools added to TIER1_TOOL_NAMES (always exposed in smart mode)
+
+### Fixed (P0 — Critical Production Bugs)
+- **qty=1 close bug**: `trading_safeguards.close_position_with_validation()` hardcoded `qty=1`. Now reads `position_size`/`qty` from tracked position dict.
+- **Demo path bypass**: `TRADING_MODE=DEMO` bypassed safeguards. `if self.tradovate and not self.demo:` → `if self.tradovate:`. Both modes run identical protection stack.
+- **Scale-in bracket orphan**: Scale-in bracket IDs (`scale_stop_order_id`, `scale_target_order_id`) now stored in `open_positions` and cancelled on `exit_position()`.
+- **Pipeline 102s stall**: `concurrent.futures.ThreadPoolExecutor` 8s timeout on `pipeline.analyze()`. `PIPELINE_TIMEOUT_SECONDS` env-configurable. Timeout returns signal as-is (shadow mode).
+- **Pipeline None return**: Advisory rejection now returns signal with `shadow_mode=True` instead of `None`. Ensemble never blocks a trade.
+- **Cerebras llama3.3-70b**: Model removed from Cerebras API without notice. Updated to `llama3.1-8b` in `debate_layer.py` and `specialized_agents.py`.
+- **Order mutex**: `core/order_mutex.py` SQLite-backed cross-process lock with 15s TTL prevents bot+MCP simultaneous orders on same contract/side.
+
+### Changed
+- Command Center section in README: cc.algochains.ai → cc.algochains.io, docs on Cloudflare Access, V22 feature list
+- Marketplace subscribe buttons wired to `algochains.ai/marketplace/{symbol}?ref=cc` (were dead divs)
+- Tools: 401 → 407
+
+---
+
 ## [21.0.0] — 2026-04-06
 
 ### Added
