@@ -7598,6 +7598,220 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except ImportError:
             return _text({"error": "numpy required for correlation matrix", "hint": "pip install numpy"})
 
+    # ── Protection Patterns (freqtrade-style guards) ──────────────────────
+    elif name == "check_protection_status":
+        try:
+            from .account_protection.protection_patterns import get_all_protection_status
+            return _text(get_all_protection_status(args.get("bot")))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "record_stop_event":
+        try:
+            from .account_protection.protection_patterns import _stoploss_guard, _cooldown_period
+            bot = str(args["bot"]); symbol = str(args["symbol"])
+            pnl = float(args["pnl_usd"]); reason = str(args.get("reason", ""))
+            _stoploss_guard.record_stop(bot, symbol, pnl, reason)
+            _cooldown_period.trigger_cooldown(bot, symbol)
+            lock = _stoploss_guard.is_locked(bot, symbol)
+            return _text({"recorded": True, "bot": bot, "symbol": symbol, "pnl_usd": pnl,
+                          "stoploss_guard_triggered": lock.is_locked,
+                          "lock_reason": lock.lock_reason if lock.is_locked else None})
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "lock_instrument":
+        try:
+            from .account_protection.protection_patterns import lock_instrument
+            return _text(lock_instrument(
+                str(args["bot"]), str(args["symbol"]),
+                str(args["reason"]), float(args.get("lock_hours", 1.0))
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "unlock_instrument":
+        try:
+            from .account_protection.protection_patterns import unlock_instrument
+            return _text(unlock_instrument(str(args["bot"]), str(args["symbol"])))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    # ── Volatility Targeting (pysystemtrade patterns) ──────────────────────
+    elif name == "compute_volatility_targeted_size":
+        try:
+            from .volatility_targeting import compute_volatility_targeted_size
+            result = compute_volatility_targeted_size(
+                symbol=str(args["symbol"]),
+                current_price=float(args["current_price"]),
+                annualized_vol_pct=float(args["annualized_vol_pct"]),
+                capital_usd=float(args["capital_usd"]),
+                target_vol_pct=float(args.get("target_vol_pct", 20.0)),
+                idm=float(args.get("idm", 1.0)),
+                forecast_scalar=float(args.get("forecast_scalar", 1.0)),
+                max_leverage=float(args.get("max_leverage", 4.0)),
+            )
+            return _text(result.to_dict())
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "compute_idm":
+        try:
+            from .volatility_targeting import compute_idm
+            result = compute_idm(
+                instruments=args["instruments"],
+                weights=args.get("weights"),
+            )
+            return _text(result.to_dict())
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "compute_forecast_scalar":
+        try:
+            from .volatility_targeting import compute_forecast_scalar
+            return _text(compute_forecast_scalar(
+                raw_forecast=float(args["raw_forecast"]),
+                target_abs_forecast=float(args.get("target_abs_forecast", 10.0)),
+                scalar=float(args["scalar"]) if "scalar" in args else None,
+                raw_forecast_history=[float(x) for x in args["history"]] if "history" in args else None,
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "dual_size_conservative":
+        try:
+            from .volatility_targeting import dual_size_conservative
+            return _text(dual_size_conservative(
+                symbol=str(args["symbol"]),
+                current_price=float(args["current_price"]),
+                annualized_vol_pct=float(args["annualized_vol_pct"]),
+                capital_usd=float(args["capital_usd"]),
+                kelly_contracts=int(args["kelly_contracts"]),
+                target_vol_pct=float(args.get("target_vol_pct", 20.0)),
+                idm=float(args.get("idm", 1.0)),
+                forecast_scalar=float(args.get("forecast_scalar", 1.0)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    # ── Performance Reports (quantstats-style tearsheets) ─────────────────
+    elif name == "generate_bot_tearsheet":
+        try:
+            from .performance_reports import generate_bot_tearsheet
+            return _text(generate_bot_tearsheet(
+                bot_name=str(args["bot_name"]),
+                returns=[float(r) for r in args["returns"]],
+                frequency=str(args.get("frequency", "daily")),
+                risk_free_rate=float(args.get("risk_free_rate", 0.05)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_bot_metrics_full":
+        try:
+            from .performance_reports import get_bot_metrics_full
+            return _text(get_bot_metrics_full(
+                bot_name=str(args["bot_name"]),
+                returns=[float(r) for r in args["returns"]],
+                frequency=str(args.get("frequency", "daily")),
+                risk_free_rate=float(args.get("risk_free_rate", 0.05)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    # ── Prop Fund Manager ──────────────────────────────────────────────────
+    elif name == "list_prop_funds":
+        try:
+            from .brokers.prop_fund_manager import list_prop_funds
+            return _text(list_prop_funds(args.get("platform")))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "evaluate_strategy_for_prop_fund":
+        try:
+            from .brokers.prop_fund_manager import evaluate_all_funds
+            return _text(evaluate_all_funds(
+                strategy_name=str(args["strategy_name"]),
+                symbol=str(args["symbol"]),
+                max_daily_loss_usd=float(args["max_daily_loss_usd"]),
+                max_drawdown_usd=float(args["max_drawdown_usd"]),
+                avg_profit_per_day_usd=float(args["avg_profit_per_day_usd"]),
+                holds_overnight=bool(args.get("holds_overnight", False)),
+                trades_news=bool(args.get("trades_news", False)),
+                max_position_contracts=int(args.get("max_position_contracts", 2)),
+                min_trading_days_per_month=int(args.get("min_trading_days_per_month", 15)),
+                historical_returns_daily=[float(r) for r in args["historical_returns_daily"]]
+                    if "historical_returns_daily" in args else None,
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "simulate_prop_fund_evaluation":
+        try:
+            from .brokers.prop_fund_manager import simulate_drawdown_against_fund_rules
+            return _text(simulate_drawdown_against_fund_rules(
+                fund_name=str(args["fund_name"]),
+                daily_pnl_series=[float(p) for p in args["daily_pnl_series"]],
+                account_size_usd=float(args["account_size_usd"]) if "account_size_usd" in args else None,
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_prop_fund_rules":
+        try:
+            from .brokers.prop_fund_manager import PROP_FUNDS
+            fund_name = str(args.get("fund_name", "")).lower()
+            if fund_name and fund_name in PROP_FUNDS:
+                return _text(PROP_FUNDS[fund_name].to_dict())
+            return _text({k: v.to_dict() for k, v in PROP_FUNDS.items()})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    # ── Security Tools ─────────────────────────────────────────────────────
+    elif name == "check_rate_limit_status":
+        try:
+            from .security.per_tool_rate_limiter import get_rate_limit_status
+            return _text(get_rate_limit_status(
+                args.get("tool_name"), str(args.get("client_id", "default"))
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "generate_hmac_signature":
+        try:
+            from .security.replay_guard import generate_hmac_signature
+            return _text(generate_hmac_signature(
+                payload=str(args["payload"]),
+                secret=str(args["secret"]),
+                algorithm=str(args.get("algorithm", "sha256")),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
     else:
         return _text({"error": f"Unknown tool: {name}"})
 

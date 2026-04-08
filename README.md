@@ -1,7 +1,7 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-371-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-387-green?style=flat-square)](#tool-categories)
 [![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
@@ -705,6 +705,46 @@ send_ntfy_notification(title="Daily P&L", message="MNQ: +$340, CL: +$180", topic
 ---
 
 ## Changelog
+
+**v23.0** (2026-04-07) — GitHub Acceleration Research: Protection Patterns, Vol Targeting, Prop Funds, Security Hardening
+
+*16 new tools. Tools: 371 → 387. All real code — no placeholders.*
+
+- **Protection Patterns** (`account_protection/protection_patterns.py`): Freqtrade-style guards for live bots
+  - `StoplossGuard`: Lock instrument after N stops in X hours (default: 3 stops in 4h → 2h lock)
+  - `CooldownPeriod`: 30-min re-entry delay after any stop (prevents revenge trading)
+  - `LowProfitPairs`: Pause instruments failing profit threshold over rolling window
+  - MCP tools: `check_protection_status`, `record_stop_event`, `lock_instrument`, `unlock_instrument`
+
+- **Volatility Targeting** (`volatility_targeting.py`): Robert Carver's pysystemtrade methodology
+  - `compute_volatility_targeted_size`: Size positions for consistent % vol of capital (not wealth-based Kelly)
+  - `compute_idm`: Instrument Diversification Multiplier — auto-reduces MNQ+NQ aggregate when correlated
+  - `compute_forecast_scalar`: Normalize signals to [-20, +20] Carver scale
+  - `dual_size_conservative`: Run both Kelly and vol targeting, take the minimum (recommended)
+
+- **Performance Reports** (`performance_reports.py`): quantstats-inspired tearsheets
+  - `generate_bot_tearsheet`: HTML tearsheet (quantstats if installed) + JSON metrics with marketplace grade
+  - `get_bot_metrics_full`: All 20+ metrics: Sharpe, Sortino, Calmar, Omega, CVaR, profit factor, time-in-DD
+  - Auto-grades: A (Sharpe ≥ 2.0, MaxDD ≤ 15%, WR ≥ 55%), B/C/D tiers
+
+- **Prop Fund Manager** (`brokers/prop_fund_manager.py`): Pipeline validated strategies to funded accounts
+  - 7 funds fully modeled: Apex, Topstep, MyFundedFutures, TradeDay, Bulenox, Earn2Trade, FTMO
+  - `list_prop_funds`: All funds with rules (daily limits, profit targets, consistency rules)
+  - `evaluate_strategy_for_prop_fund`: Rank all 7 funds by compatibility with a given strategy
+  - `simulate_prop_fund_evaluation`: Replay historical P&L against fund rules → pass probability
+  - `get_prop_fund_rules`: Full ruleset for any fund
+  - **Revenue model**: MNQ scalper (Sharpe 4.61) → Apex $50K → ~$2,160/mo (90% split) → $149/mo subscription
+
+- **Security Hardening** (`security/`): SAFE-MCP techniques T051 + T067 fixed
+  - `security/replay_guard.py`: Nonce + timestamp validation, HMAC request signing, replay protection
+  - `security/per_tool_rate_limiter.py`: Per-tool token bucket (place_order: 5/min, cancel_all: 2/5min, flatten: 1/hr)
+  - MCP tools: `check_rate_limit_status`, `generate_hmac_signature`
+
+- **GitHub Acceleration Blueprint** expanded to 5,000+ lines:
+  - [blueprints/GITHUB_ACCELERATION_RESEARCH_2026.md](blueprints/GITHUB_ACCELERATION_RESEARCH_2026.md) — Part I (471 lines, 12 repos)
+  - [blueprints/GITHUB_ACCELERATION_RESEARCH_2026_PART2.md](blueprints/GITHUB_ACCELERATION_RESEARCH_2026_PART2.md) — Part II (5,000+ lines, NautilusTrader, hftbacktest, MlFinLab, E*TRADE, Rithmic, Schwab, prop fund architecture)
+
+- Tools badge: **387** registered (was 371)
 
 **v22.9** (2026-04-07) — PAI Integration: TELOS + US Economics + Learning Signals + ntfy
 - Evaluated [danielmiessler/Personal_AI_Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) (⭐11.2k) — identified 4 genuine gaps vs AlgoChains stack
