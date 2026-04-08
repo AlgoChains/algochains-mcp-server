@@ -34,17 +34,26 @@ logger = logging.getLogger("algochains_mcp.trade_propagation")
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
+# Roo's live Django propagation endpoint (algochains.ai backend)
+_ROO_DEFAULT_URL = "http://172.232.170.168/signals/signal/"
+_ROO_DEFAULT_SECRET = "1234"  # Roo's dev default — override via env in production
+
+
 def _resolve_url() -> str:
+    """Return signal endpoint URL — env override takes priority over Roo default."""
     return (
         os.getenv("ALGOCHAINS_SIGNAL_URL", "").strip()
         or os.getenv("SIGNAL_URL", "").strip()
+        or _ROO_DEFAULT_URL
     )
 
 
 def _resolve_secret() -> bytes:
+    """Return HMAC secret bytes — env override takes priority over Roo default."""
     raw = (
         os.getenv("ALGOCHAINS_SIGNAL_SECRET", "").strip()
         or os.getenv("SIGNAL_SECRET", "").strip()
+        or _ROO_DEFAULT_SECRET
     )
     return raw.encode("utf-8")
 
@@ -141,3 +150,81 @@ async def propagate_signal(
     except httpx.RequestError as exc:
         logger.error("Signal propagate network error: %s", exc)
         return {"success": False, "error": f"HTTP request failed: {exc}"}
+
+
+async def check_propagation_health() -> dict[str, Any]:
+    """Check whether the Django signal propagation service is reachable.
+
+    Returns endpoint URL, reachability status, and configuration guidance.
+    """
+    url = _resolve_url()
+    secret = _resolve_secret()
+    using_defaults = (
+        url == _ROO_DEFAULT_URL and secret == _ROO_DEFAULT_SECRET.encode()
+    )
+
+    base_url = url.rsplit("/signal", 1)[0] if "/signal" in url else url
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+            resp = await client.get(base_url + "/", follow_redirects=True)
+        reachable = resp.status_code < 500
+    except httpx.RequestError:
+        reachable = False
+
+    return {
+        "endpoint": url,
+        "reachable": reachable,
+        "using_roo_defaults": using_defaults,
+        "setup": {
+            "SIGNAL_URL": url,
+            "SIGNAL_SECRET": "*** (set)" if not using_defaults else "1234 (Roo default)",
+        },
+        "register_bot_at": "https://algochains.ai → Bots → Register New Bot",
+        "paper_trading_only": True,
+        "note": (
+            "Using Roo's default endpoint + secret. Override with SIGNAL_URL + SIGNAL_SECRET env vars."
+            if using_defaults
+            else "Custom endpoint configured."
+        ),
+    }
+
+
+async def run_dummy_signal_test(strategy_name: str, symbol: str = "BTC/USD", qty: float = 0.001) -> dict[str, Any]:
+    """Run Roo's 3-signal verification sequence: BUY → (immediate) → SELL → BUY.
+
+    NOTE: Does NOT sleep 2 minutes like the original dummy_signal_test.py.
+    All 3 signals are sent immediately so the MCP tool returns fast.
+    Check your algochains.ai dashboard to see all 3 trades appear.
+    """
+    if not strategy_name or strategy_name in ("YourBotNameHere", ""):
+        return {
+            "error": "Provide your exact bot name from algochains.ai",
+            "usage": "test_signal_propagation({'strategy_name': 'MyBot', 'symbol': 'BTC/USD'})",
+            "register_at": "https://algochains.ai → Bots → Register New Bot",
+        }
+
+    results = []
+    for side in ("BUY", "SELL", "BUY"):
+        result = await propagate_signal(
+            strategy_name=strategy_name,
+            symbol=symbol,
+            side=side,
+            qty=qty,
+        )
+        results.append({"side": side, **result})
+
+    all_ok = all(r.get("success") for r in results)
+    return {
+        "test": "dummy_signal_test",
+        "strategy_name": strategy_name,
+        "symbol": symbol,
+        "qty": qty,
+        "signals_sent": len(results),
+        "all_succeeded": all_ok,
+        "results": results,
+        "next_step": (
+            "Check your algochains.ai dashboard — 3 trades should appear on your paper account."
+            if all_ok
+            else "Some signals failed — check endpoint config and bot registration."
+        ),
+    }

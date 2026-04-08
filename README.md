@@ -643,9 +643,10 @@ See: [`algoclaw/README.md`](algoclaw/README.md) | Full blueprint: `blueprints/AL
 
 ---
 
-## Command Center (cc.algochains.io)
+## Command Center (cc.algochains.ai)
 
-The AlgoChains Command Center is a real-time Next.js dashboard at **https://cc.algochains.io**.
+The AlgoChains Command Center is a real-time Next.js dashboard at **https://cc.algochains.ai**.
+Live site: **https://algochains.ai**
 
 **Run locally:**
 ```bash
@@ -830,7 +831,10 @@ The external MCPs we evaluated are simpler standalone servers. Our implementatio
 - **Kalshi**: we use `kalshi_signed_get` + new `kalshi_signed_post` for order placement. The `get_kalshi_settlements` tool uses the `/trade-api/v2/settlements` endpoint (9crusher's latest feature).
 - **Sort bug fix**: Gamma API's correct sort param is `sort=volume24hr` (not `order=volume_24hr`). Fixed in `get_top_markets` and `list_polymarket_markets`.
 
-- **Subscriber fan-out:** `propagate_trade_signal` — same HMAC contract as `examples/trade_propagation/send_signal.py`; requires `ALGOCHAINS_SIGNAL_URL` + `ALGOCHAINS_SIGNAL_SECRET` (fail closed if unset).
+- **Subscriber fan-out:** `propagate_trade_signal` — Roo's live Django endpoint (`http://172.232.170.168/signals/signal/`) used as default. Override via `SIGNAL_URL` + `SIGNAL_SECRET` env vars.
+- **Health check:** `check_propagation_health` — verify service is reachable before running bots.
+- **Setup test:** `test_signal_propagation` — runs BUY→SELL→BUY sequence; watch your algochains.ai dashboard to confirm 3 paper trades appear.
+- **GUARDRAIL:** `run_guardrail` — 6-gate pre-flight chain (VIX, daily-loss, stoploss-guard, cooldown, confidence, R/R). Wire before every `place_order` call.
 - **Agent docs:** [MEGA_PROMPT_PREDICTION_MARKETS_V1.md](MEGA_PROMPT_PREDICTION_MARKETS_V1.md), [blueprints/PREDICTION_MARKET_BOTS_BLUEPRINT.md](blueprints/PREDICTION_MARKET_BOTS_BLUEPRINT.md).
 - **BYOK:** `polymarket` and `kalshi` entries in `byok/provider_registry.py`.
 

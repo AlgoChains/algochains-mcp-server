@@ -3031,16 +3031,38 @@ TOOLS = [
              "click_url": {"type": "string", "description": "URL to open when notification is tapped"},
          }, "required": ["title", "message"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="propagate_trade_signal", description="POST a signed trade signal to the AlgoChains Django propagation service (Roo architecture). Mirrors send_signal.py: subscribers receive execution on connected **paper** accounts. Requires SIGNAL_URL + SIGNAL_SECRET.",
+    Tool(name="propagate_trade_signal", description="POST a signed trade signal to the AlgoChains Django propagation service (Roo architecture). Uses live endpoint http://172.232.170.168/signals/signal/ by default. Subscribers receive execution on connected PAPER Alpaca accounts. Register your bot at algochains.ai first.",
          inputSchema={"type": "object", "properties": {
-             "strategy_name": {"type": "string", "description": "Must match bot name on algochains.ai exactly"},
-             "symbol": {"type": "string"},
+             "strategy_name": {"type": "string", "description": "Must match bot name on algochains.ai exactly (case-sensitive)"},
+             "symbol": {"type": "string", "description": "e.g. BTC/USD, SPY, AAPL"},
              "side": {"type": "string", "enum": ["BUY", "SELL", "buy", "sell"]},
              "qty": {"type": "number"},
              "confidence": {"type": "number", "default": 0.0},
              "stop_loss": {"type": "number", "default": 0.0},
              "take_profit": {"type": "number", "default": 0.0},
          }, "required": ["strategy_name", "symbol", "side", "qty"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="check_propagation_health", description="Check if the AlgoChains Django signal propagation service (Roo architecture) is reachable. Returns endpoint URL, reachability, and setup status. Use before running bots.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="run_guardrail", description="Run the GUARDRAIL pre-flight middleware chain before placing any order. Executes 6 gates: VIX, daily-loss, stoploss-guard, cooldown, confidence, R/R. Returns approved=true only if all gates pass. Wire this before every order execution.",
+         inputSchema={"type": "object", "properties": {
+             "symbol": {"type": "string", "description": "e.g. MNQ, CL, BTC/USD"},
+             "side": {"type": "string", "enum": ["BUY", "SELL"]},
+             "entry": {"type": "number", "description": "Entry price (enables R/R gate)"},
+             "stop": {"type": "number", "description": "Stop loss price (enables R/R gate)"},
+             "confidence": {"type": "number", "description": "Model confidence 0-1"},
+             "vix": {"type": "number", "description": "Current VIX (reads CURRENT_VIX env if omitted)"},
+             "daily_pnl": {"type": "number", "description": "Today realized P&L (reads TODAY_REALIZED_PNL env if omitted)"},
+             "gates": {"type": "array", "items": {"type": "string"}, "description": "Gate subset to run. Omit for all: vix, daily_loss, stoploss_guard, cooldown, confidence, risk_reward"},
+         }, "required": ["symbol", "side"]},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="test_signal_propagation", description="Run Roo's 3-signal verification test: sends BUY → SELL → BUY to your registered bot on algochains.ai. Check your dashboard to confirm all 3 paper trades appear. Must have bot registered at algochains.ai first.",
+         inputSchema={"type": "object", "properties": {
+             "strategy_name": {"type": "string", "description": "Your bot name on algochains.ai (must match exactly)"},
+             "symbol": {"type": "string", "default": "BTC/USD"},
+             "qty": {"type": "number", "default": 0.001},
+         }, "required": ["strategy_name"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_macro_signals", description="Get pre-computed macro alpha signal fabric: yield curve shape (2y-10y), credit spreads (HY-IG), DXY momentum, PMI regime, VIX term structure contango/backwardation. All from real FRED/CBOE/Polygon APIs.",
          inputSchema={"type": "object", "properties": {"signals": {"type": "array", "items": {"type": "string"}, "description": "Subset: yield_curve, credit_spreads, dxy, pmi, vix. Omit for all."}}, "required": []},
@@ -3720,6 +3742,9 @@ TIER1_TOOL_NAMES = {
     "record_prediction_market_bot_metric",
     "get_prediction_market_bot_metrics",
     "propagate_trade_signal",
+    "check_propagation_health",
+    "test_signal_propagation",
+    "run_guardrail",
     # Skills Bridge (V22.7)
     "list_skills",
     "get_skill_detail",
@@ -6074,6 +6099,43 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 confidence=float(args.get("confidence", 0.0)),
                 stop_loss=float(args.get("stop_loss", 0.0)),
                 take_profit=float(args.get("take_profit", 0.0)),
+            )
+            return _text(out)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "check_propagation_health":
+        from .trade_propagation import check_propagation_health
+        try:
+            out = await check_propagation_health()
+            return _text(out)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "test_signal_propagation":
+        from .trade_propagation import run_dummy_signal_test
+        try:
+            out = await run_dummy_signal_test(
+                strategy_name=str(args.get("strategy_name", "")),
+                symbol=str(args.get("symbol", "BTC/USD")),
+                qty=float(args.get("qty", 0.001)),
+            )
+            return _text(out)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "run_guardrail":
+        from .security.guardrail import run_guardrail
+        try:
+            out = run_guardrail(
+                symbol=str(args.get("symbol", "")),
+                side=str(args.get("side", "")),
+                entry=float(args["entry"]) if "entry" in args else None,
+                stop=float(args["stop"]) if "stop" in args else None,
+                confidence=float(args["confidence"]) if "confidence" in args else None,
+                vix=float(args["vix"]) if "vix" in args else None,
+                daily_pnl=float(args["daily_pnl"]) if "daily_pnl" in args else None,
+                gates=args.get("gates"),
             )
             return _text(out)
         except Exception as exc:
