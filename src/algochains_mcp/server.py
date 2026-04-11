@@ -3295,11 +3295,17 @@ TOOLS = [
              "dry_run": {"type": "boolean", "default": False, "description": "No writes, just report what would happen"},
          }, "required": []},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="get_marketplace_listings", description="Get all staged marketplace bot listings with real metrics: futures (owner-only), equities, crypto, forex. Includes Sharpe, win rate, max DD, subscription pricing, and paper trading status.",
+    Tool(name="get_marketplace_listings", description="Get all staged marketplace bot listings with real metrics: futures (owner-only), equities, crypto, forex. Includes Sharpe, win rate, max DD, subscription pricing, and paper trading status. Supabase-first with local filesystem fallback.",
          inputSchema={"type": "object", "properties": {
              "asset_class": {"type": "string", "enum": ["all", "equities", "crypto", "futures", "forex", "options"], "default": "all"},
              "status": {"type": "string", "enum": ["all", "live", "validated", "paper"], "default": "all"},
+             "limit": {"type": "integer", "default": 50, "description": "Max listings to return"},
          }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_subscriber_bots", description="Get all active bot subscriptions for a given subscriber. Returns listing details, status, and join date. Requires SUPABASE_SERVICE_ROLE_KEY. Pass user_id as email or UUID.",
+         inputSchema={"type": "object", "properties": {
+             "user_id": {"type": "string", "description": "Subscriber email address or UUID"},
+         }, "required": ["user_id"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the AlgoChains knowledge brain at 100.89.114.31:8085. Replaces Vertex AI RAG pipeline.",
          inputSchema={"type": "object", "properties": {
@@ -3318,8 +3324,8 @@ TOOLS = [
     # Powers algochains.ai marketplace bot card live data panel.
     # ═══════════════════════════════════════════════════════════════
     Tool(name="get_live_bot_metrics",
-         description="Get real-time trading metrics for a live Tradovate futures bot by parsing its actual log file. Returns daily P&L, win rate, last signal, confidence, error count, and MCPT-validated Sharpe/MaxDD. Bot IDs: mnq, cl, mes, nq. All data from real fills — no synthetic values.",
-         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
+         description="Get real-time trading metrics for live bots (Tradovate + Alpaca paper). Supabase-first (bot_metrics_live table). Returns daily P&L, win rate, last signal, confidence, error count. Bot IDs: mnq, cl, mes, nq, alpaca_paper_equities, alpaca_paper_crypto. Omit bot_id to get all. Falls back to log parser if Supabase unavailable.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Optional bot ID: mnq | cl | mes | nq | alpaca_paper_equities | alpaca_paper_crypto. Omit for all bots."}}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_all_bot_metrics",
          description="Get real-time trading metrics for all 4 live Tradovate bots (MNQ, CL, MES, NQ) in a single call. Returns daily P&L, win rates, signals, error states, and MCPT validation badges. Data from real log files.",
@@ -3692,6 +3698,37 @@ TOOLS = [
              "last_trade_at": {"type": "string"},
          }, "required": ["subscription_id","bot_id","daily_pnl","win_rate","trade_count","is_running","broker"]},
          annotations=ANNOT_WRITE_SAFE),
+
+    # ── Kronos Foundation Model (shadow mode observer) ────────────────────────
+    Tool(name="get_kronos_shadow_stats",
+         description="Get Kronos foundation model shadow-mode prediction statistics per bot. Shows agreement_rate, total_logged, direction accuracy, and promotion readiness vs the Bayesian ensemble. Read-only observer — Kronos has zero influence on live trades until manually graduated.",
+         inputSchema={"type": "object", "properties": {
+             "bot_key": {"type": "string", "description": "Bot key from signal_health.json, e.g. MNQ_Upgraded_Scalper. Omit to get all bots.", "default": "all"},
+         }, "required": []},
+         annotations=ANNOT_READ_SAFE),
+
+    # ── Rithmic R|API+ live prop account tools ────────────────────────────────
+    Tool(name="get_rithmic_live_accounts",
+         description="List all prop firm accounts currently connected via the Rithmic R|API+ bridge. Returns account_id, fcm_id (clearing firm), and ib_id for each live account. Requires rithmic_bridge binary compiled and RITHMIC_* env vars set.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_SAFE),
+
+    Tool(name="get_rithmic_live_pnl",
+         description="Get real-time P&L for all prop firm accounts via Rithmic R|API+. Returns open_pnl (unrealized), closed_pnl (realized today), account_balance, and buying_power per account plus an aggregate summary.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_SAFE),
+
+    Tool(name="get_rithmic_live_positions",
+         description="Get all open positions across Rithmic prop firm accounts. Returns ticker, exchange, net quantity, average fill price, and unrealized P&L. Only non-zero positions are returned.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_SAFE),
+
+    Tool(name="get_rithmic_live_fills",
+         description="Get recent fill history from Rithmic prop firm accounts. Returns fills in reverse chronological order with account_id, ticker, exchange, side (B/S), quantity, fill price, order_id, and timestamp.",
+         inputSchema={"type": "object", "properties": {
+             "limit": {"type": "integer", "description": "Max fills to return (default 50, max 500)", "default": 50},
+         }, "required": []},
+         annotations=ANNOT_READ_SAFE),
 ]
 
 
@@ -3843,6 +3880,12 @@ TIER1_TOOL_NAMES = {
     "connect_onyx_docs",
     "register_strategy",
     "list_ingested_data",
+    # Kronos + Rithmic live tools (always Tier 1 — bot operators need these)
+    "get_kronos_shadow_stats",
+    "get_rithmic_live_accounts",
+    "get_rithmic_live_pnl",
+    "get_rithmic_live_positions",
+    "get_rithmic_live_fills",
     # Support Tickets
     "create_support_ticket",
     "get_support_ticket",
@@ -6879,11 +6922,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_marketplace_listings":
         try:
+            from .marketplace.supabase_tools import get_marketplace_listings as _sb_listings
+            _asset_filter = args.get("asset_class", "all")
+            _status_filter = args.get("status", "all")
+            _result = _sb_listings(status=_status_filter, asset_class=_asset_filter, limit=args.get("limit", 50))
+            # Supabase-first succeeded if source == "supabase" and no error key
+            if "error" not in _result or _result.get("total", 0) > 0:
+                return _text(_result)
+            # Supabase not configured — fall back to local filesystem
             import glob as _glob
             _ct = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
             _mdir = os.path.join(_ct, "research_pipeline", "marketplace")
-            _asset_filter = args.get("asset_class", "all")
-            _status_filter = args.get("status", "all")
             _listings = []
             for _fpath in sorted(_glob.glob(os.path.join(_mdir, "*.json"))):
                 try:
@@ -6897,7 +6946,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     if _status_filter != "all" and _st != _status_filter:
                         continue
                     _listings.append({
-                        "bot_id": _data.get("bot_id"),
+                        "id": _data.get("bot_id"),
                         "name": _data.get("name"),
                         "symbol": _data.get("symbol"),
                         "asset_class": _ac,
@@ -6922,7 +6971,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "subscribable": sum(1 for b in _listings if b["subscribable"]),
                 "owner_only": sum(1 for b in _listings if b["futures_locked"]),
                 "listings": _listings,
-                "source": _mdir,
+                "source": "filesystem_fallback",
             })
         except Exception as exc:
             return _text({"error": f"Marketplace listings error: {exc}"})
@@ -6971,12 +7020,29 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     # ═══════════════════════════════════════════════════════════════
     elif name == "get_live_bot_metrics":
         try:
+            # Supabase-first: return real-time pushed metrics from bot_metrics_live
+            from .marketplace.supabase_tools import get_live_bot_metrics as _sb_metrics
+            bot_id_arg = args.get("bot_id")
+            _sb_result = _sb_metrics(bot_id=bot_id_arg)
+            if "error" not in _sb_result or _sb_result.get("total", 0) > 0:
+                return _text(_sb_result)
+            # Supabase not configured — fall back to local log parser
             from .live_bot_intelligence import parse_bot_metrics
-            bot_id = args.get("bot_id", "mnq").lower()
+            bot_id = (bot_id_arg or "mnq").lower()
             metrics = parse_bot_metrics(bot_id)
             return _text(metrics.to_dict())
         except Exception as exc:
-            return _text({"error": f"Bot metrics parse error: {exc}", "bot_id": args.get("bot_id")})
+            return _text({"error": f"Bot metrics error: {exc}", "bot_id": args.get("bot_id")})
+
+    elif name == "get_subscriber_bots":
+        try:
+            from .marketplace.supabase_tools import get_subscriber_bots as _sb_subs
+            user_id = args.get("user_id", "")
+            if not user_id:
+                return _text({"error": "user_id is required (email or UUID)"})
+            return _text(_sb_subs(user_id))
+        except Exception as exc:
+            return _text({"error": f"Subscriber bots error: {exc}"})
 
     elif name == "get_all_bot_metrics":
         try:
@@ -8050,14 +8116,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # check_rithmic_status is synchronous — no async needed
             system_name = os.environ.get("RITHMIC_SYSTEM_NAME", "")
             plant_name = os.environ.get("RITHMIC_PLANT_NAME", "Chicago")
-            user_id = os.environ.get("RITHMIC_USER_ID", "")
+            # Canonical env var is RITHMIC_USER (used by rithmic_bridge.cpp)
+            user_id = os.environ.get("RITHMIC_USER", "")
             password = os.environ.get("RITHMIC_PASSWORD", "")
+            ssl_cert = os.environ.get("RITHMIC_SSL_CERT", "")
             dry_run = os.environ.get("RITHMIC_DRY_RUN", "true").lower() == "true"
-            all_configured = bool(system_name and user_id and password)
+            all_configured = bool(system_name and user_id and password and ssl_cert)
             missing = []
             if not system_name: missing.append("RITHMIC_SYSTEM_NAME")
-            if not user_id: missing.append("RITHMIC_USER_ID")
+            if not user_id: missing.append("RITHMIC_USER")
             if not password: missing.append("RITHMIC_PASSWORD")
+            if not ssl_cert: missing.append("RITHMIC_SSL_CERT")
             from .brokers.rithmic_connector import RITHMIC_GATEWAYS, RITHMIC_INSTRUMENTS
             result = {
                 "dry_run_mode": dry_run,
@@ -8068,14 +8137,72 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "supported_instruments": list(RITHMIC_INSTRUMENTS.keys()),
                 "supported_prop_funds": ["apex", "topstep", "myfundedfutures", "tradeday", "bulenox", "earn2trade"],
                 "vendor_agreement": "https://www.rithmic.com/contacts",
+                "live_bridge": "rithmic/rithmic_bridge (C++ R|API+ bridge, read-only)",
+                "live_mcp": "moltbook/rithmic_mcp_server.py (use get_rithmic_live_* tools for real data)",
                 "note": (
                     "DRY_RUN active — set RITHMIC_DRY_RUN=false after signing vendor agreement."
                     if dry_run else
-                    ("Credentials configured. Connect via RithmicConnector().connect()" if all_configured
-                     else "Missing credentials — sign vendor agreement at rithmic.com/contacts")
+                    ("Credentials configured. Use get_rithmic_live_accounts/pnl/positions/fills for live prop account data."
+                     if all_configured
+                     else "Missing credentials — add RITHMIC_USER, RITHMIC_PASSWORD, RITHMIC_SYSTEM_NAME, RITHMIC_SSL_CERT to .env")
                 ),
             }
             return _text(result)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_kronos_shadow_stats":
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _ct = _Path(__file__).resolve().parent.parent.parent.parent.parent / "algochains-control-tower"
+            _sh = _ct / "state" / "signal_health.json"
+            if not _sh.exists():
+                return _text({"error": "signal_health.json not found — control tower not on this machine"})
+            data = _json.loads(_sh.read_text())
+            bot_key = str(args.get("bot_key", "all"))
+            if bot_key == "all":
+                result = {}
+                for k, v in data.items():
+                    shadow = v.get("kronos_shadow")
+                    if shadow:
+                        result[k] = shadow
+                return _text({"bots": result, "count": len(result)})
+            else:
+                bot_data = data.get(bot_key, {})
+                shadow = bot_data.get("kronos_shadow", {})
+                if not shadow:
+                    return _text({"error": f"No Kronos shadow data for bot '{bot_key}'", "available_keys": list(data.keys())})
+                return _text({"bot_key": bot_key, "kronos_shadow": shadow})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name in ("get_rithmic_live_accounts", "get_rithmic_live_pnl",
+                  "get_rithmic_live_positions", "get_rithmic_live_fills"):
+        try:
+            import sys as _sys
+            from pathlib import Path as _Path
+            _ct = str(_Path(__file__).resolve().parent.parent.parent.parent.parent / "algochains-control-tower")
+            if _ct not in _sys.path:
+                _sys.path.insert(0, _ct)
+            from rithmic.rithmic_client import get_client as _get_rc
+            client = _get_rc(auto_start=True)
+            if client is None:
+                return _text({"error": "Rithmic bridge unavailable — check .env credentials and run: cd rithmic && make"})
+            if name == "get_rithmic_live_accounts":
+                accounts = client.get_accounts()
+                return _text({"accounts": accounts, "count": len(accounts), "status": "live" if client.is_alive() else "disconnected"})
+            elif name == "get_rithmic_live_pnl":
+                pnl = client.get_pnl()
+                summary = client.get_daily_pnl_summary()
+                return _text({"pnl": pnl, "summary": summary, "count": len(pnl), "status": "live" if client.is_alive() else "disconnected"})
+            elif name == "get_rithmic_live_positions":
+                positions = client.get_positions()
+                return _text({"positions": positions, "count": len(positions), "status": "live" if client.is_alive() else "disconnected"})
+            elif name == "get_rithmic_live_fills":
+                limit = max(1, min(int(args.get("limit", 50)), 500))
+                fills = client.get_fills(limit=limit)
+                return _text({"fills": fills, "count": len(fills), "status": "live" if client.is_alive() else "disconnected"})
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
