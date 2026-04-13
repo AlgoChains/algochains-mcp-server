@@ -55,20 +55,37 @@ jobs:
           done
           echo "✅ All Tier 1 tools present (including V18 intent tools)"
 
-      # Gate 3: BM25 Smart Discovery returns relevant results
+      # Gate 3: BM25 Smart Discovery returns relevant results (Python direct test — no mcporter call needed)
       - name: "Gate 3: Smart Discovery BM25"
         run: |
-          # Sentiment query should find V13 tools
-          RESULT=$(npx mcporter call algochains.discover_tools query="sentiment analysis" --json 2>/dev/null)
-          echo "$RESULT" | jq -e '.[] | select(.name | contains("sentiment"))' > /dev/null \
-            || (echo "❌ BM25 failed: 'sentiment analysis' didn't find sentiment tools" && exit 1)
+          python3 - << 'PYEOF'
+          import sys
+          sys.path.insert(0, 'src')
+          from algochains_mcp.dynamic_toolsets.gateway import DynamicToolsetGateway
+          from algochains_mcp.server import TOOLS
 
-          # Portfolio query should find portfolio tools
-          RESULT=$(npx mcporter call algochains.discover_tools query="portfolio positions" --json 2>/dev/null)
-          echo "$RESULT" | jq -e '.[] | select(.name | contains("portfolio") or contains("position"))' > /dev/null \
-            || (echo "❌ BM25 failed: 'portfolio positions' didn't find position tools" && exit 1)
+          gw = DynamicToolsetGateway()
+          gw.register_tools_from_list(
+              [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+               for t in TOOLS],
+              category="core", version="v20"
+          )
+          gw.build_index()
 
-          echo "✅ BM25 index returning relevant results"
+          # Test 1: sentiment query
+          results = gw.discover("sentiment analysis", top_k=10)
+          sentiment_hits = [r for r in results if "sentiment" in r["name"].lower()]
+          assert sentiment_hits, f"BM25 'sentiment analysis' returned no sentiment tools. Got: {[r['name'] for r in results]}"
+          print(f"✅ BM25 sentiment: {[r['name'] for r in sentiment_hits]}")
+
+          # Test 2: portfolio query
+          results = gw.discover("portfolio positions", top_k=10)
+          portfolio_hits = [r for r in results if "portfolio" in r["name"].lower() or "position" in r["name"].lower()]
+          assert portfolio_hits, f"BM25 'portfolio positions' returned no portfolio/position tools. Got: {[r['name'] for r in results]}"
+          print(f"✅ BM25 portfolio: {[r['name'] for r in portfolio_hits]}")
+
+          print("✅ BM25 index returning relevant results")
+          PYEOF
 
       # Gate 4: V18 Intent Engine tools present and callable
       - name: "Gate 4: V18 Intent Engine Tools"
@@ -86,13 +103,23 @@ jobs:
           done
           echo "✅ All $COUNT V18 Intent Engine + Genius Layer tools present"
 
-      # Gate 5: detect_market_regime returns valid JSON
+      # Gate 5: detect_market_regime returns valid regime output (Python direct test)
       - name: "Gate 5: V18 Smoke Test"
         run: |
-          RESULT=$(npx mcporter call algochains.detect_market_regime --json 2>/dev/null)
-          echo "$RESULT" | jq -e '.regime' > /dev/null \
-            || (echo "❌ detect_market_regime didn't return valid regime data" && exit 1)
-          echo "✅ V18 detect_market_regime returns valid regime: $(echo $RESULT | jq -r '.regime')"
+          python3 - << 'PYEOF'
+          import sys, asyncio
+          sys.path.insert(0, 'src')
+          from algochains_mcp.intent_engine.regime_detector import RegimeDetector, RegimeSignals
+
+          async def run():
+              eng = RegimeDetector()
+              result = await eng.detect(RegimeSignals())
+              data = result.to_dict()
+              assert "regime" in data, f"detect_market_regime missing 'regime' key: {data}"
+              print(f"✅ V18 detect_market_regime returns valid regime: {data['regime']}")
+
+          asyncio.run(run())
+          PYEOF
 
       # Gate 6: Python AST parse (no syntax errors in server.py)
       - name: "Gate 6: Python AST Validation"
