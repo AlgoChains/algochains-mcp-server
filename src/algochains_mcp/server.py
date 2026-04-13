@@ -270,7 +270,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 logger = logging.getLogger("algochains_mcp.server")
 
 SERVER_INSTRUCTIONS = (
-    "AlgoChains MCP Server v21.3 — The Ultimate Algo Quant Stack. "
+    "AlgoChains MCP Server v22.0 — The Ultimate Algo Quant Stack. "
     "338 tools across 19 domains: market data, trading, strategy building, ML/AI, execution, "
     "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
     "Onyx RAG intelligence, MCP 2025-11-25 spec compliance, SaaS hardening, and "
@@ -278,7 +278,7 @@ SERVER_INSTRUCTIONS = (
     "Real data only — all tools connect to live brokers, real tick feeds, and real APIs. "
     "In smart mode (default), ~54 Tier-1 tools exposed. "
     "Use 'discover_tools' to find 280+ additional tools on demand. "
-    "V21.3 NEW: Autonomous marketplace autopilot (run_marketplace_autopilot), "
+    "V22.0 NEW: Autonomous marketplace autopilot (run_marketplace_autopilot), "
     "marketplace listings (get_marketplace_listings), Onyx ingest trigger (run_onyx_ingest), "
     "Onyx status (get_onyx_status). Signal conflict manager (get_signal_conflict_stats). "
     "V21.2: Ultimate Quant Alpha Stack — volatility surface, factor model, HMM regime detection. "
@@ -4118,7 +4118,23 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             if confirm.action != "accept" or not (confirm.content or {}).get("confirmed", True):
                 return _text({"status": "cancelled", "reason": "User declined trade confirmation"})
         except (LookupError, AttributeError, NotImplementedError) as _elicit_err:
-            logger.debug("Elicitation not available, executing trade directly: %s", _elicit_err)
+            # Elicitation (interactive popup) is not supported by this MCP client.
+            # ALGOCHAINS_REQUIRE_CONFIRMATION=1 blocks execution in this case (recommended for production).
+            # Default: fall through and rely on V22 Guardrails as the safety layer.
+            if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0") == "1":
+                logger.warning("place_order BLOCKED — elicitation unavailable and ALGOCHAINS_REQUIRE_CONFIRMATION=1")
+                return _text({
+                    "status": "blocked",
+                    "reason": "Trade confirmation required but client does not support interactive prompts. "
+                              "Set ALGOCHAINS_REQUIRE_CONFIRMATION=0 to allow unconfirmed orders, "
+                              "or use a client that supports MCP elicitation.",
+                    "order": {"symbol": symbol, "side": side, "qty": qty, "type": otype},
+                })
+            logger.warning(
+                "place_order executing WITHOUT interactive confirmation (client lacks elicitation support): "
+                "%s %s %s on %s — set ALGOCHAINS_REQUIRE_CONFIRMATION=1 to block this",
+                side, qty, symbol, arguments.get("broker", "?"),
+            )
 
         conn = _require_broker(registry, arguments["broker"])
 

@@ -132,6 +132,14 @@ def create_fastapi_app():
     BRIDGE_API_KEY = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
     OWNER_EMAIL = os.getenv("OWNER_EMAIL", "tyler@algochains.ai")
 
+    # Warn loudly at startup if the bridge is running without a key (open to the internet)
+    if not BRIDGE_API_KEY:
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "⚠️  SECURITY: ALGOCHAINS_BRIDGE_API_KEY is not set — HTTP bridge accepts ANY API key. "
+            "Set this env var in production to restrict access."
+        )
+
     def _resolve_auth(
         x_api_key: str | None,
         authorization: str | None,
@@ -141,6 +149,7 @@ def create_fastapi_app():
         Returns (key_valid, is_owner).
         key_valid: True if BRIDGE_API_KEY not set OR key matches.
         is_owner: True only when key_valid AND user_email matches OWNER_EMAIL.
+        NOTE: When BRIDGE_API_KEY is unset, key_valid is always True — set the env var in production.
         """
         provided_key = x_api_key or (authorization.replace("Bearer ", "") if authorization else "")
         key_valid = (not BRIDGE_API_KEY) or (provided_key == BRIDGE_API_KEY)
