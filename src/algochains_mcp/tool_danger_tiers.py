@@ -111,7 +111,7 @@ _TOOL_TIERS: dict[str, int] = {
     # Strategy research (read only)
     "validate_strategy": TIER_READ_ONLY,
     "run_backtest": TIER_READ_ONLY,
-    "backtest_strategy": TIER_READ_ONLY,
+    "run_backtest": TIER_READ_ONLY,
     "walk_forward_test": TIER_READ_ONLY,
     "optimize_strategy": TIER_READ_ONLY,
     "analyze_overfitting": TIER_READ_ONLY,

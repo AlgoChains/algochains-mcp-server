@@ -1896,7 +1896,7 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"spec": {"type": "object", "description": "Full StrategySpec object to validate"}}, "required": ["spec"]},
         annotations=ANNOT_WRITE_SAFE,
     ),
-    Tool(name="backtest_strategy", description="Run a backtest on a StrategySpec using the Rust engine. Returns Sharpe, drawdown, win rate, P&L.",
+    Tool(name="run_backtest", description="Run a backtest on a StrategySpec using the Rust engine. Returns Sharpe, drawdown, win rate, P&L.",
          inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "capital": {"type": "number", "default": 10000}}, "required": ["spec"]},
         annotations=ANNOT_WRITE_SAFE,
     ),
@@ -3775,7 +3775,7 @@ TIER1_TOOL_NAMES = {
     "get_positions",
     "get_orders",
     # Strategy pipeline
-    "backtest_strategy",
+    "run_backtest",
     "validate_strategy",
     "optimize_strategy",
     "deploy_strategy",
@@ -4731,7 +4731,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         validator = _get_spec_validator()
         return _text(validator.validate(spec))
 
-    elif name == "backtest_strategy":
+    elif name in ("run_backtest", "backtest_strategy"):
         StrategySpec = _lazy_import(".strategy_builder.spec", "StrategySpec")
         spec = StrategySpec.from_dict(arguments["spec"])
         runner = _get_backtest_runner()

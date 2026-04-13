@@ -38,7 +38,7 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
     "get_positions": {"implementation_status": "full", "required_env": ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"], "notes": ""},
     "get_orders": {"implementation_status": "full", "required_env": ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"], "notes": ""},
     "connect_broker": {"implementation_status": "full", "required_env": [], "notes": "Requires broker-specific env when connecting."},
-    "backtest_strategy": {"implementation_status": "partial", "required_env": [], "notes": "Depends on internal backtest engine wiring."},
+    "run_backtest": {"implementation_status": "partial", "required_env": [], "notes": "Depends on internal backtest engine wiring."},
     "validate_strategy": {"implementation_status": "full", "required_env": [], "notes": "Uses StrategyValidator gates."},
     "optimize_strategy": {"implementation_status": "partial", "required_env": [], "notes": "Wired to StrategyOptimizer (Optuna); requires backtest engine init and real data. Falls back to error if runner unavailable."},
     "deploy_strategy": {"implementation_status": "partial", "required_env": [], "notes": "Wired to StrategyDeployer; persists to state/deployments.json. Broker execution is tracking-only — broker must be separately connected."},
