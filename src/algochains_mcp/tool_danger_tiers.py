@@ -80,7 +80,7 @@ _TOOL_TIERS: dict[str, int] = {
     "get_orders": TIER_READ_ONLY,
     "get_working_orders": TIER_READ_ONLY,
     "get_fills": TIER_READ_ONLY,
-    "get_portfolio_summary": TIER_READ_ONLY,
+    "portfolio_summary": TIER_READ_ONLY,
     "get_risk_parameters": TIER_READ_ONLY,
     "daily_pnl_summary": TIER_READ_ONLY,
     "get_live_pnl": TIER_READ_ONLY,

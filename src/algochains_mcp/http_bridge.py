@@ -58,7 +58,7 @@ OWNER_TOOLS = {
     "place_order",
     "cancel_order",
     "close_position",
-    "get_portfolio_summary",
+    "portfolio_summary",
     "run_marketplace_autopilot",
     "get_onyx_status",
     "run_onyx_ingest",

@@ -42,7 +42,7 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
     "validate_strategy": {"implementation_status": "full", "required_env": [], "notes": "Uses StrategyValidator gates."},
     "optimize_strategy": {"implementation_status": "partial", "required_env": [], "notes": "Wired to StrategyOptimizer (Optuna); requires backtest engine init and real data. Falls back to error if runner unavailable."},
     "deploy_strategy": {"implementation_status": "partial", "required_env": [], "notes": "Wired to StrategyDeployer; persists to state/deployments.json. Broker execution is tracking-only — broker must be separately connected."},
-    "get_portfolio_summary": {"implementation_status": "partial", "required_env": [], "notes": ""},
+    "portfolio_summary": {"implementation_status": "partial", "required_env": [], "notes": ""},
     "get_quote": {"implementation_status": "full", "required_env": [], "notes": "Uses configured data providers."},
     "execute_intent": {"implementation_status": "partial", "required_env": [], "notes": "Intent engine partially scaffolded."},
     "approve_intent": {"implementation_status": "partial", "required_env": [], "notes": ""},

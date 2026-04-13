@@ -1322,7 +1322,7 @@ TOOLS = [
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
-        name="get_portfolio_summary",
+        name="portfolio_summary",
         description="Get a unified portfolio summary across ALL connected brokers — total equity, positions, and P&L.",
         inputSchema={"type": "object", "properties": {}},
     
@@ -3780,7 +3780,7 @@ TIER1_TOOL_NAMES = {
     "optimize_strategy",
     "deploy_strategy",
     # Portfolio + market
-    "get_portfolio_summary",
+    "portfolio_summary",
     "get_quote",
     # Connectivity
     "connect_broker",
@@ -4236,7 +4236,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         orders = await conn.get_orders(arguments.get("status"))
         return _text([o.to_dict() for o in orders])
 
-    elif name == "get_portfolio_summary":
+    elif name in ("portfolio_summary", "get_portfolio_summary"):
         summary = {"brokers": {}, "total_equity": 0.0, "total_positions": 0}
         for bname in registry.list_available():
             conn = registry.get(bname)
