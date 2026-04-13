@@ -72,6 +72,14 @@ from .middleware import (
     record_failure, guard_response_size, CircuitOpenError,
 )
 
+# ─── Logging must be configured before any try/except import blocks that log ──
+import logging as _logging_init
+_logging_init.basicConfig(
+    level=_logging_init.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
+logger = _logging_init.getLogger("algochains_mcp.server")
+
 # ─── V22 Trading Guardrails — hard-coded circuit breakers (AI cannot override) ─
 # Import at startup so limits are enforced from first tool call.
 # Graceful fallback: if module missing, order velocity checking is skipped
@@ -266,8 +274,7 @@ _LAZY_SPECS = {
     "regime_hmm":       (".quant_alpha.regime_hmm",         ["RegimeHMMDetector", "get_regime_detector"]),
 }
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
-logger = logging.getLogger("algochains_mcp.server")
+# logger and basicConfig already configured above (before guardrails import)
 
 SERVER_INSTRUCTIONS = (
     "AlgoChains MCP Server v22.0 — The Ultimate Algo Quant Stack. "
@@ -4232,6 +4239,15 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(order.to_dict() if order else {"error": f"No position in {arguments['symbol']}"})
 
     elif name == "close_all_positions":
+        if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0") == "1":
+            logger.warning(
+                "close_all_positions BLOCKED — ALGOCHAINS_REQUIRE_CONFIRMATION=1 "
+                "and this client does not support interactive prompts"
+            )
+            return _text({
+                "status": "blocked",
+                "reason": "close_all_positions requires confirmation. Set ALGOCHAINS_REQUIRE_CONFIRMATION=0 to allow.",
+            })
         conn = _require_broker(registry, arguments["broker"])
         orders = await conn.close_all_positions()
         return _text({"closed": len(orders), "orders": [o.to_dict() for o in orders]})
@@ -4900,6 +4916,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(await eng.get_audit_trail(limit=arguments.get("limit", 50), action_filter=arguments.get("action_filter")))
 
     elif name == "activate_kill_switch":
+        if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0") == "1":
+            logger.warning("activate_kill_switch BLOCKED — ALGOCHAINS_REQUIRE_CONFIRMATION=1")
+            return _text({
+                "status": "blocked",
+                "reason": "activate_kill_switch requires confirmation. Set ALGOCHAINS_REQUIRE_CONFIRMATION=0 to allow.",
+            })
         eng = _get_compliance_engine()
         return _text(await eng.activate_kill_switch(arguments["reason"]))
 
@@ -7168,6 +7190,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "flatten_bot_position":
+        if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0") == "1":
+            logger.warning("flatten_bot_position BLOCKED — ALGOCHAINS_REQUIRE_CONFIRMATION=1")
+            return _text({
+                "status": "blocked",
+                "reason": "flatten_bot_position requires confirmation. Set ALGOCHAINS_REQUIRE_CONFIRMATION=0 to allow.",
+            })
         try:
             from .live_bot_intelligence.bot_ops import flatten_position_tradovate
             return _text(flatten_position_tradovate(
