@@ -319,7 +319,7 @@ _TOOL_ANNOTATION_MAP: dict[str, ToolAnnotations] = {}
 def _classify_tool_annotations() -> dict[str, ToolAnnotations]:
     """Classify all tools by their behavior for MCP 2025-06-18 annotations."""
     trade_exec = {
-        "place_order", "cancel_order", "cancel_all_orders", "close_position",
+        "place_order", "cancel_order", "close_position",
         "close_all_positions", "modify_order", "deploy_strategy",
         "subscribe_to_strategy", "publish_strategy_to_marketplace",
         "execute_dynamic_tool", "submit_inst_order", "cancel_inst_order",
