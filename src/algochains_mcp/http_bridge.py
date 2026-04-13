@@ -64,6 +64,7 @@ OWNER_TOOLS = {
     "run_onyx_ingest",
     "get_protection_config",
     "submit_to_marketplace",
+    "get_circuit_breaker_status",
 }
 
 
@@ -147,13 +148,20 @@ def create_fastapi_app():
     ) -> tuple[bool, bool]:
         """
         Returns (key_valid, is_owner).
-        key_valid: True if BRIDGE_API_KEY not set OR key matches.
+        key_valid: True if the provided key matches BRIDGE_API_KEY.
         is_owner: True only when key_valid AND user_email matches OWNER_EMAIL.
-        NOTE: When BRIDGE_API_KEY is unset, key_valid is always True — set the env var in production.
+        When BRIDGE_API_KEY is unset: public tools remain accessible, but owner
+        tools are BLOCKED (is_owner=False) to prevent privilege escalation via
+        a spoofed user_email field.
         """
         provided_key = x_api_key or (authorization.replace("Bearer ", "") if authorization else "")
-        key_valid = (not BRIDGE_API_KEY) or (provided_key == BRIDGE_API_KEY)
-        is_owner = key_valid and (user_email == OWNER_EMAIL)
+        if BRIDGE_API_KEY:
+            key_valid = provided_key == BRIDGE_API_KEY
+            is_owner = key_valid and (user_email == OWNER_EMAIL)
+        else:
+            # No API key configured — allow public tool access but never grant owner
+            key_valid = True
+            is_owner = False
         return key_valid, is_owner
 
     class McpRequest(BaseModel):
