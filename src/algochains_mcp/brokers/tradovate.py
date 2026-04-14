@@ -194,6 +194,25 @@ class TradovateConnector(BrokerConnector):
             resp.raise_for_status()
             return resp.json()
 
+    async def _delete(self, path: str) -> Any:
+        """Authenticated DELETE request. Returns None (not raising) on 404 so callers
+        can distinguish 'already gone' (404) from genuine errors without try/except."""
+        await self._ensure_token()
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.delete(
+                f"{self.cfg.base_url}/v1{path}",
+                headers={"Authorization": f"Bearer {self._access_token}"},
+            )
+            if resp.status_code == 401:
+                raise BrokerAuthError("Tradovate token expired", broker="tradovate")
+            if resp.status_code == 404:
+                return None  # already gone — caller decides what to do
+            resp.raise_for_status()
+            try:
+                return resp.json()
+            except Exception:
+                return {}
+
     async def _ensure_token(self) -> None:
         """Check token validity — reconnect if within renewal window.
 
@@ -371,12 +390,46 @@ class TradovateConnector(BrokerConnector):
         )
 
     async def cancel_order(self, order_id: str) -> bool:
+        """Cancel an order by ID.
+
+        V4-BUG-03 PORT: try DELETE first; if 404 (already gone/filled) return True without
+        falling through to POST cancel — that produced misleading 'CANCELLED' logs for
+        already-filled bracket orders and masked the race condition root of Apr 14 2026.
+        """
+        try:
+            # Prefer DELETE which returns 404 when order is already gone
+            resp = await self._delete(f"/order/item/{int(order_id)}")
+            if resp is not None:
+                return True
+        except Exception:
+            pass
+
+        # 404 means the order is already gone (filled or cancelled) — treat as success
+        try:
+            status = await self.get_order_status(int(order_id))
+            if status in ("Filled", "Canceled", "Completed", "Expired"):
+                logger.info("cancel_order %s: already gone (status=%s)", order_id, status)
+                return True
+        except Exception:
+            pass
+
+        # Last resort: POST cancel
         try:
             await self._post("/order/cancelOrder", {"orderId": int(order_id)})
             return True
         except Exception as e:
             logger.error("Cancel order failed: %s", e)
             return False
+
+    async def get_order_status(self, order_id: int) -> str:
+        """Return the current status string for an order, or 'Unknown' on failure."""
+        try:
+            result = await self._get("/order/item", {"id": order_id})
+            if isinstance(result, dict):
+                return result.get("ordStatus", result.get("status", "Unknown"))
+        except Exception:
+            pass
+        return "Unknown"
 
     async def get_quote(self, symbol: str) -> Quote:
         contract = await self._find_contract(symbol)
