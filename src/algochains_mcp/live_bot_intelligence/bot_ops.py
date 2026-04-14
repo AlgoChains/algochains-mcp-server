@@ -246,23 +246,47 @@ def check_unprotected_positions() -> dict:
     except ImportError as e:
         return {"error": f"Cannot import tradovate_client: {e}", "status": "ERROR"}
 
+    # BUG-05 FIX: Never silently default to "demo" — wrong environment means silently
+    # checking the wrong book and reporting "OK" when live is exposed.
+    _env = os.getenv("TRADOVATE_ENV")
+    if not _env:
+        return {
+            "error": "TRADOVATE_ENV not set — cannot determine which account to check",
+            "status": "CONFIG_ERROR",
+            "action": "Set TRADOVATE_ENV=demo or TRADOVATE_ENV=live in .env",
+        }
+
     try:
         client = TradovateClient(
             cid=os.getenv("TRADOVATE_CID"),
             secret=os.getenv("TRADOVATE_SECRET"),
-            env=os.getenv("TRADOVATE_ENV", "demo"),
+            env=_env,
         )
         client.authenticate()
-        positions = client.get_positions() or []
-        working_orders = client.get_working_orders() or []
+        positions = client.get_positions()
+        working_orders = client.get_working_orders()
+        if positions is None or working_orders is None:
+            return {
+                "error": "Tradovate API returned no data — positions or orders call failed",
+                "status": "ERROR",
+                "positions_ok": positions is not None,
+                "orders_ok": working_orders is not None,
+            }
     except Exception as e:
         return {"error": f"Tradovate connection failed: {e}", "status": "ERROR"}
 
+    # Only stop-type orders actually protect a position
+    _STOP_TYPES = {"Stop", "StopLimit", "TrailingStop", "MIT"}
     covered = set()
     for o in working_orders:
+        if o.get("orderType", "") not in _STOP_TYPES:
+            continue
         cid = o.get("contractId") or (o.get("contract") or {}).get("id")
-        if cid:
-            covered.add(cid)
+        if cid is not None:
+            try:
+                covered.add(int(cid))
+            except (TypeError, ValueError):
+                covered.add(cid)
 
     unprotected = []
     protected = []
@@ -270,8 +294,12 @@ def check_unprotected_positions() -> dict:
         net = p.get("netPos", 0)
         if net == 0:
             continue
-        cid = p.get("contractId")
-        entry = {"contractId": cid, "contractName": p.get("contractName"), "netPos": net, "netPrice": p.get("netPrice")}
+        raw_cid = p.get("contractId")
+        try:
+            cid = int(raw_cid) if raw_cid is not None else None
+        except (TypeError, ValueError):
+            cid = raw_cid
+        entry = {"contractId": raw_cid, "contractName": p.get("contractName"), "netPos": net, "netPrice": p.get("netPrice")}
         if cid in covered:
             protected.append(entry)
         else:

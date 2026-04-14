@@ -135,6 +135,12 @@ class TradovateConnector(BrokerConnector):
                     self._token_expires_at = exp_dt.timestamp()
                 except ValueError:
                     self._token_expires_at = time.time() + 5400
+            else:
+                # BUG-20 FIX: expirationTime missing from auth response.
+                # If _token_expires_at stays 0, _ensure_token fires on EVERY call
+                # (time.time() > 0 - 3600 is always True), causing a reconnect storm.
+                # Default to 60 minutes as a safe lower bound.
+                self._token_expires_at = time.time() + 3600
 
             accounts = await self._get("/account/list")
             if accounts and isinstance(accounts, list):
