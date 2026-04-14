@@ -5556,6 +5556,29 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "execute_dynamic_tool":
         inner_name = arguments["tool_name"]
         inner_args = arguments.get("arguments", {})
+        # V2-BUG-21 FIX: execute_dynamic_tool is Tier-1 (always exposed) but can
+        # dispatch to Tier-2 destructive handlers if the caller knows the inner tool
+        # name — bypassing the Tier-2 obscurity model.
+        # Denylist of destructive inner tools that require an explicit owner_token
+        # to be passed inside inner_args.
+        _DESTRUCTIVE_INNER_TOOLS = {
+            "restart_trading_bot",
+            "flatten_bot_position",
+            "flatten_position",
+            "cancel_all_orders",
+            "emergency_stop",
+            "run_marketplace_autopilot",
+            "dispatch_tower_job",
+        }
+        if inner_name in _DESTRUCTIVE_INNER_TOOLS:
+            _expected_owner = os.environ.get("OWNER_API_TOKEN", "")
+            _provided_token = inner_args.get("owner_token", "")
+            if not _expected_owner or _provided_token != _expected_owner:
+                return _text({
+                    "error": f"execute_dynamic_tool: '{inner_name}' is a destructive tool. "
+                             "Pass a matching owner_token inside the 'arguments' payload.",
+                    "blocked": True,
+                })
         return await _dispatch_tool(inner_name, inner_args, registry)
 
     # ── V18: Intent-Based Trading ─────────────────────────────
