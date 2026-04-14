@@ -189,9 +189,15 @@ class TradovateConnector(BrokerConnector):
             return resp.json()
 
     async def _ensure_token(self) -> None:
-        """Check token validity — reconnect if expired."""
-        if time.time() > self._token_expires_at - 300:
-            logger.info("Tradovate token near expiry, reconnecting...")
+        """Check token validity — reconnect if within renewal window.
+
+        V2 FIX: Raised threshold from 5 minutes to 60 minutes.
+        Google SSO tokens have a fixed ~12h window; waiting until 5 min before
+        expiry left essentially no recovery time. 60 min provides a meaningful
+        window for the system to reconnect before the token is actually expired.
+        """
+        if time.time() > self._token_expires_at - 3600:  # 60 min threshold (was 5 min)
+            logger.info("Tradovate token near expiry (< 60 min), reconnecting...")
             await self.connect()
 
     async def get_account(self) -> AccountInfo:

@@ -34,8 +34,9 @@ CONTROL_TOWER = next((p for p in _POSSIBLE_ROOTS if p.exists()), _POSSIBLE_ROOTS
 BOT_MAP = {
     "mnq": {"grep": "FUTURES_SCALPER_UPGRADED", "script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},
     "cl":  {"grep": "CL_FUTURES_SCALPER",       "script": "CL_FUTURES_SCALPER.py",       "log": "logs/cl_futures_live.log"},
-    "mes": {"grep": "mes_swing_live",            "script": "mes_swing_live.py",            "log": "logs/mes_swing.log"},
-    "nq":  {"grep": "nq_swing_live",             "script": "nq_swing_live.py",             "log": "logs/nq_swing.log"},
+    # V2 FIX: use *_live.log paths — mes_swing.log / nq_swing.log are OLD backup files (stale)
+    "mes": {"grep": "mes_swing_live",            "script": "mes_swing_live.py",            "log": "logs/mes_swing_live.log"},
+    "nq":  {"grep": "nq_swing_live",             "script": "nq_swing_live.py",             "log": "logs/nq_swing_live.log"},
 }
 
 SYMBOL_MAP = {"mnq": "MNQ", "cl": "CL", "mes": "MES", "nq": "NQ"}
@@ -220,6 +221,107 @@ def get_all_bot_ops_status() -> dict:
     return result
 
 
+# ── V2: Bracket integrity tools ───────────────────────────────────────────────
+
+def check_unprotected_positions() -> dict:
+    """
+    Cross-check open positions vs working orders to detect unprotected exposure.
+    An unprotected position (open, no stop/target orders) caused the Apr 14 2026
+    -$4,917 incident. Run this before any P&L report or status check.
+
+    Returns status: OK | UNPROTECTED_EXPOSURE | ERROR
+    """
+    import sys
+    ct = str(CONTROL_TOWER)
+    if ct not in sys.path:
+        sys.path.insert(0, ct)
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(CONTROL_TOWER / ".env")
+    except ImportError:
+        pass
+
+    try:
+        from tradovate_client import TradovateClient
+    except ImportError as e:
+        return {"error": f"Cannot import tradovate_client: {e}", "status": "ERROR"}
+
+    try:
+        client = TradovateClient(
+            cid=os.getenv("TRADOVATE_CID"),
+            secret=os.getenv("TRADOVATE_SECRET"),
+            env=os.getenv("TRADOVATE_ENV", "demo"),
+        )
+        client.authenticate()
+        positions = client.get_positions() or []
+        working_orders = client.get_working_orders() or []
+    except Exception as e:
+        return {"error": f"Tradovate connection failed: {e}", "status": "ERROR"}
+
+    covered = set()
+    for o in working_orders:
+        cid = o.get("contractId") or (o.get("contract") or {}).get("id")
+        if cid:
+            covered.add(cid)
+
+    unprotected = []
+    protected = []
+    for p in positions:
+        net = p.get("netPos", 0)
+        if net == 0:
+            continue
+        cid = p.get("contractId")
+        entry = {"contractId": cid, "contractName": p.get("contractName"), "netPos": net, "netPrice": p.get("netPrice")}
+        if cid in covered:
+            protected.append(entry)
+        else:
+            unprotected.append(entry)
+
+    return {
+        "unprotected": unprotected,
+        "protected": protected,
+        "working_orders_count": len(working_orders),
+        "all_flat": len([p for p in positions if p.get("netPos", 0) != 0]) == 0,
+        "status": "UNPROTECTED_EXPOSURE" if unprotected else "OK",
+        "message": (
+            f"{len(unprotected)} unprotected position(s) — FLATTEN IMMEDIATELY" if unprotected
+            else "All positions protected" if protected
+            else "Account is flat"
+        ),
+        "environment": os.getenv("TRADOVATE_ENV", "demo").upper(),
+    }
+
+
+def get_bracket_guardian_status() -> dict:
+    """
+    Read the bracket integrity guardian state file.
+    Returns whether the guardian is running, last check time, any unprotected positions
+    it has flagged, and whether auto-flatten has fired.
+    """
+    state_path = CONTROL_TOWER / "state" / "bracket_guardian_state.json"
+    if not state_path.exists():
+        return {
+            "guardian_active": False,
+            "detail": "bracket_guardian_state.json not found — guardian may not be running",
+            "action": "Load com.algochains.bracket-guardian plist to activate",
+        }
+    try:
+        data = json.loads(state_path.read_text())
+        unprotected_since = data.get("unprotected_since", {})
+        last_check = data.get("last_check", "unknown")
+        return {
+            "guardian_active": True,
+            "last_check": last_check,
+            "positions_count": data.get("positions_count", 0),
+            "working_orders_count": data.get("working_orders_count", 0),
+            "currently_unprotected": list(unprotected_since.keys()),
+            "unprotected_since": unprotected_since,
+            "status": "ALERT" if unprotected_since else "OK",
+        }
+    except Exception as e:
+        return {"guardian_active": False, "error": str(e)}
+
+
 # ── Owner-gated destructive ops ───────────────────────────────────────────────
 
 def restart_bot(bot_id: str, owner_token: str) -> dict:
@@ -328,14 +430,21 @@ def flatten_position_tradovate(symbol: str, owner_token: str) -> dict:
     except Exception as e:
         return {"error": f"Tradovate connection failed: {e}"}
 
-    target = next(
-        (p for p in positions if symbol.upper() in str(p.get("contractId", "")) or
-         str(p.get("contractId", "")).startswith(str(p.get("contractId", "")))),
-        None,
-    )
-    # Broader search since contractId is numeric
+    # V2 FIX: Previous code had `str(cid).startswith(str(cid))` which is ALWAYS TRUE,
+    # matching any first position regardless of symbol. Now we:
+    #   1. First try matching on contractName (best signal when available)
+    #   2. Fall back to first non-flat position (contractId is numeric, not symbol-based)
+    target = None
+    for p in positions:
+        if p.get("netPos", 0) == 0:
+            continue
+        contract_name = str(p.get("contractName", "") or "")
+        if symbol.upper() in contract_name.upper():
+            target = p
+            break
+
     if not target:
-        # Try matching by netPos != 0
+        # Fall back: take first non-flat position (single-symbol accounts only)
         for p in positions:
             if p.get("netPos", 0) != 0:
                 target = p

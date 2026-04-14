@@ -3384,6 +3384,14 @@ TOOLS = [
          description="Close ALL open contracts for a symbol via Tradovate Market order, then mark position_state.json as flat. REQUIRES owner_token. CRITICAL: Only call after confirming the bot is stopped or between its scans. Environment is determined by TRADOVATE_ENV (.env).",
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Symbol to flatten: MNQ | CL | MES | NQ"}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"}}, "required": ["symbol", "owner_token"]},
          annotations=ANNOT_DESTRUCTIVE),
+    Tool(name="check_unprotected_positions",
+         description="Cross-check ALL open Tradovate positions vs working orders to identify unprotected exposure (position open, no stop/target orders). Returns status OK | UNPROTECTED_EXPOSURE. Run before any P&L report or after any bot restart. Prevents repeat of Apr 14 2026 -$4.9k incident.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_bracket_guardian_status",
+         description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. Guardian runs every 5 min via launchd (com.algochains.bracket-guardian).",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
 
     # V22.2: Onboarding — guided setup wizard for new users
     # ═══════════════════════════════════════════════════════════════
@@ -3867,6 +3875,9 @@ TIER1_TOOL_NAMES = {
     "get_bot_bracket_status",
     "get_ai_pipeline_health",
     "get_all_bot_ops_status",
+    # V26.1 — Bracket integrity (always Tier 1 — safety critical)
+    "check_unprotected_positions",
+    "get_bracket_guardian_status",
     # V22.1 — Guardrails status (always Tier 1 — safety awareness)
     "get_circuit_breaker_status",
     "get_agent_loop_status",
@@ -7176,6 +7187,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .live_bot_intelligence.bot_ops import get_all_bot_ops_status
             return _text(get_all_bot_ops_status())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "check_unprotected_positions":
+        try:
+            from .live_bot_intelligence.bot_ops import check_unprotected_positions
+            return _text(check_unprotected_positions())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_bracket_guardian_status":
+        try:
+            from .live_bot_intelligence.bot_ops import get_bracket_guardian_status
+            return _text(get_bracket_guardian_status())
         except Exception as exc:
             return _text({"error": str(exc)})
 
