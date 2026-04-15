@@ -431,6 +431,53 @@ class TradovateConnector(BrokerConnector):
             pass
         return "Unknown"
 
+    async def get_fills(
+        self,
+        order_id: Optional[int] = None,
+        symbol: Optional[str] = None,
+        since_seconds: int = 60,
+    ) -> list[dict]:
+        """Get fills, filtered by symbol+timestamp (OSO-safe).
+
+        V8-BUG-04 PORT: OSO orders create parent + child IDs — filtering by parent
+        order_id always returns empty because fills are recorded under child IDs.
+        Use symbol + recent timestamp window to catch actual fills.
+
+        Args:
+            order_id: ignored for OSO orders but kept for API compat
+            symbol: contract symbol filter (e.g. "MNQM6")
+            since_seconds: how far back to look (default 60s)
+        """
+        try:
+            all_fills = await self._get("/fill/list", {})
+            if not isinstance(all_fills, list):
+                return []
+            if symbol:
+                from datetime import datetime, timezone, timedelta  # noqa: PLC0415
+                cutoff = datetime.now(timezone.utc) - timedelta(seconds=since_seconds)
+                contract = await self._find_contract(symbol)
+                target_contract_id = contract.get("id") if contract else None
+                filtered = []
+                for f in all_fills:
+                    if target_contract_id and f.get("contractId") != target_contract_id:
+                        continue
+                    ts_str = f.get("timestamp", "")
+                    if ts_str:
+                        try:
+                            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                            if ts < cutoff:
+                                continue
+                        except Exception:
+                            pass
+                    filtered.append(f)
+                return filtered
+            if order_id:
+                return [f for f in all_fills if f.get("orderId") == order_id]
+            return all_fills
+        except Exception as e:
+            logger.error("get_fills failed: %s", e)
+            return []
+
     async def get_quote(self, symbol: str) -> Quote:
         contract = await self._find_contract(symbol)
         if not contract:
