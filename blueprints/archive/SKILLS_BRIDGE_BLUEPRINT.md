@@ -1,3 +1,12 @@
+<!--
+BLUEPRINT_STATUS: archived
+ARCHIVED_DATE: 2026-04-18
+SUPERSEDED_BY: docs/MCP_SERVER_ENHANCEMENT_ROADMAP.md (V2 P4-16)
+NOTE: The Tier-1 tool table and Skills Bridge delivery webhook are stale vs actual
+server.py TIER1_TOOL_NAMES. The marketplace delivery loop described here is tracked
+as P4-16 in the V2 roadmap. Do not treat this document as a current spec.
+-->
+
 # AlgoChains Skills Bridge Blueprint
 **Version:** 1.0 | **Date:** 2026-04-07 | **Author:** AI Audit + Tyler Reynolds
 

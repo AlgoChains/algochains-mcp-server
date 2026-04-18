@@ -1,3 +1,9 @@
+<!--
+BLUEPRINT_STATUS: active
+LAST_REVIEWED: 2026-04-18
+NOTE: Kalshi CLOB gaps are tracked as P4-17 in docs/MCP_SERVER_ENHANCEMENT_ROADMAP.md.
+-->
+
 # Gap analysis — prediction markets & trade propagation (2026-04-08)
 
 ## Research summary (open docs + industry pattern)

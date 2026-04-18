@@ -1,13 +1,32 @@
-"""DEX aggregation — route swaps across Uniswap, Sushi, Curve, 1inch."""
+"""DEX aggregation — route swaps across Uniswap, Sushi, Curve, 1inch.
+
+SIMULATION MODE (default): All methods return synthetic responses with
+``"status": "simulation"`` to avoid misleading agents about real on-chain
+execution.  Set ``ALGOCHAINS_DEFI_ENABLED=true`` in the environment to signal
+that a real Web3 backend (e.g. multicall RPC) has been wired up.
+
+Agents MUST check ``result["status"]`` before treating any output as live.
+"""
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+_DEFI_LIVE = os.getenv("ALGOCHAINS_DEFI_ENABLED", "").lower() in ("1", "true", "yes")
+_SIM_BANNER = (
+    "SIMULATION — ALGOCHAINS_DEFI_ENABLED is not set. "
+    "Results are synthetic and do not reflect real on-chain state."
+)
+
 
 class DEXAggregator:
-    """Aggregate and route swaps across decentralized exchanges."""
+    """Aggregate and route swaps across decentralized exchanges.
+
+    All methods include ``"status": "simulation"`` in their response until
+    ``ALGOCHAINS_DEFI_ENABLED=true`` is set and a real Web3 backend is wired.
+    """
 
     SUPPORTED_DEXES = ("uniswap_v3", "sushiswap", "curve", "balancer", "1inch")
 
@@ -29,7 +48,11 @@ class DEXAggregator:
                 "quoted_at": datetime.now(timezone.utc).isoformat(),
             }
             self._quotes[quote_id] = quote
-            return {"status": "ok", "quote": quote}
+            status = "ok" if _DEFI_LIVE else "simulation"
+            result = {"status": status, "quote": quote}
+            if not _DEFI_LIVE:
+                result["simulation_warning"] = _SIM_BANNER
+            return result
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
@@ -39,21 +62,26 @@ class DEXAggregator:
             if not quote:
                 return {"status": "error", "error": f"Quote {quote_id} not found"}
             tx_hash = uuid.uuid4().hex
-            return {
-                "status": "ok",
+            status = "ok" if _DEFI_LIVE else "simulation"
+            result = {
+                "status": status,
                 "tx_hash": tx_hash,
                 "quote_id": quote_id,
                 "slippage_tolerance": slippage_tolerance,
                 "deadline_minutes": deadline_minutes,
                 "executed_at": datetime.now(timezone.utc).isoformat(),
             }
+            if not _DEFI_LIVE:
+                result["simulation_warning"] = _SIM_BANNER
+            return result
         except Exception as e:
             return {"status": "error", "error": str(e)}
 
     async def get_liquidity(self, token_in: str, token_out: str, chain: str | None = None) -> dict:
         try:
-            return {
-                "status": "ok",
+            status = "ok" if _DEFI_LIVE else "simulation"
+            result = {
+                "status": status,
                 "token_in": token_in,
                 "token_out": token_out,
                 "chain": chain or "ethereum",
@@ -61,5 +89,8 @@ class DEXAggregator:
                 "dexes": [{"name": d, "liquidity_usd": 0.0} for d in self.SUPPORTED_DEXES],
                 "as_of": datetime.now(timezone.utc).isoformat(),
             }
+            if not _DEFI_LIVE:
+                result["simulation_warning"] = _SIM_BANNER
+            return result
         except Exception as e:
             return {"status": "error", "error": str(e)}

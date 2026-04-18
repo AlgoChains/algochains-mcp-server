@@ -21,6 +21,7 @@ class ProviderCategory(str, Enum):
     ALTERNATIVE_DATA = "alternative_data"
     AGGREGATOR = "aggregator"
     PREDICTION_MARKET = "prediction_market"
+    EXECUTION = "execution"  # broker order placement
 
 
 @dataclass
@@ -222,6 +223,61 @@ PROVIDER_REGISTRY: dict[str, ProviderMeta] = {
         data_types=["binary_events", "order_book", "fills"],
         notes="RSA-PSS-SHA256 headers per Kalshi docs. Optional KALSHI_API_HOST (default api.elections.kalshi.com). "
         "Demo: https://demo-api.kalshi.co — set host accordingly.",
+    ),
+
+    # ── Broker / Execution providers ──────────────────────────────────────────
+    # required=False: broker credentials are not data keys — they flow through
+    # oauth_manager.py and separate env vars. Listed here so the BYOK registry
+    # surfaces validation coverage gaps and startup_health_check can probe them.
+
+    "tradovate": ProviderMeta(
+        name="tradovate",
+        display_name="Tradovate (Futures)",
+        env_vars=["TRADOVATE_CID", "TRADOVATE_SECRET", "TRADOVATE_DEVICE_ID"],
+        categories=[ProviderCategory.EXECUTION],
+        signup_url="https://trader.tradovate.com/register",
+        docs_url="https://api.tradovate.com/",
+        free_tier=False,
+        free_tier_limits="Simulated account available; live requires funded account",
+        validation_url="https://demo.tradovateapi.com/v1/auth/accesstokenrequest",
+        validation_method="bearer",
+        requires_key=False,
+        data_types=["futures_orders", "positions", "fills", "tick_data"],
+        notes="Credentials managed by tradovate_client.py + token_guardian. "
+              "Required for MNQ/CL/MES/NQ bots.",
+    ),
+
+    "alpaca": ProviderMeta(
+        name="alpaca",
+        display_name="Alpaca (Equities + Crypto)",
+        env_vars=["ALPACA_API_KEY", "ALPACA_SECRET_KEY"],
+        categories=[ProviderCategory.EXECUTION, ProviderCategory.MARKET_DATA],
+        signup_url="https://alpaca.markets/",
+        docs_url="https://docs.alpaca.markets/",
+        free_tier=True,
+        free_tier_limits="Paper trading is free; live trading requires funded account",
+        validation_url="https://api.alpaca.markets/v2/account",
+        validation_method="header",
+        key_pattern=r"^PK[A-Z0-9]{16,}$",
+        requires_key=False,
+        data_types=["equity_orders", "crypto_orders", "positions", "bars"],
+        notes="Required for paper trader + equities marketplace bots.",
+    ),
+
+    "ibkr": ProviderMeta(
+        name="ibkr",
+        display_name="Interactive Brokers",
+        env_vars=["IBKR_ACCOUNT_ID", "IBKR_CLIENT_PORTAL_PORT"],
+        categories=[ProviderCategory.EXECUTION],
+        signup_url="https://www.interactivebrokers.com/en/trading/ibkr-api.php",
+        docs_url="https://ibkrcampus.com/campus/ibkr-api-page/",
+        free_tier=False,
+        free_tier_limits="Paper account available at no cost",
+        validation_url="https://localhost:{port}/v1/api/iserver/account",
+        validation_method="bearer",
+        requires_key=False,
+        data_types=["equity_orders", "futures_orders", "options_orders"],
+        notes="Client Portal API must be running locally on IBKR_CLIENT_PORTAL_PORT (default 5000).",
     ),
 }
 

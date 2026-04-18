@@ -2307,7 +2307,9 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "window": {"type": "integer", "default": 50}}, "required": ["symbol"]},
         annotations=ANNOT_READ_EXTERNAL,
     ),
-    Tool(name="detect_regime", description="Detect current market regime using statistical methods.",
+    Tool(name="detect_regime", description="[DEPRECATED — prefer detect_regime_hmm which uses the V21 Gaussian-HMM engine] "
+         "Detect current market regime using statistical methods. "
+         "Calls detect_regime_hmm internally when method='hmm' (the default).",
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "method": {"type": "string", "enum": ["hmm", "threshold", "ml"], "default": "hmm"}}, "required": ["symbol"]},
         annotations=ANNOT_READ_EXTERNAL,
     ),
@@ -2966,6 +2968,25 @@ TOOLS = [
              "expiration_ts": {"type": "integer", "description": "Optional order expiry (ms since epoch)"},
          }, "required": ["ticker", "side", "action", "count", "limit_price_cents"]},
          annotations=ANNOT_TRADE_EXEC),
+    Tool(name="get_kalshi_orderbook_depth",
+         description="Fetch the CLOB order book depth for a Kalshi market ticker. "
+                     "Returns yes/no bid-ask ladder, best bid, best ask, and spread. "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH (RSA-PSS signed).",
+         inputSchema={"type": "object", "properties": {
+             "ticker": {"type": "string", "description": "Kalshi market ticker (e.g. INXD-23DEC29-T3990)"},
+             "depth": {"type": "integer", "default": 10, "description": "Number of price levels per side (max 10)"},
+         }, "required": ["ticker"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="stream_kalshi_fills",
+         description="Fetch recent fills (trade history) for a Kalshi market ticker from the CLOB. "
+                     "Returns fills with side, yes_price, count, and timestamp. "
+                     "Use for market microstructure analysis and fill-rate alerting. "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {
+             "ticker": {"type": "string", "description": "Kalshi market ticker"},
+             "limit": {"type": "integer", "default": 50, "description": "Max fills to return (max 100)"},
+         }, "required": ["ticker"]},
+         annotations=ANNOT_READ_EXTERNAL),
     # ═══════════════════════════════════════════════════════════════
     # V22.9 — PAI Integration: TELOS + US Economics + Learning Signals + ntfy
     # Based on gap analysis vs danielmiessler/Personal_AI_Infrastructure (⭐11.2k)
@@ -3314,6 +3335,18 @@ TOOLS = [
              "user_id": {"type": "string", "description": "Subscriber email address or UUID"},
          }, "required": ["user_id"]},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="deliver_strategy_to_subscriber",
+         description="Deliver an approved marketplace strategy config to a subscriber's bot endpoint. "
+                     "Signs a time-limited config token with HMAC-SHA256 using ALGOCHAINS_SIGNAL_SECRET, "
+                     "POSTs it to the subscriber's webhook URL, and logs the delivery to Supabase "
+                     "marketplace_deliveries. Requires SUPABASE_SERVICE_ROLE_KEY + ALGOCHAINS_SIGNAL_SECRET.",
+         inputSchema={"type": "object", "properties": {
+             "subscriber_id": {"type": "string", "description": "Subscriber Supabase user ID (auth.uid())"},
+             "strategy_id": {"type": "string", "description": "Supabase marketplace_listing.id to deliver"},
+             "webhook_url": {"type": "string", "description": "Override webhook URL (optional — uses subscription record if not provided)"},
+             "token_ttl_seconds": {"type": "integer", "default": 86400, "description": "Config token lifetime in seconds (default 24h)"},
+         }, "required": ["subscriber_id", "strategy_id"]},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the AlgoChains knowledge brain at 100.89.114.31:8085. Replaces Vertex AI RAG pipeline.",
          inputSchema={"type": "object", "properties": {
              "full_sync": {"type": "boolean", "default": False, "description": "Full re-index vs incremental (new files only)"},
@@ -4131,6 +4164,30 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # ── 1. Sanitize inputs ───────────────────────────────────
         arguments = validate_arguments(name, arguments)
 
+        # ── 1b. Replay guard for signed destructive requests ─────
+        # When a caller includes X-Timestamp + X-Nonce headers (passed as
+        # _x_timestamp / _x_nonce arguments), validate freshness and uniqueness
+        # for Tier-2+ tools.  Unsigned callers (no headers) pass through; this
+        # gate only activates when the caller opts into signed requests.
+        _x_ts = arguments.pop("_x_timestamp", None)
+        _x_nonce = arguments.pop("_x_nonce", None)
+        if _x_ts and _x_nonce:
+            try:
+                from .tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
+                _tier = get_tool_tier(name)
+                if _tier >= TIER_ORDER_EXEC:
+                    from .security.replay_guard import _GLOBAL_GUARD as _rg
+                    _rg_result = _rg.validate(_x_ts, _x_nonce)
+                    if not _rg_result.get("valid", True):
+                        return _text({
+                            "error_type": "ReplayGuardRejected",
+                            "tool": name,
+                            "reason": _rg_result.get("reason", "unknown"),
+                            "message": "Request rejected by replay guard. Timestamp too old or nonce already seen.",
+                        })
+            except ImportError:
+                pass  # tier module unavailable — skip replay check
+
         # ── 2. Circuit breaker — fail fast if engine is down ─────
         check_circuit(name)
 
@@ -4142,6 +4199,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         category = get_tool_category(name)
         if category:
             await limiter.acquire(category)
+
+        # ── 3b. Per-tool rate limits (destructive tools) ─────────
+        # check_rate_limit() is O(1) for tools not in TOOL_RATE_LIMITS.
+        # Must run AFTER category limiter so both layers enforce sequentially.
+        try:
+            from .security.per_tool_rate_limiter import check_rate_limit as _check_ptrl
+            _ptrl_result = _check_ptrl(name)
+            if not _ptrl_result.get("allowed", True):
+                return _text({
+                    "error_type": "RateLimitError",
+                    "tool": name,
+                    "message": f"Per-tool rate limit exceeded: {_ptrl_result.get('description', '')}",
+                    "calls_in_window": _ptrl_result.get("calls_in_window"),
+                    "limit": _ptrl_result.get("limit"),
+                    "window_seconds": _ptrl_result.get("window_seconds"),
+                    "reset_in_seconds": _ptrl_result.get("reset_in_seconds"),
+                })
+        except ImportError:
+            pass  # security module unavailable — category limiter is still active
 
         # ── 4. Concurrency semaphore — bound parallel calls ──────
         sem = get_tool_semaphore(name)
@@ -4290,8 +4366,52 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 _daily_pnl = 0.0
                 _drawdown_pct = 0.0
                 _consecutive_losses = 0
+
+                # ── Live VIX fetch — VIX > 35 gate REQUIRES a real value ──────
+                # Previously hardcoded to 0.0 which silently disabled the VIX gate.
+                # Now fetch from CBOE via the same logic as get_vix_term_structure.
                 _vix = 0.0
+                try:
+                    import httpx as _httpx_g
+                    async with _httpx_g.AsyncClient(timeout=5.0) as _vc:
+                        _vix_resp = await _vc.get(
+                            "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+                        )
+                    _vix_lines = _vix_resp.text.strip().split("\n")
+                    _vix_last = _vix_lines[-1].split(",")
+                    _vix = float(_vix_last[-1]) if len(_vix_last) > 1 else 0.0
+                except Exception as _vix_err:
+                    # If VIX fetch fails, fall back to env override so the gate
+                    # can still trip when manually set (e.g. CURRENT_VIX=40).
+                    _vix = float(os.getenv("CURRENT_VIX", "0"))
+                    logger.debug("VIX fetch failed (%s), using env fallback: %.2f", _vix_err, _vix)
+
+                # ── Live notional — NotionalValueGuard REQUIRES a real value ──
+                # Previously hardcoded to 0.0, disabling notional size checks.
+                # Compute from price * qty * contract_multiplier.
                 _notional = 0.0
+                _CONTRACT_MULTIPLIERS: dict[str, float] = {
+                    "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0,
+                    "MCL": 100.0, "CL": 1000.0, "MGC": 10.0, "GC": 100.0,
+                }
+                try:
+                    _price_hint = arguments.get("limit_price")
+                    if _price_hint:
+                        _price = float(_price_hint)
+                    else:
+                        # Try live quote; fall back to estimated_notional arg if provided
+                        _q = await conn.get_quote(_symbol)
+                        _price = float(getattr(_q, "last", 0) or getattr(_q, "bid", 0) or 0)
+                    _root = "".join(c for c in _symbol.upper() if c.isalpha())[:3]
+                    _mult = _CONTRACT_MULTIPLIERS.get(_root, 1.0)
+                    _notional = _price * _qty * _mult
+                    if _notional == 0.0:
+                        # Ultimate fallback: caller-supplied estimated_notional
+                        _notional = float(arguments.get("estimated_notional", 0))
+                except Exception as _not_err:
+                    _notional = float(arguments.get("estimated_notional", 0))
+                    logger.debug("Notional compute failed (%s), using arg fallback: %.2f", _not_err, _notional)
+
                 try:
                     _acct = await conn.get_account()
                     _daily_pnl = getattr(_acct, "daily_pnl", 0.0) or 0.0
@@ -5317,8 +5437,29 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(await eng.get_toxicity(symbol=arguments["symbol"], window=arguments.get("window", 50)))
 
     elif name == "detect_regime":
+        # Deprecated: route hmm calls to the V21 quant_alpha HMM engine.
+        # Non-hmm methods fall through to the legacy regime detector.
+        method = arguments.get("method", "hmm")
+        if method == "hmm":
+            logger.warning(
+                "detect_regime(method='hmm') is deprecated — use detect_regime_hmm instead. "
+                "Routing to quant_alpha.regime_hmm."
+            )
+            hmm_cls = _lazy_import(".quant_alpha.regime_hmm", "RegimeHMM")
+            if hmm_cls:
+                _hmm = hmm_cls()
+                regime = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: _hmm.detect(symbol=arguments["symbol"])
+                )
+                return _text({
+                    "symbol": arguments["symbol"],
+                    "regime": regime.regime if hasattr(regime, "regime") else str(regime),
+                    "method": "hmm_v21",
+                    "deprecated": True,
+                    "note": "Use detect_regime_hmm for richer output (probabilities, transitions).",
+                })
         eng = _get_regime_detector()
-        return _text(await eng.detect(symbol=arguments["symbol"], method=arguments.get("method", "hmm")))
+        return _text(await eng.detect(symbol=arguments["symbol"], method=method))
 
     elif name == "get_regime_history":
         eng = _get_regime_detector()
@@ -6361,6 +6502,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
+    elif name == "get_kalshi_orderbook_depth":
+        from .order_flow.kalshi_signed import get_kalshi_orderbook_depth as _kb_depth
+        return _text(_kb_depth(
+            ticker=str(args["ticker"]),
+            depth=int(args.get("depth", 10)),
+        ))
+
+    elif name == "stream_kalshi_fills":
+        from .order_flow.kalshi_signed import get_kalshi_recent_fills as _kb_fills
+        return _text(_kb_fills(
+            ticker=str(args["ticker"]),
+            limit=int(args.get("limit", 50)),
+        ))
+
     elif name == "propagate_trade_signal":
         from .trade_propagation import propagate_signal
         try:
@@ -7252,6 +7407,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(_sb_subs(user_id))
         except Exception as exc:
             return _text({"error": f"Subscriber bots error: {exc}"})
+
+    elif name == "deliver_strategy_to_subscriber":
+        try:
+            from .marketplace.supabase_tools import deliver_strategy_to_subscriber as _deliver
+            return _text(_deliver(
+                subscriber_id=args["subscriber_id"],
+                strategy_id=args["strategy_id"],
+                webhook_url=args.get("webhook_url"),
+                token_ttl_seconds=int(args.get("token_ttl_seconds", 86400)),
+            ))
+        except Exception as exc:
+            return _text({"error": f"deliver_strategy_to_subscriber error: {exc}"})
 
     elif name == "get_all_bot_metrics":
         try:

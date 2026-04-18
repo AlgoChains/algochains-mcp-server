@@ -1,3 +1,12 @@
+<!--
+BLUEPRINT_STATUS: archived
+ARCHIVED_DATE: 2026-04-18
+SUPERSEDED_BY: learning_signals.py (live feedback loop now exists)
+NOTE: This blueprint described a planned learning-signals feedback loop. That loop
+is now implemented in src/algochains_mcp/learning_signals.py. Do not treat this
+document as a current spec.
+-->
+
 # PAI Integration Blueprint — AlgoChains
 **Source:** [danielmiessler/Personal_AI_Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) v4.0.3 (⭐11.2k)
 **Date:** 2026-04-07 | **Author:** AlgoChains AI Audit

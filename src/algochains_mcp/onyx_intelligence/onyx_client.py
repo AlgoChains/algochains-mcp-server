@@ -160,54 +160,68 @@ class OnyxClient:
             payload["document_set_ids"] = [document_set]
 
         try:
-            resp = await self._client.post(
+            import json as _json
+            full_answer = ""
+            citations: list[OnyxSearchResult] = []
+
+            # Use streaming=True with a 30-second read timeout to consume
+            # text/event-stream correctly — one SSE event per "\n\n" boundary.
+            # Previously, resp.text waited for the full response, which could
+            # corrupt partial chunks or silently fail on binary keepalives.
+            async with self._client.stream(
+                "POST",
                 "/api/query/stream-answer",
                 json=payload,
                 headers=self._headers(),
-            )
-            if resp.status_code == 404:
-                # Fall back to direct search
-                results = await self.search(question, limit=5)
-                return OnyxAnswer(
-                    question=question,
-                    answer="\n\n".join(r.content[:500] for r in results[:3]),
-                    citations=results,
-                    sources=[r.source for r in results],
-                )
-            resp.raise_for_status()
+                timeout=httpx.Timeout(30.0, connect=5.0),
+            ) as resp:
+                if resp.status_code == 404:
+                    # Fall back to direct search
+                    results = await self.search(question, limit=5)
+                    return OnyxAnswer(
+                        question=question,
+                        answer="\n\n".join(r.content[:500] for r in results[:3]),
+                        citations=results,
+                        sources=[r.source for r in results],
+                    )
+                resp.raise_for_status()
 
-            # Parse streaming SSE response
-            full_answer = ""
-            citations = []
-            for line in resp.text.splitlines():
-                if not line.strip():
-                    continue
-                if line.startswith("data:"):
-                    try:
-                        import json
-                        chunk = json.loads(line[5:])
-                        if "answer_piece" in chunk:
-                            full_answer += chunk["answer_piece"]
-                        if "documents" in chunk:
-                            for doc in chunk["documents"]:
-                                citations.append(OnyxSearchResult(
-                                    document_id=doc.get("document_id", ""),
-                                    content=doc.get("content", ""),
-                                    source=doc.get("source", {}).get("url", ""),
-                                    score=doc.get("score", 0),
-                                    metadata=doc.get("metadata", {}),
-                                ))
-                    except Exception:
-                        pass
+                # Proper SSE parsing: accumulate across lines, emit on blank line.
+                _pending: list[str] = []
+                async for raw_line in resp.aiter_lines():
+                    if raw_line == "":
+                        # End of one SSE event — process accumulated lines
+                        for _ev_line in _pending:
+                            if _ev_line.startswith("data:"):
+                                _data = _ev_line[5:].strip()
+                                if _data in ("", "[DONE]"):
+                                    continue
+                                try:
+                                    chunk = _json.loads(_data)
+                                    if "answer_piece" in chunk:
+                                        full_answer += chunk["answer_piece"]
+                                    if "documents" in chunk:
+                                        for doc in chunk["documents"]:
+                                            citations.append(OnyxSearchResult(
+                                                document_id=doc.get("document_id", ""),
+                                                content=doc.get("content", ""),
+                                                source=doc.get("source", {}).get("url", ""),
+                                                score=doc.get("score", 0),
+                                                metadata=doc.get("metadata", {}),
+                                            ))
+                                except (_json.JSONDecodeError, ValueError):
+                                    pass
+                        _pending = []
+                    else:
+                        _pending.append(raw_line)
 
             if not full_answer:
-                # Extract from plain JSON response
+                # Fallback: entire response might be plain JSON (non-streaming endpoint)
                 try:
-                    import json
-                    data = json.loads(resp.text)
+                    data = _json.loads(full_answer or "{}")
                     full_answer = data.get("answer", data.get("response", ""))
                 except Exception:
-                    full_answer = resp.text[:1000]
+                    full_answer = full_answer[:1000] if full_answer else ""
 
             return OnyxAnswer(
                 question=question,

@@ -41,7 +41,17 @@ logger = logging.getLogger("algochains_mcp.brokers.oauth")
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+# Prefer the canonical name used by all other services; fall back to legacy
+# SUPABASE_SERVICE_KEY so existing deployments keep working.
+SUPABASE_SERVICE_KEY = (
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    or os.getenv("SUPABASE_SERVICE_KEY", "")
+)
+if not SUPABASE_SERVICE_KEY and os.getenv("SUPABASE_SERVICE_KEY"):
+    logger.warning(
+        "oauth_manager: SUPABASE_SERVICE_KEY is set but SUPABASE_SERVICE_ROLE_KEY is not. "
+        "Please rename to SUPABASE_SERVICE_ROLE_KEY to match the rest of the stack."
+    )
 _STATE_DIR = Path(os.getenv("ALGOCHAINS_STATE_DIR", "state"))
 _OAUTH_TOKENS_FILE = _STATE_DIR / "oauth_tokens.json"
 _OAUTH_STATES_FILE = _STATE_DIR / "oauth_states.json"

@@ -76,6 +76,21 @@ def _get_stripe():
     return stripe_lib
 
 
+_SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+_SUPABASE_SERVICE_KEY = (
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_SERVICE_KEY", "")
+)
+_BILLING_TABLE = "billing_accounts"
+
+
+def _supabase_headers() -> dict[str, str]:
+    return {
+        "apikey": _SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {_SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
 class BillingEngine:
     """
     Real Stripe Connect billing engine for AlgoChains marketplace.
@@ -86,8 +101,59 @@ class BillingEngine:
 
     def __init__(self) -> None:
         # In-memory index for quick creator_id → stripe_account_id lookup
-        # Primary source of truth is always Stripe
+        # Primary source of truth is Supabase billing_accounts table.
+        # This dict is seeded at startup and written through on every change.
         self._creator_accounts: dict[str, str] = {}  # creator_id → stripe_account_id
+        # Seed from Supabase on startup (best-effort, non-blocking)
+        import asyncio as _asyncio
+        try:
+            loop = _asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self._load_accounts())
+            else:
+                loop.run_until_complete(self._load_accounts())
+        except Exception as _e:
+            logger.warning("billing_engine: could not seed creator accounts from Supabase: %s", _e)
+
+    async def _load_accounts(self) -> None:
+        """Seed _creator_accounts from Supabase billing_accounts table."""
+        if not _SUPABASE_URL or not _SUPABASE_SERVICE_KEY:
+            logger.debug("billing_engine: Supabase not configured — creator accounts are in-memory only")
+            return
+        try:
+            import httpx as _httpx
+            url = f"{_SUPABASE_URL}/rest/v1/{_BILLING_TABLE}?select=creator_id,stripe_account_id"
+            async with _httpx.AsyncClient(timeout=5.0) as c:
+                resp = await c.get(url, headers=_supabase_headers())
+            if resp.status_code == 200:
+                for row in resp.json():
+                    self._creator_accounts[row["creator_id"]] = row["stripe_account_id"]
+                logger.info("billing_engine: loaded %d creator accounts from Supabase", len(self._creator_accounts))
+            else:
+                logger.warning("billing_engine: Supabase seed returned %s", resp.status_code)
+        except Exception as _e:
+            logger.warning("billing_engine: Supabase seed error: %s", _e)
+
+    async def _persist_account(self, creator_id: str, stripe_account_id: str, creator_email: str) -> None:
+        """Upsert a creator account entry to Supabase for durability across restarts."""
+        if not _SUPABASE_URL or not _SUPABASE_SERVICE_KEY:
+            return
+        try:
+            import httpx as _httpx
+            url = f"{_SUPABASE_URL}/rest/v1/{_BILLING_TABLE}"
+            payload = {
+                "creator_id": creator_id,
+                "stripe_account_id": stripe_account_id,
+                "creator_email": creator_email,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            headers = {**_supabase_headers(), "Prefer": "resolution=merge-duplicates"}
+            async with _httpx.AsyncClient(timeout=5.0) as c:
+                resp = await c.post(url, headers=headers, json=payload)
+            if resp.status_code not in (200, 201):
+                logger.warning("billing_engine: Supabase upsert returned %s", resp.status_code)
+        except Exception as _e:
+            logger.warning("billing_engine: Supabase persist error: %s", _e)
 
     async def create_stripe_connect_account(
         self,
@@ -129,6 +195,7 @@ class BillingEngine:
         )
 
         self._creator_accounts[creator_id] = account_id
+        await self._persist_account(creator_id, account_id, creator_email)
         logger.info("Stripe Connect account created: creator=%s account=%s", creator_id, account_id)
 
         return StripeAccount(

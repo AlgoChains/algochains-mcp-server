@@ -230,3 +230,158 @@ def get_subscriber_bots(user_id: str) -> dict[str, Any]:
     except Exception as exc:
         log.error("get_subscriber_bots failed: %s", exc)
         return {"error": str(exc), "subscriptions": [], "source": "supabase_error"}
+
+
+def deliver_strategy_to_subscriber(
+    subscriber_id: str,
+    strategy_id: str,
+    webhook_url: str | None = None,
+    token_ttl_seconds: int = 86400,
+) -> dict[str, Any]:
+    """
+    Deliver an approved marketplace strategy config to a subscriber's bot endpoint.
+
+    Flow:
+      1. Read approved listing from Supabase marketplace_listing (service_role).
+      2. Build a time-limited, HMAC-signed config token containing strategy params.
+      3. POST the signed payload to the subscriber's webhook URL.
+      4. Log the delivery event to Supabase marketplace_deliveries table.
+
+    Args:
+        subscriber_id: Subscriber's Supabase user ID (auth.uid())
+        strategy_id:   Supabase marketplace_listing.id to deliver
+        webhook_url:   Override subscriber's webhook URL from subscription record
+        token_ttl_seconds: Config token lifetime in seconds (default 24h)
+
+    Returns delivery receipt with signed token and webhook response status.
+    """
+    import hashlib
+    import hmac as _hmac
+    import json as _json
+    import time as _time
+    import uuid as _uuid
+
+    sb = _get_sb_client(use_service_role=True)
+    if sb is None:
+        return {"error": "Supabase service_role client not available — check SUPABASE_SERVICE_ROLE_KEY"}
+
+    _signal_secret = os.getenv("ALGOCHAINS_SIGNAL_SECRET", "")
+    if not _signal_secret:
+        return {"error": "ALGOCHAINS_SIGNAL_SECRET not set — cannot sign delivery token"}
+
+    # ── Step 1: Load approved listing ──────────────────────────────────────────
+    try:
+        listing_resp = (
+            sb.table("marketplace_listing")
+            .select("*")
+            .eq("id", strategy_id)
+            .in_("status", ["approved", "validated", "live"])
+            .limit(1)
+            .execute()
+        )
+        rows = listing_resp.data or []
+        if not rows:
+            return {
+                "error": f"Strategy {strategy_id!r} not found or not in approved/validated/live status"
+            }
+        listing = rows[0]
+    except Exception as exc:
+        return {"error": f"Failed to fetch listing: {exc}"}
+
+    # ── Step 2: Build time-limited config token ────────────────────────────────
+    delivery_id = _uuid.uuid4().hex[:16]
+    issued_at = int(_time.time())
+    expires_at = issued_at + token_ttl_seconds
+
+    config_payload = {
+        "delivery_id": delivery_id,
+        "subscriber_id": subscriber_id,
+        "strategy_id": strategy_id,
+        "strategy_title": listing.get("strategy_title", ""),
+        "asset_class": listing.get("asset_class", ""),
+        "config": listing.get("config", {}),
+        "issued_at": issued_at,
+        "expires_at": expires_at,
+    }
+    payload_str = _json.dumps(config_payload, sort_keys=True)
+
+    # HMAC-SHA256 signature for webhook verification
+    signature = _hmac.new(
+        _signal_secret.encode(),
+        payload_str.encode(),
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+
+    signed_token = {
+        "payload": config_payload,
+        "signature": f"hmac-sha256={signature}",
+        "token_version": "1",
+    }
+
+    # ── Step 3: Resolve webhook URL ────────────────────────────────────────────
+    target_url = webhook_url
+    if not target_url:
+        try:
+            sub_resp = (
+                sb.table("algochains_subscriptions")
+                .select("webhook_url")
+                .eq("subscriber_id", subscriber_id)
+                .eq("strategy_id", strategy_id)
+                .limit(1)
+                .execute()
+            )
+            sub_rows = sub_resp.data or []
+            if sub_rows:
+                target_url = sub_rows[0].get("webhook_url")
+        except Exception:
+            pass
+
+    webhook_status: str
+    webhook_code: int | None = None
+
+    if target_url:
+        try:
+            import httpx as _httpx
+            resp = _httpx.post(
+                target_url,
+                json=signed_token,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-AlgoChains-Signature": f"hmac-sha256={signature}",
+                    "X-AlgoChains-Delivery-ID": delivery_id,
+                },
+                timeout=10.0,
+            )
+            webhook_code = resp.status_code
+            webhook_status = "delivered" if resp.status_code < 300 else f"failed_{resp.status_code}"
+        except Exception as _wh_exc:
+            webhook_status = f"error: {_wh_exc}"
+    else:
+        webhook_status = "no_webhook_url"
+
+    # ── Step 4: Log delivery to Supabase ──────────────────────────────────────
+    try:
+        sb.table("marketplace_deliveries").upsert({
+            "delivery_id": delivery_id,
+            "subscriber_id": subscriber_id,
+            "strategy_id": strategy_id,
+            "webhook_url": target_url or "",
+            "webhook_status": webhook_status,
+            "webhook_http_code": webhook_code,
+            "delivered_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(issued_at)),
+            "expires_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime(expires_at)),
+        }).execute()
+    except Exception as _log_exc:
+        log.warning("deliver_strategy: could not log delivery to Supabase: %s", _log_exc)
+
+    return {
+        "status": webhook_status,
+        "delivery_id": delivery_id,
+        "subscriber_id": subscriber_id,
+        "strategy_id": strategy_id,
+        "strategy_title": listing.get("strategy_title"),
+        "webhook_url": target_url,
+        "webhook_http_code": webhook_code,
+        "token_expires_at": expires_at,
+        "signed_token": signed_token,
+    }

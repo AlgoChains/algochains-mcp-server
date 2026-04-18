@@ -1,3 +1,8 @@
+<!--
+BLUEPRINT_STATUS: active
+LAST_REVIEWED: 2026-04-18
+-->
+
 # AlgoChains MCP Server — Upgrade Blueprint V22
 **Date:** 2026-04-06 | **Trigger:** Gemini Architecture Review
 **Status:** ACTIVE IMPLEMENTATION

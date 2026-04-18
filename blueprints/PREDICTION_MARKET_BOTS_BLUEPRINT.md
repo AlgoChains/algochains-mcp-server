@@ -1,3 +1,9 @@
+<!--
+BLUEPRINT_STATUS: active
+LAST_REVIEWED: 2026-04-18
+NOTE: Kalshi CLOB implementation tracked as P4-17 in docs/MCP_SERVER_ENHANCEMENT_ROADMAP.md.
+-->
+
 # Blueprint — Subscribable Polymarket & Kalshi Bots on AlgoChains
 
 **Version:** 2026-04-08  

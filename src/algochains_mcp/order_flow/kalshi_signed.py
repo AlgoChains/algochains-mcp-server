@@ -132,6 +132,102 @@ def kalshi_signed_get(
         return 0, str(exc)
 
 
+def get_kalshi_orderbook_depth(
+    ticker: str,
+    depth: int = 10,
+) -> dict[str, Any]:
+    """
+    Fetch the CLOB order book depth for a Kalshi market ticker.
+
+    Returns bid/ask ladder with yes/no prices, sizes, and spread metrics.
+    Wires to the Kalshi v2 ``/trade-api/v2/markets/{ticker}/orderbook`` endpoint.
+
+    Args:
+        ticker: Kalshi market ticker (e.g. "INXD-23DEC29-T3990")
+        depth:  Number of price levels to return per side (max 10)
+
+    Returns dict with bids, asks, spread, and market metadata.
+    """
+    code, data = kalshi_signed_get(f"/trade-api/v2/markets/{ticker}/orderbook", {"depth": str(min(depth, 10))})
+    if code == 0:
+        return {"error": data, "ticker": ticker}
+    if code == 404:
+        return {"error": f"Market ticker '{ticker}' not found on Kalshi", "http_status": code}
+    if not isinstance(data, dict):
+        return {"error": f"Unexpected Kalshi response: {str(data)[:500]}", "http_status": code}
+
+    ob = data.get("orderbook", data)
+    yes_bids = ob.get("yes", [])  # [[price, size], ...]
+    no_bids = ob.get("no", [])
+
+    best_bid = yes_bids[0][0] / 100 if yes_bids else None  # Kalshi prices in cents → decimal
+    best_ask = (1.0 - no_bids[0][0] / 100) if no_bids else None
+    spread = round(best_ask - best_bid, 4) if (best_bid is not None and best_ask is not None) else None
+
+    return {
+        "ticker": ticker,
+        "http_status": code,
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread": spread,
+        "yes_bids": [{"price": p / 100, "size": s} for p, s in yes_bids[:depth]],
+        "no_bids": [{"price": p / 100, "size": s} for p, s in no_bids[:depth]],
+        "depth_requested": depth,
+        "source": "kalshi_clob_v2",
+        "fetched_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+    }
+
+
+def get_kalshi_recent_fills(
+    ticker: str,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """
+    Fetch recent fills (trade history) for a Kalshi market ticker.
+
+    Maps to ``/trade-api/v2/markets/{ticker}/trades`` — public endpoint (no auth
+    needed for public markets, but auth is used if configured for private markets).
+
+    Args:
+        ticker: Kalshi market ticker
+        limit:  Max fills to return (max 100)
+
+    Returns list of fills with side, price, size, and timestamp.
+    Connects to alert_engine.py pattern via returned dict structure.
+    """
+    code, data = kalshi_signed_get(
+        f"/trade-api/v2/markets/{ticker}/trades",
+        {"limit": str(min(limit, 100))},
+    )
+    if code == 0:
+        return {"error": data, "ticker": ticker}
+    if code == 404:
+        return {"error": f"Market ticker '{ticker}' not found on Kalshi", "http_status": code}
+    if not isinstance(data, dict):
+        return {"error": f"Unexpected Kalshi response: {str(data)[:500]}", "http_status": code}
+
+    trades = data.get("trades", [])
+    fills = []
+    for t in trades[:limit]:
+        fills.append({
+            "trade_id": t.get("trade_id", t.get("id", "")),
+            "ticker": ticker,
+            "side": t.get("taker_side", t.get("side", "")),
+            "yes_price": t.get("yes_price", t.get("price", 0)) / 100,
+            "count": t.get("count", t.get("size", 0)),
+            "created_time": t.get("created_time", t.get("timestamp", "")),
+        })
+
+    return {
+        "ticker": ticker,
+        "http_status": code,
+        "fills": fills,
+        "total": len(fills),
+        "source": "kalshi_trades_v2",
+        "fetched_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",
+    }
+
+
 def kalshi_signed_post(
     path_with_leading_slash: str,
     body: dict[str, Any] | None = None,

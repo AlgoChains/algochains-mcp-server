@@ -38,6 +38,60 @@ from typing import Any
 
 logger = logging.getLogger("algochains_mcp.paper_trading_graduation")
 
+
+async def _trigger_evolution(
+    strategy_name: str,
+    submission_id: str,
+    graduation_summary: dict[str, Any],
+) -> None:
+    """Emit a post-graduation trigger to the evolution daemon.
+
+    This closes the AutoML loop: after a strategy graduates paper trading and
+    is submitted for marketplace review, the evolution daemon is notified so it
+    can schedule parameter search on the next cycle.
+
+    The trigger is fire-and-forget (logged to learning_signals.jsonl).
+    It does NOT start the daemon — the daemon must already be running
+    (ALGOCHAINS_EVOLUTION_MODE=enabled).
+    """
+    try:
+        from algochains_mcp.evolution.evolution_daemon import get_evolution_daemon
+        daemon = get_evolution_daemon()
+        # Record the graduation event in daemon's evolved_strategies list
+        daemon._evolved_strategies.append({
+            "strategy_name": strategy_name,
+            "submission_id": submission_id,
+            "graduation_summary": graduation_summary,
+            "triggered_at": datetime.now(tz=timezone.utc).isoformat(),
+            "trigger_source": "paper_trading_graduation",
+        })
+        logger.info(
+            "Evolution trigger queued for strategy '%s' (submission=%s). "
+            "Daemon will pick up on next cycle.",
+            strategy_name, submission_id,
+        )
+    except Exception as _daemon_err:
+        logger.debug("Evolution daemon not available: %s", _daemon_err)
+        # Not a hard error — daemon may not be running
+
+    # Also log to learning_signals for audit trail
+    try:
+        from algochains_mcp.learning_signals import capture_learning_signal
+        capture_learning_signal(
+            action_type="mcpt_validation",
+            action_description=f"Paper trading graduated: {strategy_name}",
+            outcome="success",
+            notes=f"submission_id={submission_id}; evolution trigger emitted",
+            skill_used="paper_trading_graduation",
+            extra={
+                "strategy_name": strategy_name,
+                "submission_id": submission_id,
+                "graduation_summary": graduation_summary,
+            },
+        )
+    except Exception as _ls_err:
+        logger.debug("Learning signals log failed: %s", _ls_err)
+
 DJANGO_BASE_URL = os.environ.get("ALGOCHAINS_DJANGO_URL", "https://algochains.ai")
 METRICS_API_KEY = os.environ.get("METRICS_INGEST_API_KEY", "")
 LISTING_API_KEY = os.environ.get("LISTING_API_KEY", "")
@@ -243,7 +297,7 @@ class PaperTradingMonitor:
                 self.strategy_name,
                 data.get("submission_id"),
             )
-            return {
+            result = {
                 "submitted": True,
                 "submission_id": data.get("submission_id"),
                 "status": data.get("status", "pending_review"),
@@ -253,6 +307,21 @@ class PaperTradingMonitor:
                     "Expect review within 3-5 business days. You'll receive a Slack/email notification."
                 ),
             }
+
+            # ── Emit evolution trigger after successful graduation submission ──────
+            # Closes the AutoML loop: graduation → evolution daemon picks up the
+            # graduated strategy and begins parameter/model search on next cycle.
+            # Non-blocking: failure to trigger does NOT affect the submission result.
+            try:
+                await _trigger_evolution(
+                    strategy_name=self.strategy_name,
+                    submission_id=str(data.get("submission_id", "")),
+                    graduation_summary=graduation["summary"],
+                )
+            except Exception as _ev_err:
+                logger.warning("Evolution trigger failed (non-fatal): %s", _ev_err)
+
+            return result
         except Exception as exc:
             return {"submitted": False, "error": str(exc)}
 

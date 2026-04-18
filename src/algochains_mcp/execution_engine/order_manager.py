@@ -1,13 +1,33 @@
-"""Institutional order management with pre-trade checks."""
+"""Institutional order management with pre-trade checks.
+
+SIMULATION MODE (default): submit_order returns synthetic in-memory UUIDs and
+does NOT route to any broker.  Set ``ALGOCHAINS_EXECUTION_ENGINE=live`` to
+signal that a real broker backend is configured (execution then flows through
+the broker connector, NOT through this manager's in-memory store).
+
+Agents MUST check ``result["status"]`` — ``"simulation"`` means no real order
+was placed.
+"""
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+_EXEC_LIVE = os.getenv("ALGOCHAINS_EXECUTION_ENGINE", "").lower() == "live"
+_SIM_BANNER = (
+    "SIMULATION — ALGOCHAINS_EXECUTION_ENGINE is not 'live'. "
+    "Order was recorded in-memory only. No broker API was called."
+)
+
 
 class InstitutionalOrderManager:
-    """Validates and manages institutional-grade orders."""
+    """Validates and manages institutional-grade orders.
+
+    All ``submit_order`` responses include ``"status": "simulation"`` until
+    ``ALGOCHAINS_EXECUTION_ENGINE=live`` is set.
+    """
 
     def __init__(self) -> None:
         self._orders: dict[str, dict] = {}
@@ -43,7 +63,11 @@ class InstitutionalOrderManager:
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             self._orders[order_id] = record
-            return {"status": "ok", "order": record}
+            status = "ok" if _EXEC_LIVE else "simulation"
+            result: dict = {"status": status, "order": record}
+            if not _EXEC_LIVE:
+                result["simulation_warning"] = _SIM_BANNER
+            return result
         except Exception as e:
             return {"status": "error", "error": str(e)}
 

@@ -3,14 +3,18 @@ Agent Memory Bridge — AlgoChains MCP Server
 Provides read/write access to OpenClaw memory, regime state, heartbeat, and
 agent evaluations via MCP tools.
 
-Real data only: reads actual JSON files from ~/.openclaw/.
-Fails closed if the OpenClaw directory is unavailable.
+Primary backend: ~/.openclaw/ JSON files (single-machine dev and desktop).
+Fallback backend: Supabase `agent_memory` table — used automatically when the
+~/.openclaw directory is absent (fresh Docker deploy, cloud worker, CI).
+
+Fail-closed only on *complete* loss of both backends.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +23,79 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _OPENCLAW_ROOT = Path.home() / ".openclaw"
+_OPENCLAW_PRESENT = _OPENCLAW_ROOT.exists()
+
+_SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+_SUPABASE_KEY = (
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    or os.getenv("SUPABASE_SERVICE_KEY", "")
+    or os.getenv("SUPABASE_ANON_KEY", "")
+)
+_AGENT_MEMORY_TABLE = "agent_memory"
+
+
+if not _OPENCLAW_PRESENT:
+    if _SUPABASE_URL and _SUPABASE_KEY:
+        logger.info(
+            "agent_memory: ~/.openclaw not found — using Supabase fallback (%s)",
+            _SUPABASE_URL,
+        )
+    else:
+        logger.warning(
+            "agent_memory: ~/.openclaw not found AND Supabase not configured. "
+            "All memory reads will return empty. "
+            "Set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY to enable cloud fallback."
+        )
+
+
+def _sb_get(key: str) -> Any:
+    """Read a single key from Supabase agent_memory table (sync via asyncio.run)."""
+    if not _SUPABASE_URL or not _SUPABASE_KEY:
+        return None
+    try:
+        import httpx as _httpx
+        url = f"{_SUPABASE_URL}/rest/v1/{_AGENT_MEMORY_TABLE}?key=eq.{key}&select=value&limit=1"
+        headers = {
+            "apikey": _SUPABASE_KEY,
+            "Authorization": f"Bearer {_SUPABASE_KEY}",
+        }
+        resp = _httpx.get(url, headers=headers, timeout=5.0)
+        if resp.status_code == 200:
+            rows = resp.json()
+            if rows:
+                raw = rows[0].get("value")
+                try:
+                    return json.loads(raw) if isinstance(raw, str) else raw
+                except Exception:
+                    return raw
+    except Exception as _e:
+        logger.debug("agent_memory Supabase get(%s) failed: %s", key, _e)
+    return None
+
+
+def _sb_set(key: str, value: Any) -> bool:
+    """Upsert a key into Supabase agent_memory table."""
+    if not _SUPABASE_URL or not _SUPABASE_KEY:
+        return False
+    try:
+        import httpx as _httpx
+        url = f"{_SUPABASE_URL}/rest/v1/{_AGENT_MEMORY_TABLE}"
+        headers = {
+            "apikey": _SUPABASE_KEY,
+            "Authorization": f"Bearer {_SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates",
+        }
+        payload = {
+            "key": key,
+            "value": json.dumps(value, default=str),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        resp = _httpx.post(url, headers=headers, json=payload, timeout=5.0)
+        return resp.status_code in (200, 201)
+    except Exception as _e:
+        logger.debug("agent_memory Supabase set(%s) failed: %s", key, _e)
+    return False
 
 # Key state files
 _STATE_FILES = {
@@ -37,12 +114,18 @@ _STATE_FILES = {
 
 
 def _read_json(path: Path, default: Any = None) -> Any:
-    """Read a JSON file, return default on any error."""
+    """Read a JSON file; fall back to Supabase agent_memory when the file is missing."""
     try:
         text = path.read_text(encoding="utf-8")
         return json.loads(text)
     except FileNotFoundError:
-        logger.debug(f"OpenClaw state file not found: {path}")
+        # Local file missing — try Supabase fallback keyed by the filename stem
+        _sb_key = path.stem
+        _sb_val = _sb_get(_sb_key)
+        if _sb_val is not None:
+            logger.debug("agent_memory: local file missing, served %s from Supabase", _sb_key)
+            return _sb_val
+        logger.debug("OpenClaw state file not found and Supabase returned nothing: %s", path)
         return default
     except json.JSONDecodeError as e:
         logger.warning(f"JSON parse error in {path}: {e}")
@@ -53,7 +136,7 @@ def _read_json(path: Path, default: Any = None) -> Any:
 
 
 def _write_json(path: Path, data: Any) -> bool:
-    """Write JSON to path, return True on success."""
+    """Write JSON to path; mirror to Supabase when local write fails (OpenClaw absent)."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -61,6 +144,10 @@ def _write_json(path: Path, data: Any) -> bool:
         return True
     except Exception as e:
         logger.error(f"Could not write {path}: {e}")
+        # Attempt Supabase mirror as fallback
+        if _sb_set(path.stem, data):
+            logger.info("agent_memory: local write failed, mirrored %s to Supabase", path.stem)
+            return True
         return False
 
 

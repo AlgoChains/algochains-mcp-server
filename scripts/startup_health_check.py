@@ -329,6 +329,38 @@ class HealthChecker:
             print(f"  {_warn(f'Could not load strategy templates: {exc}')}")
             self._add("strategy_templates", passed=False, critical=False, message=str(exc))
 
+    # ── 8. Broker credential probe ────────────────────────────────────────────
+    def check_broker_credentials(self) -> None:
+        """Surface missing broker env vars so agents get clear errors, not silent broker failures."""
+        print(f"\n{BOLD}── Broker Credentials ──{RESET}")
+        try:
+            from algochains_mcp.byok.provider_registry import PROVIDER_REGISTRY, ProviderCategory
+            broker_providers = {
+                k: v for k, v in PROVIDER_REGISTRY.items()
+                if ProviderCategory.EXECUTION in v.categories
+            }
+            all_present = True
+            for broker_name, meta in broker_providers.items():
+                missing = [v for v in meta.env_vars if not os.environ.get(v)]
+                present = [v for v in meta.env_vars if os.environ.get(v)]
+                if not meta.env_vars:
+                    continue
+                if present:
+                    print(f"  {_ok(f'{meta.display_name}: {len(present)}/{len(meta.env_vars)} vars set')}")
+                else:
+                    print(f"  {_warn(f'{meta.display_name}: no credentials set — missing {missing}')}")
+                    all_present = False
+            self._add(
+                "broker_credentials",
+                passed=all_present,
+                critical=False,
+                message="At least one broker has credentials set" if all_present else
+                        "Some brokers have no credentials (tools will return errors on use)",
+            )
+        except Exception as exc:
+            print(f"  {_warn(f'Could not check broker registry: {exc}')}")
+            self._add("broker_credentials", passed=False, critical=False, message=str(exc))
+
     # ── Summary ───────────────────────────────────────────────────────────────
     def print_summary(self) -> bool:
         print(f"\n{BOLD}{'='*60}{RESET}")
@@ -376,6 +408,7 @@ class HealthChecker:
         self.check_http_transport()
         self.check_strategy_templates()
         self.check_marketplace_keys_strict()
+        self.check_broker_credentials()
 
         return self.print_summary()
 

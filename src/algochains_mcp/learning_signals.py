@@ -10,19 +10,91 @@ After 30+ days of signals, patterns emerge:
   - Which agent actions fail most often?
   - Where should we invest improvement effort?
 
-Storage: append-only JSONL file (state/learning_signals.jsonl)
-No signal is ever deleted — the log is immutable for audit purposes.
+Storage: rolling append-only JSONL (state/learning_signals.jsonl).
+Retention: signals older than LEARNING_SIGNALS_RETENTION_DAYS (default 90) are
+  trimmed on each write to keep the file bounded.
+PII/credential masking: fields matching the redaction pattern set from
+  middleware.py are replaced with "***REDACTED***" before writing.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# ── PII / credential redaction ──────────────────────────────────────────────
+# Same patterns as middleware.py credential_vault — applied to every field
+# whose string value matches before writing to disk.
+_REDACT_PATTERNS: list[re.Pattern] = [
+    re.compile(p, re.IGNORECASE) for p in [
+        r"sk-[a-zA-Z0-9]{20,}",            # OpenAI / Anthropic sk-...
+        r"xoxb-[a-zA-Z0-9\-]+",            # Slack bot token
+        r"xapp-[a-zA-Z0-9\-]+",            # Slack app token
+        r"ghp_[a-zA-Z0-9]{36}",            # GitHub PAT
+        r"eyJ[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+",  # JWT
+        r"(?i)(password|secret|api_key|apikey|token|credential)\s*[:=]\s*\S+",
+    ]
+]
+
+
+def _mask_pii(value: str) -> str:
+    for pat in _REDACT_PATTERNS:
+        value = pat.sub("***REDACTED***", value)
+    return value
+
+
+def _sanitize_signal(signal: dict[str, Any]) -> dict[str, Any]:
+    """Recursively redact PII/credential values from the signal dict."""
+    out: dict[str, Any] = {}
+    for k, v in signal.items():
+        if isinstance(v, str):
+            out[k] = _mask_pii(v)
+        elif isinstance(v, dict):
+            out[k] = _sanitize_signal(v)
+        else:
+            out[k] = v
+    return out
+
+
+# ── Retention ────────────────────────────────────────────────────────────────
+_RETENTION_DAYS = int(os.getenv("LEARNING_SIGNALS_RETENTION_DAYS", "90"))
+
+
+def _trim_old_signals(path: Path) -> None:
+    """Remove signals older than _RETENTION_DAYS from the JSONL file (in-place rewrite)."""
+    if not path.exists():
+        return
+    cutoff = time.time() - _RETENTION_DAYS * 86400
+    try:
+        lines = path.read_text(encoding="utf-8").strip().split("\n")
+        kept = []
+        removed = 0
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                sig = json.loads(line)
+                if sig.get("unix_ts", time.time()) >= cutoff:
+                    kept.append(line)
+                else:
+                    removed += 1
+            except Exception:
+                kept.append(line)  # keep unparseable lines
+        if removed > 0:
+            path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+            logging.getLogger("algochains_mcp.learning_signals").info(
+                "learning_signals: trimmed %d signals older than %d days", removed, _RETENTION_DAYS
+            )
+    except Exception as _e:
+        logging.getLogger("algochains_mcp.learning_signals").warning(
+            "learning_signals: trim failed: %s", _e
+        )
 
 logger = logging.getLogger("algochains_mcp.learning_signals")
 
@@ -102,8 +174,15 @@ def capture_learning_signal(
     if extra and isinstance(extra, dict):
         signal["extra"] = extra
 
+    # Redact PII/credentials before persisting
+    signal = _sanitize_signal(signal)
+
     try:
         _SIGNALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Trim on every 100th write to keep file bounded without per-write overhead.
+        # The modulo on the signal_id hex prefix is a lightweight probabilistic gate.
+        if int(signal_id[:2], 16) < 3:  # ~1/85 ≈ every ~100 writes on average
+            _trim_old_signals(_SIGNALS_FILE)
         with _SIGNALS_FILE.open("a", encoding="utf-8") as f:
             f.write(json.dumps(signal) + "\n")
     except Exception as exc:

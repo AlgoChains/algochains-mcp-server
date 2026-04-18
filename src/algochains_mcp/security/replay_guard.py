@@ -150,3 +150,7 @@ def verify_hmac_signature(
 
 # Singleton for module-level use
 _GLOBAL_GUARD = ReplayGuard()
+
+# Alias for backward-compat with algoclaw/cli.py security posture check.
+# The actual nonce store lives inside _GLOBAL_GUARD._seen_nonces.
+_NONCE_STORE = _GLOBAL_GUARD._seen_nonces
