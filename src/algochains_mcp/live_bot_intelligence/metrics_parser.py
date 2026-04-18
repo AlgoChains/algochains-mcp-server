@@ -26,8 +26,9 @@ CONTROL_TOWER = next((p for p in _POSSIBLE_ROOTS if p.exists()), _POSSIBLE_ROOTS
 BOT_LOG_PATHS: dict[str, Path] = {
     "mnq": CONTROL_TOWER / "logs" / "futures_bot_live.log",
     "cl":  CONTROL_TOWER / "logs" / "cl_futures_live.log",
-    "mes": CONTROL_TOWER / "logs" / "mes_swing.log",
-    "nq":  CONTROL_TOWER / "logs" / "nq_swing.log",
+    # mes_swing.log and nq_swing.log are stale backup files — use the live paths
+    "mes": CONTROL_TOWER / "logs" / "mes_swing_live.log",
+    "nq":  CONTROL_TOWER / "logs" / "nq_swing_live.log",
 }
 
 BOT_META: dict[str, dict] = {
