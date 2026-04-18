@@ -101,8 +101,57 @@ class TradovateConnector(BrokerConnector):
         }
 
     async def connect(self) -> bool:
-        """Authenticate via OAuth2 and get account info."""
-        if not self.cfg.cid or not self.cfg.secret:
+        """Authenticate via OAuth2 and get account info.
+
+        Auth priority:
+          1. Pre-existing TRADOVATE_ACCESS_TOKEN (written by token guardian, shared
+             with the live bots). Validated by calling /account/list. If valid, skips
+             re-auth entirely — avoids a second OAuth round-trip that would fail when
+             the guardian token is the only available credential.
+          2. Full username+password OAuth (TRADOVATE_USERNAME / TRADOVATE_PASSWORD /
+             TRADOVATE_OAUTH_CLIENT_ID / TRADOVATE_OAUTH_CLIENT_SECRET).
+          3. Legacy CID+secret fallback (original MCP auth format — kept for backwards
+             compatibility but will fail for Google-SSO accounts).
+        """
+        # ── Priority 1: use pre-existing access token ────────────────────────
+        pretoken = self.cfg.access_token
+        if pretoken:
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    r = await client.get(
+                        f"{self.cfg.base_url}/v1/account/list",
+                        headers={"Authorization": f"Bearer {pretoken}"},
+                    )
+                if r.status_code == 200:
+                    accounts = r.json()
+                    self._access_token = pretoken
+                    self._token_expires_at = time.time() + 3600
+                    if accounts and isinstance(accounts, list):
+                        self._account_id = accounts[0].get("id", 0)
+                        self._account_spec = accounts[0].get("name", "")
+                    self._connected = True
+                    logger.info(
+                        "Tradovate connected via pre-existing token: account=%s env=%s",
+                        self._account_spec, self.cfg.env,
+                    )
+                    return True
+                else:
+                    logger.debug(
+                        "Pre-existing token rejected (%s) — falling back to OAuth",
+                        r.status_code,
+                    )
+            except Exception as _pre_err:
+                logger.debug("Pre-existing token check failed (%s) — trying OAuth", _pre_err)
+
+        # ── Priority 2: username + password OAuth ────────────────────────────
+        username = self.cfg.username
+        password = self.cfg.password
+        if not username or not password:
+            # Legacy: treat CID as username, secret as password
+            username = self.cfg.cid
+            password = self.cfg.secret
+
+        if not username or not password:
             logger.warning("Tradovate credentials not configured")
             return False
 
@@ -111,23 +160,29 @@ class TradovateConnector(BrokerConnector):
                 resp = await client.post(
                     f"{self.cfg.base_url}/v1/auth/accesstokenrequest",
                     json={
-                        "name": self.cfg.cid,
-                        "password": self.cfg.secret,
+                        "name": username,
+                        "password": password,
                         "appId": "AlgoChains",
                         "appVersion": "2.0",
-                        "cid": 0,
-                        "sec": "",
+                        "cid": int(self.cfg.oauth_cid) if self.cfg.oauth_cid.isdigit() else 0,
+                        "sec": self.cfg.oauth_sec or "",
                     },
                 )
                 if resp.status_code == 401:
                     raise BrokerAuthError(
-                        "Tradovate authentication failed — check CID/SECRET",
+                        "Tradovate authentication failed — check USERNAME/PASSWORD",
                         broker="tradovate",
                     )
                 resp.raise_for_status()
                 data = resp.json()
 
             self._access_token = data.get("accessToken", "")
+            if not self._access_token:
+                raise BrokerAuthError(
+                    "Tradovate auth response did not include accessToken — "
+                    "check USERNAME/PASSWORD and OAUTH_CLIENT_ID/SECRET",
+                    broker="tradovate",
+                )
             expires_in = data.get("expirationTime", "")
             if expires_in:
                 try:
@@ -149,7 +204,7 @@ class TradovateConnector(BrokerConnector):
 
             self._connected = True
             logger.info(
-                "Tradovate connected: account=%s env=%s",
+                "Tradovate connected via OAuth: account=%s env=%s",
                 self._account_spec, self.cfg.env,
             )
             return True

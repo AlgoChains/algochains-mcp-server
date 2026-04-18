@@ -56,6 +56,23 @@ class TradovateConfig:
     cid: str = field(default_factory=lambda: _env("TRADOVATE_CID"))
     secret: str = field(default_factory=lambda: _env("TRADOVATE_SECRET"))
     env: str = field(default_factory=lambda: _env("TRADOVATE_ENV", "live"))
+    device_id: str = field(default_factory=lambda: _env("TRADOVATE_DEVICE_ID", ""))
+    # Full-credential auth (used by live bots via tradovate_client.py).
+    # The MCP connector will use these when present — matching the auth format the
+    # broker actually expects: {"name": username, "password": password, "cid": oauth_cid, "sec": oauth_sec}.
+    username: str = field(default_factory=lambda: _env("TRADOVATE_USERNAME", ""))
+    password: str = field(default_factory=lambda: _env("TRADOVATE_PASSWORD", ""))
+    oauth_cid: str = field(default_factory=lambda: _env("TRADOVATE_OAUTH_CLIENT_ID", ""))
+    oauth_sec: str = field(default_factory=lambda: _env("TRADOVATE_OAUTH_CLIENT_SECRET", ""))
+    # Pre-existing access token (written by tradovate_token_guardian.py).
+    # If set and not expired, connector skips re-auth and uses it directly.
+    access_token: str = field(default_factory=lambda: (
+        _env("TRADOVATE_ACCESS_TOKEN", "")
+        .strip("'\"")           # guardian sometimes writes quoted values
+        .replace("Bearer ", "") # strip prefix if present
+        .splitlines()[0]        # first line only (guardian may append timestamp)
+        .strip()
+    ))
 
     @property
     def base_url(self) -> str:

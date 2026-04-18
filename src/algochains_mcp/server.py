@@ -3744,6 +3744,121 @@ TOOLS = [
              "limit": {"type": "integer", "description": "Max fills to return (default 50, max 500)", "default": 50},
          }, "required": []},
          annotations=ANNOT_READ_SAFE),
+
+    # ── Prop Fund Evaluation Pipeline (read-only eval + gated deploy) ───────
+    Tool(name="list_prop_funds",
+         description="List supported prop firms with 2026-verified rules (Apex, Topstep, MyFundedFutures, TradeDay, Bulenox, Earn2Trade, FTMO, Tradeify). Returns fees, profit targets, drawdown type/limits, consistency rules, automation policy, and rules_verified_date.",
+         inputSchema={"type": "object", "properties": {
+             "platform": {"type": "string", "description": "Optional platform filter (tradovate, rithmic, ninjatrader, metatrader)"},
+         }, "required": []},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="evaluate_strategy_for_prop_fund",
+         description="Score a strategy against every supported prop firm (or a specific one) using its live stats. Returns ranked eligible funds with strengths/warnings.",
+         inputSchema={"type": "object", "properties": {
+             "strategy_name": {"type": "string"},
+             "sharpe": {"type": "number"},
+             "win_rate": {"type": "number"},
+             "max_drawdown_pct": {"type": "number"},
+             "avg_trade_pnl_usd": {"type": "number"},
+             "max_position_size": {"type": "integer"},
+             "overnight_positions": {"type": "boolean"},
+             "fund_key": {"type": "string", "description": "Optional — evaluate a single fund key"},
+         }, "required": ["strategy_name"]},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="simulate_prop_fund_evaluation",
+         description="Replay a daily P&L series against a prop firm's drawdown rules and return pass/fail plus the day drawdown would have been violated.",
+         inputSchema={"type": "object", "properties": {
+             "fund_key": {"type": "string"},
+             "daily_pnl": {"type": "array", "items": {"type": "number"}, "description": "List of daily realized P&L values in USD"},
+             "starting_balance": {"type": "number"},
+         }, "required": ["fund_key", "daily_pnl"]},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="get_prop_fund_rules",
+         description="Get full rules dict for a specific prop firm entry by fund_key.",
+         inputSchema={"type": "object", "properties": {
+             "fund_key": {"type": "string"},
+         }, "required": ["fund_key"]},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="register_prop_fund_account",
+         description="Register a live prop firm account for autonomous drawdown monitoring. Stores rules snapshot + live balance tracking.",
+         inputSchema={"type": "object", "properties": {
+             "account_id": {"type": "string"},
+             "fund_name": {"type": "string"},
+             "broker": {"type": "string"},
+             "starting_balance": {"type": "number"},
+             "max_daily_loss_usd": {"type": "number"},
+             "max_trailing_drawdown_usd": {"type": "number"},
+             "profit_target_usd": {"type": "number"},
+         }, "required": ["account_id", "fund_name", "broker", "starting_balance"]},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="get_prop_fund_monitor_status",
+         description="Status of the prop fund drawdown monitor — registered accounts, current balances, distance-to-drawdown, consistency utilization.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="get_prop_fund_broker_options",
+         description="List broker backends supported per prop firm (Tradovate, Rithmic, NinjaTrader, etc.) with credential storage pattern.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="build_prop_fund_inputs",
+         description="Pull REAL Tradovate fills (no synthetic data) for a strategy over lookback_days, FIFO-match to realized trades, and return: daily_pnl series, win_rate, sharpe, avg_trade_pnl, max_drawdown_pct, and trade count. Fails closed if no real fills are found. Use this to feed evaluate_strategy_for_prop_fund and simulate_prop_fund_evaluation with live data.",
+         inputSchema={"type": "object", "properties": {
+             "strategy_name": {"type": "string", "description": "Bot name for tagging, e.g. FUTURES_SCALPER_UPGRADED"},
+             "symbol": {"type": "string", "description": "Root symbol, e.g. MNQ"},
+             "lookback_days": {"type": "integer", "default": 90},
+             "account_id": {"type": "integer", "description": "Tradovate account id (defaults to primary)"},
+             "fills_override": {"type": "array", "description": "Optional pre-pulled fills list for offline analysis"},
+         }, "required": ["strategy_name", "symbol"]},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="onboard_prop_account",
+         description="Stage a new prop firm account for the autopilot. Two-phase: first call returns fee/rules confirmation preview; pass confirm=true to commit. Never pays the evaluation fee — operator does that manually on the firm's website. Writes autopilot state.",
+         inputSchema={"type": "object", "properties": {
+             "fund_key": {"type": "string"},
+             "account_id": {"type": "string"},
+             "broker": {"type": "string", "description": "tradovate, rithmic, ninjatrader"},
+             "starting_balance": {"type": "number"},
+             "credentials_ref": {"type": "string", "description": "Reference key in credential vault"},
+             "confirm": {"type": "boolean", "default": False},
+         }, "required": ["fund_key", "account_id", "broker", "starting_balance"]},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="deploy_bot_in_prop_mode",
+         description="Generate the prop_mode config JSON for a staged account and return the exact env vars (PROP_MODE=true, PROP_MODE_CONFIG=...) the operator must set to launch the bot. Does NOT start the bot — operator runs launch command. Requires confirm=true.",
+         inputSchema={"type": "object", "properties": {
+             "account_id": {"type": "string"},
+             "bot_name": {"type": "string", "default": "FUTURES_SCALPER_UPGRADED"},
+             "symbol": {"type": "string", "default": "MNQ"},
+             "confirm": {"type": "boolean", "default": False},
+         }, "required": ["account_id"]},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="get_prop_mode_status",
+         description="Return autopilot status for all staged/active prop accounts — current phase (onboarded/deployed/evaluating/funded), balance, days traded, distance to profit target, distance to drawdown, consistency utilization.",
+         inputSchema={"type": "object", "properties": {
+             "account_id": {"type": "string", "description": "Optional — filter to one account"},
+         }, "required": []},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="request_prop_payout",
+         description="Check if an account is eligible for a payout given the firm's safety net, first-payout-day, and cap rules. Returns preview only — operator requests payout manually.",
+         inputSchema={"type": "object", "properties": {
+             "account_id": {"type": "string"},
+             "current_balance": {"type": "number"},
+         }, "required": ["account_id", "current_balance"]},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="run_prop_fund_autopilot",
+         description="End-to-end read-only pipeline: build real-data inputs for a strategy, evaluate vs every eligible fund (or a filtered set), simulate drawdown, and return a prioritized recommendation (GO / HOLD / NO-GO) with rules-verified fields. Never commits fees or launches bots.",
+         inputSchema={"type": "object", "properties": {
+             "strategy_name": {"type": "string", "default": "FUTURES_SCALPER_UPGRADED"},
+             "symbol": {"type": "string", "default": "MNQ"},
+             "lookback_days": {"type": "integer", "default": 90},
+             "account_id": {"type": "integer"},
+             "fund_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional filter, e.g. ['apex_50k_eod','mffu_core_50k']"},
+             "fills_override": {"type": "array"},
+         }, "required": []},
+         annotations=ANNOT_READ_SAFE),
+    Tool(name="check_prop_fund_rules_freshness",
+         description="Audit all supported prop fund entries for how recently their rules were verified. Flags any entry older than max_age_days.",
+         inputSchema={"type": "object", "properties": {
+             "max_age_days": {"type": "integer", "default": 30},
+         }, "required": []},
+         annotations=ANNOT_READ_SAFE),
 ]
 
 
@@ -3945,6 +4060,11 @@ TIER1_TOOL_NAMES = {
     "get_learning_signals",
     "send_ntfy_notification",
     "update_algochains_telos",
+    # Prop Fund Evaluation — always Tier 1: operators need these to decide on eval fees
+    "run_prop_fund_autopilot",
+    "list_prop_funds",
+    "evaluate_strategy_for_prop_fund",
+    "get_prop_mode_status",
 }
 
 
@@ -8326,6 +8446,93 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .brokers.credential_vault import get_prop_fund_broker_options
             return _text(get_prop_fund_broker_options())
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "build_prop_fund_inputs":
+        try:
+            from .brokers.prop_fund_data_feeder import build_prop_fund_inputs
+            return _text(build_prop_fund_inputs(
+                strategy_name=str(args["strategy_name"]),
+                symbol=str(args["symbol"]),
+                lookback_days=int(args.get("lookback_days", 90)),
+                account_id=args.get("account_id"),
+                fills_override=args.get("fills_override"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "onboard_prop_account":
+        try:
+            from .brokers.prop_fund_autopilot import onboard_prop_account
+            return _text(onboard_prop_account(
+                fund_key=str(args["fund_key"]),
+                account_id=str(args["account_id"]),
+                broker=str(args["broker"]),
+                starting_balance=float(args["starting_balance"]),
+                credentials_ref=args.get("credentials_ref"),
+                confirm=bool(args.get("confirm", False)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "deploy_bot_in_prop_mode":
+        try:
+            from .brokers.prop_fund_autopilot import deploy_bot_in_prop_mode
+            return _text(deploy_bot_in_prop_mode(
+                account_id=str(args["account_id"]),
+                bot_name=str(args.get("bot_name", "FUTURES_SCALPER_UPGRADED")),
+                symbol=str(args.get("symbol", "MNQ")),
+                confirm=bool(args.get("confirm", False)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_prop_mode_status":
+        try:
+            from .brokers.prop_fund_autopilot import get_prop_mode_status
+            return _text(get_prop_mode_status(account_id=args.get("account_id")))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "request_prop_payout":
+        try:
+            from .brokers.prop_fund_autopilot import request_prop_payout
+            return _text(request_prop_payout(
+                account_id=str(args["account_id"]),
+                current_balance=float(args["current_balance"]),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "run_prop_fund_autopilot":
+        try:
+            from .brokers.prop_fund_autopilot import run_prop_fund_autopilot
+            return _text(run_prop_fund_autopilot(
+                strategy_name=str(args.get("strategy_name", "FUTURES_SCALPER_UPGRADED")),
+                symbol=str(args.get("symbol", "MNQ")),
+                lookback_days=int(args.get("lookback_days", 90)),
+                account_id=args.get("account_id"),
+                fund_keys=args.get("fund_keys"),
+                fills_override=args.get("fills_override"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "check_prop_fund_rules_freshness":
+        try:
+            from .brokers.prop_fund_manager import check_prop_fund_rules_freshness
+            return _text(check_prop_fund_rules_freshness(
+                max_age_days=int(args.get("max_age_days", 30)),
+            ))
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 

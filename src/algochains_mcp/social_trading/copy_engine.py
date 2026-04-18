@@ -210,13 +210,20 @@ class CopyTradingEngine:
         """Fetch positions from Tradovate."""
         try:
             from ..brokers.tradovate import TradovateConnector
-            # Use existing Tradovate session
-            token = os.environ.get("TRADOVATE_TOKEN", "")
-            if not token:
-                raise CopyTradingError("TRADOVATE_TOKEN not set. Run tradovate_token_guardian.py.")
-            connector = TradovateConnector(token=token)
-            positions = await connector.get_positions()
-            return {p["symbol"]: float(p["qty"]) for p in positions}
+            from ..config import TradovateConfig
+            cfg = TradovateConfig()
+            if not cfg.cid or not cfg.secret:
+                raise CopyTradingError(
+                    "TRADOVATE_CID / TRADOVATE_SECRET not set. "
+                    "Ensure the same .env as the live bot is loaded."
+                )
+            connector = TradovateConnector(cfg)
+            await connector.connect()
+            try:
+                positions = await connector.get_positions()
+            finally:
+                await connector.disconnect()
+            return {p.symbol: float(p.qty) for p in positions}
         except Exception as exc:
             raise CopyTradingError(f"Tradovate position fetch failed: {exc}")
 
