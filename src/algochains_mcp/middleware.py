@@ -244,9 +244,18 @@ class ToolCallLogger:
         error: str | None = None,
         duration_ms: float = 0,
     ) -> None:
+        _REDACT_KEYS = {
+            "backtest_code", "secret", "api_key", "api_secret", "password",
+            "token", "access_token", "refresh_token", "private_key",
+            "secret_key", "signing_secret", "hmac_secret",
+        }
+        safe_args = {
+            k: ("***REDACTED***" if k.lower() in _REDACT_KEYS else v)
+            for k, v in arguments.items()
+        }
         entry = {
             "tool": tool,
-            "arguments": {k: v for k, v in arguments.items() if k != "backtest_code"},
+            "arguments": safe_args,
             "success": error is None,
             "duration_ms": round(duration_ms, 1),
             "timestamp": time.time(),

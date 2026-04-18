@@ -83,14 +83,27 @@ def _fifo_match_pnl(fills: list[dict], symbol_root_override: Optional[str] = Non
     lots_by_symbol: dict[str, deque[_OpenLot]] = defaultdict(deque)
     round_trips: list[dict] = []
 
-    # Sort fills chronologically
+    # Sort fills chronologically.
+    # CRITICAL: do NOT fall back to datetime.now() on parse failure — that would
+    # clump all malformed fills at "now" and destroy chronological order, producing
+    # wrong FIFO matches and wrong P&L.  Use epoch-zero instead and filter them out.
+    _EPOCH_ZERO = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
     def _parse_ts(s: str) -> datetime:
         try:
             return datetime.fromisoformat(s.replace("Z", "+00:00"))
         except Exception:
-            return datetime.now(tz=timezone.utc)
+            return _EPOCH_ZERO
 
-    fills_sorted = sorted(fills, key=lambda f: _parse_ts(str(f.get("timestamp", ""))))
+    fills_with_ts = [
+        (f, _parse_ts(str(f.get("timestamp", ""))))
+        for f in fills
+    ]
+    # Drop fills whose timestamp couldn't be parsed (epoch-zero sentinel)
+    fills_sorted = [
+        f for f, ts in sorted(fills_with_ts, key=lambda x: x[1])
+        if ts > _EPOCH_ZERO
+    ]
 
     for f in fills_sorted:
         sym = str(f.get("symbol", "")).strip()

@@ -96,12 +96,22 @@ async def propagate_signal(
             ),
         }
 
-    # Warn loudly when using the public fallback secret — backend should reject it.
+    # FAIL CLOSED when using the public default secret.
+    # The docs claim "fail closed if unset" — this was previously only a warning
+    # which allowed signals to be signed with "1234" and sent to the backend.
+    # A correctly-hardened backend rejects "1234", but we must not rely on that.
     if secret == _ROO_DEFAULT_SECRET.encode():
-        logger.warning(
-            "propagate_signal using default secret '1234' — "
-            "set ALGOCHAINS_SIGNAL_SECRET in .env to suppress this warning"
+        logger.error(
+            "propagate_signal BLOCKED — using public default secret '1234'. "
+            "Set ALGOCHAINS_SIGNAL_SECRET in .env. Signal NOT sent."
         )
+        return {
+            "success": False,
+            "error": (
+                "ALGOCHAINS_SIGNAL_SECRET is unset — propagation blocked. "
+                "Configure the real secret in .env before sending signals."
+            ),
+        }
 
     if not strategy_name or not symbol or not side or qty <= 0:
         return {

@@ -225,6 +225,9 @@ class TradovateConnector(BrokerConnector):
         self._connected = False
         self._access_token = ""
         await self._http.aclose()
+        # Re-instantiate the client so a subsequent connect() doesn't use a
+        # closed httpx.AsyncClient (which would crash on the first request).
+        self._http = httpx.AsyncClient(timeout=self.cfg.timeout)
         logger.info("Tradovate disconnected")
 
     async def _get(self, path: str, params: Optional[dict] = None) -> Any:
@@ -316,15 +319,25 @@ class TradovateConnector(BrokerConnector):
 
     async def get_positions(self) -> list[Position]:
         raw_positions = await self._get("/position/list")
-        positions = []
-        for pos in (raw_positions or []):
-            net_qty = pos.get("netPos", 0)
-            if net_qty == 0:
-                continue
-            contract_id = pos.get("contractId", 0)
-            contract = await self._get(f"/contract/item", {"id": contract_id})
-            symbol = contract.get("name", str(contract_id)) if contract else str(contract_id)
+        open_positions = [p for p in (raw_positions or []) if p.get("netPos", 0) != 0]
+        if not open_positions:
+            return []
 
+        # Batch-resolve contract IDs in parallel — eliminates N+1 HTTP serial calls
+        import asyncio as _asyncio
+        unique_ids = list({p["contractId"] for p in open_positions if p.get("contractId")})
+        contract_tasks = [self._get("/contract/item", {"id": cid}) for cid in unique_ids]
+        contract_results = await _asyncio.gather(*contract_tasks, return_exceptions=True)
+        contract_map = {
+            cid: (res.get("name", str(cid)) if isinstance(res, dict) else str(cid))
+            for cid, res in zip(unique_ids, contract_results)
+        }
+
+        positions = []
+        for pos in open_positions:
+            net_qty = pos.get("netPos", 0)
+            contract_id = pos.get("contractId", 0)
+            symbol = contract_map.get(contract_id, str(contract_id))
             entry = pos.get("netPrice", 0.0)
             pnl = pos.get("openPnL", 0.0)
             positions.append(Position(
@@ -342,8 +355,11 @@ class TradovateConnector(BrokerConnector):
         return positions
 
     async def get_orders(self, status: Optional[str] = None) -> list[Order]:
+        import asyncio as _asyncio
         raw_orders = await self._get("/order/list")
-        orders = []
+
+        # Pre-filter before contract resolution to reduce unnecessary HTTP calls
+        filtered_raw = []
         for o in (raw_orders or []):
             order_status = _map_order_status(o.get("ordStatus", ""))
             if status == "open" and order_status not in (
@@ -354,10 +370,24 @@ class TradovateConnector(BrokerConnector):
                 OrderStatus.PENDING, OrderStatus.ACCEPTED
             ):
                 continue
+            filtered_raw.append((o, order_status))
 
+        if not filtered_raw:
+            return []
+
+        # Batch-resolve contract IDs in parallel — eliminates N+1 serial HTTP calls
+        unique_ids = list({o.get("contractId", 0) for o, _ in filtered_raw if o.get("contractId")})
+        contract_tasks = [self._get("/contract/item", {"id": cid}) for cid in unique_ids]
+        contract_results = await _asyncio.gather(*contract_tasks, return_exceptions=True)
+        contract_map = {
+            cid: (res.get("name", str(cid)) if isinstance(res, dict) else str(cid))
+            for cid, res in zip(unique_ids, contract_results)
+        }
+
+        orders = []
+        for o, order_status in filtered_raw:
             contract_id = o.get("contractId", 0)
-            contract = await self._get("/contract/item", {"id": contract_id})
-            symbol = contract.get("name", str(contract_id)) if contract else str(contract_id)
+            symbol = contract_map.get(contract_id, str(contract_id))
 
             orders.append(Order(
                 id=str(o.get("id", "")),
@@ -557,10 +587,15 @@ class TradovateConnector(BrokerConnector):
                     last=trade_entry.get("price", 0.0),
                     volume=int(trade_entry.get("size", 0)),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("get_quote failed for %s: %s", symbol, e)
 
-        return Quote(symbol=symbol, bid=0.0, ask=0.0, last=0.0, volume=0)
+        # Return None-sentinel prices so callers can distinguish "API error"
+        # from "market genuinely at zero". Callers must check for float("nan").
+        raise BrokerQuoteError(
+            f"Quote unavailable for {symbol} — API returned no data",
+            broker="tradovate",
+        )
 
     async def _find_contract(self, symbol: str) -> Optional[dict]:
         """Find a contract by symbol name or base symbol."""
