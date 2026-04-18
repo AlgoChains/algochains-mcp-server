@@ -462,9 +462,13 @@ class TradovateConnector(BrokerConnector):
                 f"Order placement failed: {e}", broker="tradovate"
             )
 
-        order_data = result.get("orderId") or result
+        # H-8 FIX: `result.get("orderId") or result` treats orderId=0 as falsy.
+        # Use explicit None checks so a valid id=0 is preserved.
+        _oid = result.get("orderId")
+        if _oid is None:
+            _oid = result.get("id", "")
         return Order(
-            id=str(order_data if isinstance(order_data, int) else result.get("id", "")),
+            id=str(_oid),
             broker="tradovate",
             symbol=symbol,
             side=side,
@@ -556,12 +560,18 @@ class TradovateConnector(BrokerConnector):
                             if ts < cutoff:
                                 continue
                         except Exception:
-                            pass
+                            # M-3 FIX: unparseable timestamp means we can't verify recency
+                            # — exclude the fill rather than including it without a time check.
+                            continue
                     filtered.append(f)
                 return filtered
             if order_id:
                 return [f for f in all_fills if f.get("orderId") == order_id]
-            return all_fills
+            # H-9 FIX: returning all fills when no filter is provided is dangerous
+            # (callers expecting a narrow window get the entire fill history).
+            # Return empty list; callers must supply symbol or order_id.
+            logger.warning("get_fills called with no filters — returning [] to prevent full-history dump")
+            return []
         except Exception as e:
             logger.error("get_fills failed: %s", e)
             return []
