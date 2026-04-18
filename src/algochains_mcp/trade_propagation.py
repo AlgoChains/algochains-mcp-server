@@ -36,7 +36,11 @@ _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 # Roo's live Django propagation endpoint (algochains.ai backend)
 _ROO_DEFAULT_URL = "http://172.232.170.168/signals/signal/"
-_ROO_DEFAULT_SECRET = "1234"  # Roo's dev default — override via env in production
+# ⚠️  SECURITY: This is the dev-only fallback secret. It MUST be overridden via
+# ALGOCHAINS_SIGNAL_SECRET or SIGNAL_SECRET in production. Any signal sent with
+# the default secret will be rejected by a correctly-configured backend, and the
+# propagate_signal() function will log a WARNING so operators know to fix it.
+_ROO_DEFAULT_SECRET = "1234"
 
 
 def _resolve_url() -> str:
@@ -91,6 +95,13 @@ async def propagate_signal(
                 "Refusing to send unsigned or empty-secret requests."
             ),
         }
+
+    # Warn loudly when using the public fallback secret — backend should reject it.
+    if secret == _ROO_DEFAULT_SECRET.encode():
+        logger.warning(
+            "propagate_signal using default secret '1234' — "
+            "set ALGOCHAINS_SIGNAL_SECRET in .env to suppress this warning"
+        )
 
     if not strategy_name or not symbol or not side or qty <= 0:
         return {

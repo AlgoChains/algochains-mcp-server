@@ -11,7 +11,7 @@ On invite, generates a unique invite code and sends it via email.
 
 Required env vars:
   SUPABASE_URL           — Supabase project URL
-  SUPABASE_SERVICE_KEY   — Service role key
+  SUPABASE_SERVICE_ROLE_KEY   — Service role key
   RESEND_API_KEY         — Resend API key for transactional email
   WAITLIST_FROM_EMAIL    — From address (default: waitlist@algochains.ai)
 
@@ -34,7 +34,7 @@ import httpx
 logger = logging.getLogger("algochains_mcp.waitlist")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 WAITLIST_FROM_EMAIL = os.getenv("WAITLIST_FROM_EMAIL", "waitlist@algochains.ai")
 _TABLE = "algochains_waitlist"
@@ -45,13 +45,13 @@ _LOCAL_FILE = _STATE_DIR / "waitlist.json"
 
 
 def _sb_available() -> bool:
-    return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
 
 
 def _sb_headers() -> dict:
     return {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }

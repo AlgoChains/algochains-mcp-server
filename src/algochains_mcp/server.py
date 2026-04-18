@@ -6797,19 +6797,36 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                         regime=regime, trigger_type=trigger_type,
                     )
             except ImportError:
-                # Fallback: call as subprocess from control-tower directory
-                control_tower = "/Users/treycsa/CascadeProjects/algochains-control-tower"
+                # Fallback: call as subprocess from control-tower directory.
+                # Inputs are passed via environment variables (not f-string
+                # interpolation) to prevent shell/code injection.
+                import os as _os_mdb
+                control_tower = _os_mdb.getenv(
+                    "ALGOCHAINS_CONTROL_TOWER_PATH",
+                    os.getenv("ALGOCHAINS_CONTROL_TOWER_PATH", "/Users/treycsa/CascadeProjects/algochains-control-tower"),
+                )
                 script = (
-                    "import json, sys; sys.path.insert(0, '.'); "
+                    "import json, sys, os; sys.path.insert(0, '.'); "
                     "from moltbook.debate_engine import DebateEngine; "
                     "import asyncio; e = DebateEngine(); "
-                    f"r = asyncio.run(e.run_debate('{symbol}', '{direction}', "
-                    f"{confidence}, '{regime}', '{trigger_type}')); "
+                    "r = asyncio.run(e.run_debate("
+                    "os.environ['_MDB_SYMBOL'], os.environ['_MDB_DIRECTION'], "
+                    "float(os.environ['_MDB_CONF']), os.environ['_MDB_REGIME'], "
+                    "os.environ['_MDB_TRIGGER'])); "
                     "print(json.dumps(r))"
                 )
+                _env = {
+                    **_os_mdb.environ,
+                    "_MDB_SYMBOL": str(symbol),
+                    "_MDB_DIRECTION": str(direction),
+                    "_MDB_CONF": str(float(confidence)),
+                    "_MDB_REGIME": str(regime),
+                    "_MDB_TRIGGER": str(trigger_type),
+                }
                 proc = subprocess.run(
                     [_sys.executable, "-c", script],
-                    cwd=control_tower, capture_output=True, text=True, timeout=60
+                    cwd=control_tower, capture_output=True, text=True,
+                    timeout=60, env=_env
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
                     result = _json.loads(proc.stdout)
@@ -6829,7 +6846,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "run_mcpt_pipeline":
         try:
             import subprocess, sys as _sys
-            control_tower = "/Users/treycsa/CascadeProjects/algochains-control-tower"
+            control_tower = os.getenv("ALGOCHAINS_CONTROL_TOWER_PATH", "/Users/treycsa/CascadeProjects/algochains-control-tower")
             step = str(args.get("step", "all"))
             dry_run = bool(args.get("dry_run", False))
             no_desktop = bool(args.get("no_desktop", False))
@@ -6868,7 +6885,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Also try to call the live detector if available
             try:
                 import subprocess, sys as _sys
-                control_tower = "/Users/treycsa/CascadeProjects/algochains-control-tower"
+                control_tower = os.getenv("ALGOCHAINS_CONTROL_TOWER_PATH", "/Users/treycsa/CascadeProjects/algochains-control-tower")
                 proc = subprocess.run(
                     [_sys.executable, "-m", "openclaw.skills.regime_detector"],
                     cwd=control_tower, capture_output=True, text=True, timeout=30

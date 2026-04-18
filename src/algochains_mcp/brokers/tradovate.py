@@ -84,6 +84,13 @@ class TradovateConnector(BrokerConnector):
         self._account_id: int = 0
         self._account_spec: str = ""
         self._connected: bool = False
+        # Persistent HTTP client — created once, reused for all REST calls.
+        # Avoids a new TCP/TLS handshake on every _get/_post/_delete invocation.
+        # Closed explicitly in disconnect().
+        self._http: httpx.AsyncClient = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0),
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
 
     @property
     def capabilities(self) -> dict:
@@ -117,11 +124,10 @@ class TradovateConnector(BrokerConnector):
         pretoken = self.cfg.access_token
         if pretoken:
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
-                    r = await client.get(
-                        f"{self.cfg.base_url}/v1/account/list",
-                        headers={"Authorization": f"Bearer {pretoken}"},
-                    )
+                r = await self._http.get(
+                    f"{self.cfg.base_url}/v1/account/list",
+                    headers={"Authorization": f"Bearer {pretoken}"},
+                )
                 if r.status_code == 200:
                     accounts = r.json()
                     self._access_token = pretoken
@@ -156,25 +162,24 @@ class TradovateConnector(BrokerConnector):
             return False
 
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"{self.cfg.base_url}/v1/auth/accesstokenrequest",
-                    json={
-                        "name": username,
-                        "password": password,
-                        "appId": "AlgoChains",
-                        "appVersion": "2.0",
-                        "cid": int(self.cfg.oauth_cid) if self.cfg.oauth_cid.isdigit() else 0,
-                        "sec": self.cfg.oauth_sec or "",
-                    },
+            resp = await self._http.post(
+                f"{self.cfg.base_url}/v1/auth/accesstokenrequest",
+                json={
+                    "name": username,
+                    "password": password,
+                    "appId": "AlgoChains",
+                    "appVersion": "2.0",
+                    "cid": int(self.cfg.oauth_cid) if self.cfg.oauth_cid.isdigit() else 0,
+                    "sec": self.cfg.oauth_sec or "",
+                },
+            )
+            if resp.status_code == 401:
+                raise BrokerAuthError(
+                    "Tradovate authentication failed — check USERNAME/PASSWORD",
+                    broker="tradovate",
                 )
-                if resp.status_code == 401:
-                    raise BrokerAuthError(
-                        "Tradovate authentication failed — check USERNAME/PASSWORD",
-                        broker="tradovate",
-                    )
-                resp.raise_for_status()
-                data = resp.json()
+            resp.raise_for_status()
+            data = resp.json()
 
             self._access_token = data.get("accessToken", "")
             if not self._access_token:
@@ -219,54 +224,52 @@ class TradovateConnector(BrokerConnector):
     async def disconnect(self) -> None:
         self._connected = False
         self._access_token = ""
+        await self._http.aclose()
         logger.info("Tradovate disconnected")
 
     async def _get(self, path: str, params: Optional[dict] = None) -> Any:
-        """Authenticated GET request."""
+        """Authenticated GET — reuses persistent connection pool."""
         await self._ensure_token()
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(
-                f"{self.cfg.base_url}/v1{path}",
-                params=params,
-                headers={"Authorization": f"Bearer {self._access_token}"},
-            )
-            if resp.status_code == 401:
-                raise BrokerAuthError("Tradovate token expired", broker="tradovate")
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._http.get(
+            f"{self.cfg.base_url}/v1{path}",
+            params=params,
+            headers={"Authorization": f"Bearer {self._access_token}"},
+        )
+        if resp.status_code == 401:
+            raise BrokerAuthError("Tradovate token expired", broker="tradovate")
+        resp.raise_for_status()
+        return resp.json()
 
     async def _post(self, path: str, payload: dict) -> Any:
-        """Authenticated POST request."""
+        """Authenticated POST — reuses persistent connection pool."""
         await self._ensure_token()
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{self.cfg.base_url}/v1{path}",
-                json=payload,
-                headers={"Authorization": f"Bearer {self._access_token}"},
-            )
-            if resp.status_code == 401:
-                raise BrokerAuthError("Tradovate token expired", broker="tradovate")
-            resp.raise_for_status()
-            return resp.json()
+        resp = await self._http.post(
+            f"{self.cfg.base_url}/v1{path}",
+            json=payload,
+            headers={"Authorization": f"Bearer {self._access_token}"},
+        )
+        if resp.status_code == 401:
+            raise BrokerAuthError("Tradovate token expired", broker="tradovate")
+        resp.raise_for_status()
+        return resp.json()
 
     async def _delete(self, path: str) -> Any:
-        """Authenticated DELETE request. Returns None (not raising) on 404 so callers
-        can distinguish 'already gone' (404) from genuine errors without try/except."""
+        """Authenticated DELETE. Returns None (not raising) on 404 so callers
+        can distinguish 'already gone' from genuine errors without try/except."""
         await self._ensure_token()
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.delete(
-                f"{self.cfg.base_url}/v1{path}",
-                headers={"Authorization": f"Bearer {self._access_token}"},
-            )
-            if resp.status_code == 401:
-                raise BrokerAuthError("Tradovate token expired", broker="tradovate")
-            if resp.status_code == 404:
-                return None  # already gone — caller decides what to do
-            resp.raise_for_status()
-            try:
-                return resp.json()
-            except Exception:
-                return {}
+        resp = await self._http.delete(
+            f"{self.cfg.base_url}/v1{path}",
+            headers={"Authorization": f"Bearer {self._access_token}"},
+        )
+        if resp.status_code == 401:
+            raise BrokerAuthError("Tradovate token expired", broker="tradovate")
+        if resp.status_code == 404:
+            return None  # already gone — caller decides what to do
+        resp.raise_for_status()
+        try:
+            return resp.json()
+        except Exception:
+            return {}
 
     async def _ensure_token(self) -> None:
         """Check token validity — reconnect if within renewal window.

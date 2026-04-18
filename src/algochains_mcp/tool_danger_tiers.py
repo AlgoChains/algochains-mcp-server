@@ -26,10 +26,11 @@ from typing import Any
 
 # ── Tier constants ─────────────────────────────────────────────────────────────
 
-TIER_READ_ONLY = 0     # Safe — no side effects
-TIER_WRITE_LOCAL = 1   # Internal writes only — no money, no broker API
-TIER_ORDER_EXEC = 2    # Real order execution — touches live broker
-TIER_DESTRUCTIVE = 3   # Irreversible bulk / high-impact
+TIER_READ_ONLY = 0       # Safe — no side effects
+TIER_READ_EXTERNAL = 0  # Alias: read-only calls to external data APIs (same risk as READ_ONLY)
+TIER_WRITE_LOCAL = 1    # Internal writes only — no money, no broker API
+TIER_ORDER_EXEC = 2     # Real order execution — touches live broker
+TIER_DESTRUCTIVE = 3    # Irreversible bulk / high-impact
 
 TIER_LABELS = {
     TIER_READ_ONLY: "READ_ONLY",

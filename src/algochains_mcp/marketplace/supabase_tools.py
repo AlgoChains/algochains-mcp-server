@@ -19,28 +19,52 @@ from __future__ import annotations
 
 import os
 import logging
+import threading
 from typing import Any
 
 log = logging.getLogger(__name__)
 
+# ── Supabase singletons ───────────────────────────────────────────────────────
+# One client per key type, created on first call and reused for every
+# subsequent tool invocation — avoids HTTP pool teardown on every tool call.
+_SB_ANON: Any = None
+_SB_SERVICE: Any = None
+_SB_LOCK = threading.Lock()
+
 
 def _get_sb_client(use_service_role: bool = False):
-    """Return a Supabase client or None if credentials are missing."""
-    try:
-        from supabase import create_client
-    except ImportError:
-        log.warning("supabase package not installed — pip install supabase>=2.0.0")
-        return None
+    """Return the module-level Supabase client (singleton), or None if not configured."""
+    global _SB_ANON, _SB_SERVICE
+    target = "_SB_SERVICE" if use_service_role else "_SB_ANON"
+    existing = _SB_SERVICE if use_service_role else _SB_ANON
+    if existing is not None:
+        return existing
 
-    url = os.getenv("SUPABASE_URL", "")
-    if use_service_role:
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-    else:
-        key = os.getenv("SUPABASE_ANON_KEY", "") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")
+    with _SB_LOCK:
+        existing = _SB_SERVICE if use_service_role else _SB_ANON
+        if existing is not None:
+            return existing
+        try:
+            from supabase import create_client
+        except ImportError:
+            log.warning("supabase package not installed — pip install supabase>=2.0.0")
+            return None
 
-    if not url or not key:
-        return None
-    return create_client(url, key)
+        url = os.getenv("SUPABASE_URL", "")
+        if use_service_role:
+            key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+        else:
+            key = os.getenv("SUPABASE_ANON_KEY", "") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")
+
+        if not url or not key:
+            return None
+        client = create_client(url, key)
+        if use_service_role:
+            _SB_SERVICE = client
+        else:
+            _SB_ANON = client
+        log.info("Supabase %s client initialised (singleton)", target)
+        return client
 
 
 def get_marketplace_listings(
