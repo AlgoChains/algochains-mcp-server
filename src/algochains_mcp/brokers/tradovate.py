@@ -91,6 +91,10 @@ class TradovateConnector(BrokerConnector):
             timeout=httpx.Timeout(30.0, connect=10.0),
             limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
         )
+        # _find_contract TTL cache: {symbol: (expires_at_epoch, contract_dict)}
+        # Prevents 2x /contract/find HTTPs per get_quote / place_order / get_historical.
+        self._contract_cache: dict[str, tuple[float, dict]] = {}
+        self._contract_cache_ttl: float = 300.0  # 5 min
 
     @property
     def capabilities(self) -> dict:
@@ -230,49 +234,102 @@ class TradovateConnector(BrokerConnector):
         self._http = httpx.AsyncClient(timeout=self.cfg.timeout)
         logger.info("Tradovate disconnected")
 
-    async def _get(self, path: str, params: Optional[dict] = None) -> Any:
-        """Authenticated GET — reuses persistent connection pool."""
+    async def _request_with_retry(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[dict] = None,
+        payload: Optional[dict] = None,
+        max_attempts: int = 3,
+    ) -> Any:
+        """Authenticated HTTP with exponential backoff on 429/5xx.
+
+        - 401: raise BrokerAuthError immediately (caller reconnects).
+        - 404 (DELETE only): return None so callers can treat as 'already gone'.
+        - 429: honor Retry-After header (capped at 10s), else expo backoff.
+        - 5xx: exponential backoff with jitter, up to max_attempts.
+        - network errors: treat like 5xx.
+        """
+        import random
+
         await self._ensure_token()
-        resp = await self._http.get(
-            f"{self.cfg.base_url}/v1{path}",
-            params=params,
-            headers={"Authorization": f"Bearer {self._access_token}"},
-        )
-        if resp.status_code == 401:
-            raise BrokerAuthError("Tradovate token expired", broker="tradovate")
-        resp.raise_for_status()
-        return resp.json()
+        url = f"{self.cfg.base_url}/v1{path}"
+        headers = {"Authorization": f"Bearer {self._access_token}"}
+        attempt = 0
+        last_exc: Optional[Exception] = None
+        while attempt < max_attempts:
+            attempt += 1
+            try:
+                if method == "GET":
+                    resp = await self._http.get(url, params=params, headers=headers)
+                elif method == "POST":
+                    resp = await self._http.post(url, json=payload, headers=headers)
+                elif method == "DELETE":
+                    resp = await self._http.delete(url, headers=headers)
+                else:
+                    raise ValueError(f"unsupported method: {method}")
+            except (httpx.TransportError, httpx.TimeoutException) as e:
+                last_exc = e
+                if attempt >= max_attempts:
+                    raise BrokerConnectionError(
+                        f"Tradovate {method} {path} failed after {attempt} attempts: {e}",
+                        broker="tradovate",
+                    )
+                backoff = min(2 ** attempt + random.uniform(0, 0.25), 8.0)
+                logger.warning("tradovate transport error (%s), retry in %.2fs", e, backoff)
+                await asyncio.sleep(backoff)
+                continue
+
+            if resp.status_code == 401:
+                raise BrokerAuthError("Tradovate token expired", broker="tradovate")
+            if resp.status_code == 404 and method == "DELETE":
+                return None
+
+            if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                if attempt >= max_attempts:
+                    resp.raise_for_status()
+                # Respect Retry-After when present
+                retry_after = resp.headers.get("Retry-After")
+                try:
+                    wait_s = min(float(retry_after), 10.0) if retry_after else 0.0
+                except (TypeError, ValueError):
+                    wait_s = 0.0
+                if wait_s <= 0:
+                    wait_s = min(2 ** attempt + random.uniform(0, 0.5), 8.0)
+                logger.warning(
+                    "tradovate %s %s returned %s; backoff %.2fs (attempt %d/%d)",
+                    method, path, resp.status_code, wait_s, attempt, max_attempts,
+                )
+                await asyncio.sleep(wait_s)
+                continue
+
+            resp.raise_for_status()
+            try:
+                return resp.json()
+            except Exception:
+                return {}
+
+        # Should not reach here, but defensively
+        if last_exc:
+            raise BrokerConnectionError(
+                f"Tradovate {method} {path} exhausted retries: {last_exc}",
+                broker="tradovate",
+            )
+        return {}
+
+    async def _get(self, path: str, params: Optional[dict] = None) -> Any:
+        """Authenticated GET — reuses persistent connection pool with backoff."""
+        return await self._request_with_retry("GET", path, params=params)
 
     async def _post(self, path: str, payload: dict) -> Any:
-        """Authenticated POST — reuses persistent connection pool."""
-        await self._ensure_token()
-        resp = await self._http.post(
-            f"{self.cfg.base_url}/v1{path}",
-            json=payload,
-            headers={"Authorization": f"Bearer {self._access_token}"},
-        )
-        if resp.status_code == 401:
-            raise BrokerAuthError("Tradovate token expired", broker="tradovate")
-        resp.raise_for_status()
-        return resp.json()
+        """Authenticated POST — reuses persistent connection pool with backoff."""
+        return await self._request_with_retry("POST", path, payload=payload)
 
     async def _delete(self, path: str) -> Any:
-        """Authenticated DELETE. Returns None (not raising) on 404 so callers
-        can distinguish 'already gone' from genuine errors without try/except."""
-        await self._ensure_token()
-        resp = await self._http.delete(
-            f"{self.cfg.base_url}/v1{path}",
-            headers={"Authorization": f"Bearer {self._access_token}"},
-        )
-        if resp.status_code == 401:
-            raise BrokerAuthError("Tradovate token expired", broker="tradovate")
-        if resp.status_code == 404:
-            return None  # already gone — caller decides what to do
-        resp.raise_for_status()
-        try:
-            return resp.json()
-        except Exception:
-            return {}
+        """Authenticated DELETE. Returns None on 404 so callers can distinguish
+        'already gone' from genuine errors without try/except."""
+        return await self._request_with_retry("DELETE", path)
 
     async def _ensure_token(self) -> None:
         """Check token validity — reconnect if within renewal window.
@@ -493,8 +550,8 @@ class TradovateConnector(BrokerConnector):
             resp = await self._delete(f"/order/item/{int(order_id)}")
             if resp is not None:
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("cancel_order DELETE /order/item/%s failed: %s", order_id, e)
 
         # 404 means the order is already gone (filled or cancelled) — treat as success
         try:
@@ -502,8 +559,8 @@ class TradovateConnector(BrokerConnector):
             if status in ("Filled", "Canceled", "Completed", "Expired"):
                 logger.info("cancel_order %s: already gone (status=%s)", order_id, status)
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("cancel_order status lookup for %s failed: %s", order_id, e)
 
         # Last resort: POST cancel
         try:
@@ -519,8 +576,8 @@ class TradovateConnector(BrokerConnector):
             result = await self._get("/order/item", {"id": order_id})
             if isinstance(result, dict):
                 return result.get("ordStatus", result.get("status", "Unknown"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("get_order_status(%s) failed: %s", order_id, e)
         return "Unknown"
 
     async def get_fills(
@@ -608,21 +665,33 @@ class TradovateConnector(BrokerConnector):
         )
 
     async def _find_contract(self, symbol: str) -> Optional[dict]:
-        """Find a contract by symbol name or base symbol."""
+        """Find a contract by symbol name or base symbol.
+
+        Cached for 5 minutes keyed on the raw symbol to avoid a 2x
+        /contract/find HTTP round-trip on every get_quote / place_order /
+        get_historical call.
+        """
+        now = time.time()
+        cached = self._contract_cache.get(symbol)
+        if cached and cached[0] > now:
+            return cached[1]
+
         try:
             result = await self._get("/contract/find", {"name": symbol})
             if result:
+                self._contract_cache[symbol] = (now + self._contract_cache_ttl, result)
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("tradovate _find_contract(%s) direct lookup failed: %s", symbol, e)
 
         front = _front_month_symbol(symbol)
         try:
             result = await self._get("/contract/find", {"name": front})
             if result:
+                self._contract_cache[symbol] = (now + self._contract_cache_ttl, result)
                 return result
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("tradovate _find_contract(%s) front-month(%s) lookup failed: %s", symbol, front, e)
 
         return None
 

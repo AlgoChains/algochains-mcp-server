@@ -64,6 +64,21 @@ AI_LOOP_WINDOW_SEC: int = 60              # rolling window for loop detection
 AI_LOOP_MAX_IDENTICAL_CALLS: int = 5      # 5 identical calls in window → trip
 AI_LOOP_MAX_CALLS_PER_MINUTE: int = 30   # total tool call rate limit
 
+# Read-only status tools that dashboard widgets poll continuously.
+# These are safe to exempt from loop detection — they never place orders
+# and are explicitly designed to be called repeatedly by monitoring UIs.
+LOOP_EXEMPT_TOOLS: frozenset[str] = frozenset({
+    "get_circuit_breaker_status",
+    "get_onboarding_status",
+    "get_latency_profile",
+    "get_system_heartbeat",
+    "get_live_bot_metrics",
+    "get_all_bot_metrics",
+    "get_bot_card_data",
+    "get_onyx_status",
+    "get_signal_conflict_stats",
+})
+
 # Circuit breaker cooldown periods
 CB_OPEN_COOLDOWN_SEC: int = 300          # 5 minutes before HALF_OPEN
 CB_DAILY_LOSS_COOLDOWN_SEC: int = 86400  # 24 hours for daily loss limit
@@ -168,7 +183,13 @@ class ToolCallTracker:
         """
         Returns a human-readable warning if a loop is detected, else None.
         Call BEFORE recording — if None, record and proceed.
+
+        Tools in LOOP_EXEMPT_TOOLS are pure read-only status checks that
+        dashboard widgets legitimately poll continuously — skip loop detection
+        for them so the dashboard never self-trips.
         """
+        if tool_name in LOOP_EXEMPT_TOOLS:
+            return None
         now = time.monotonic()
         h = self._call_hash(tool_name, arguments)
         window_cutoff = now - AI_LOOP_WINDOW_SEC

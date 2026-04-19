@@ -156,12 +156,35 @@ def get_kalshi_orderbook_depth(
     if not isinstance(data, dict):
         return {"error": f"Unexpected Kalshi response: {str(data)[:500]}", "http_status": code}
 
-    ob = data.get("orderbook", data)
-    yes_bids = ob.get("yes", [])  # [[price, size], ...]
-    no_bids = ob.get("no", [])
+    # Kalshi v2 returns "orderbook_fp" with dollar-denominated prices (e.g. "0.35")
+    # Fallback to legacy "orderbook" format with integer cents (e.g. 35)
+    ob_fp = data.get("orderbook_fp")
+    ob_legacy = data.get("orderbook")
 
-    best_bid = yes_bids[0][0] / 100 if yes_bids else None  # Kalshi prices in cents → decimal
-    best_ask = (1.0 - no_bids[0][0] / 100) if no_bids else None
+    if ob_fp:
+        # orderbook_fp: {"yes_dollars": [["0.02", "407.00"], ...], "no_dollars": [...]}
+        # YES dollars sorted ASCENDING → best bid is the LAST (highest) entry
+        # NO dollars sorted ASCENDING → best bid is the FIRST (lowest) entry; implied YES ask = 1 - min(no)
+        raw_yes = ob_fp.get("yes_dollars", [])
+        raw_no = ob_fp.get("no_dollars", [])
+        yes_bids = [(float(p), float(s)) for p, s in raw_yes]
+        no_bids = [(float(p), float(s)) for p, s in raw_no]
+        best_bid = max((p for p, _ in yes_bids), default=None)      # highest YES anyone bids
+        best_no_bid = min((p for p, _ in no_bids), default=None)    # lowest NO price = best NO offer
+        best_ask = (1.0 - best_no_bid) if best_no_bid is not None else None
+    elif ob_legacy:
+        # legacy format: {"yes": [[cents, size], ...], "no": [...]} sorted descending
+        raw_yes = ob_legacy.get("yes", [])
+        raw_no = ob_legacy.get("no", [])
+        yes_bids = [(p / 100, s) for p, s in raw_yes]
+        no_bids = [(p / 100, s) for p, s in raw_no]
+        best_bid = max((p for p, _ in yes_bids), default=None)
+        best_no_bid = min((p for p, _ in no_bids), default=None)
+        best_ask = (1.0 - best_no_bid) if best_no_bid is not None else None
+    else:
+        yes_bids, no_bids = [], []
+        best_bid, best_ask = None, None
+
     spread = round(best_ask - best_bid, 4) if (best_bid is not None and best_ask is not None) else None
 
     return {
@@ -170,8 +193,8 @@ def get_kalshi_orderbook_depth(
         "best_bid": best_bid,
         "best_ask": best_ask,
         "spread": spread,
-        "yes_bids": [{"price": p / 100, "size": s} for p, s in yes_bids[:depth]],
-        "no_bids": [{"price": p / 100, "size": s} for p, s in no_bids[:depth]],
+        "yes_bids": [{"price": round(p, 4), "size": s} for p, s in yes_bids[:depth]],
+        "no_bids": [{"price": round(p, 4), "size": s} for p, s in no_bids[:depth]],
         "depth_requested": depth,
         "source": "kalshi_clob_v2",
         "fetched_at": __import__("datetime").datetime.utcnow().isoformat() + "Z",

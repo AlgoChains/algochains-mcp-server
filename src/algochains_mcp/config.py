@@ -67,11 +67,11 @@ class TradovateConfig:
     # Pre-existing access token (written by tradovate_token_guardian.py).
     # If set and not expired, connector skips re-auth and uses it directly.
     access_token: str = field(default_factory=lambda: (
+        lambda raw: (raw.splitlines()[0].strip() if raw.splitlines() else "")
+    )(
         _env("TRADOVATE_ACCESS_TOKEN", "")
         .strip("'\"")           # guardian sometimes writes quoted values
         .replace("Bearer ", "") # strip prefix if present
-        .splitlines()[0]        # first line only (guardian may append timestamp)
-        .strip()
     ))
 
     @property

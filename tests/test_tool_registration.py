@@ -79,6 +79,29 @@ def test_no_duplicate_tool_names():
     )
 
 
+def test_no_duplicate_tool_literals_in_server_source():
+    """Regex-scan server.py for Tool(name="…") literals.
+
+    Runs even if the full server module can't import (e.g. missing optional deps
+    in CI), so we always catch a new duplicate tool at merge time. Complements
+    `test_no_duplicate_tool_names` which needs the full import path.
+    """
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "src" / "algochains_mcp" / "server.py").read_text()
+    names = re.findall(r'Tool\(\s*name=["\']([^"\']+)', src)
+    seen: dict[str, int] = {}
+    for n in names:
+        seen[n] = seen.get(n, 0) + 1
+    dups = {k: v for k, v in seen.items() if v > 1}
+    assert not dups, (
+        f"Duplicate Tool(name=…) literals in server.py: {dups}. "
+        "Each tool must be declared exactly once."
+    )
+
+
 def test_server_module_importable():
     """server.py must import without error."""
     try:

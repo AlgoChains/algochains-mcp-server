@@ -531,6 +531,16 @@ def run_interactive_setup() -> None:
     print()
     print(f"  {INFO} Selected mode: {BOLD}{mode.upper()}{RESET}")
 
+    # P2-11 FIX: set ALGOCHAINS_DEMO_MODE env var so the MCP server and tool handlers
+    # know to stub out real broker/Kalshi/Alpaca calls even when credentials happen to
+    # be present in the environment. Without this, --mode demo only skipped the health
+    # check but did not prevent real API calls during actual tool invocations.
+    if mode == "demo":
+        os.environ["ALGOCHAINS_DEMO_MODE"] = "1"
+        _info("ALGOCHAINS_DEMO_MODE=1 set — execution-class tools will return stub responses")
+    else:
+        os.environ.pop("ALGOCHAINS_DEMO_MODE", None)
+
     # Run health check in selected mode
     run_health_check(mode)
 

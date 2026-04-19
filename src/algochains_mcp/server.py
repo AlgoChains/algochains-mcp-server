@@ -54,6 +54,31 @@ import importlib
 import gc
 import os
 import sys
+from pathlib import Path as _PathGlobal
+
+
+def _default_control_tower() -> str:
+    """
+    Resolve the control-tower path without hardcoding a Mac-only absolute path.
+
+    Order:
+      1. ALGOCHAINS_CONTROL_TOWER env (preferred, used by both Mac + Linux desktop)
+      2. ALGOCHAINS_CONTROL_TOWER_PATH env (legacy alias kept for backwards-compat)
+      3. __file__-relative sibling ``algochains-control-tower`` directory if present
+      4. ``/Users/treycsa/CascadeProjects/algochains-control-tower`` as a last resort
+         (only hit on the original MacBook; desktop failover uses env override).
+    """
+    for var in ("ALGOCHAINS_CONTROL_TOWER", "ALGOCHAINS_CONTROL_TOWER_PATH"):
+        val = os.environ.get(var)
+        if val:
+            return val
+    try:
+        sibling = _PathGlobal(__file__).resolve().parents[3] / "algochains-control-tower"
+        if sibling.exists():
+            return str(sibling)
+    except Exception:
+        pass
+    return "/Users/treycsa/CascadeProjects/algochains-control-tower"
 
 # ─── Essential V1-V7 imports (minimal, always needed) ───────────────────────
 from .brokers.base import OrderSide, OrderType
@@ -335,6 +360,8 @@ def _classify_tool_annotations() -> dict[str, ToolAnnotations]:
     }
     read_external = {
         "get_quote", "get_account", "get_positions", "get_orders",
+        "search_tradovate_contracts", "get_tradovate_risk_snapshot",
+        "get_bot_health",
         "get_order_history", "portfolio_summary", "get_execution_report",
         "get_platform_health", "get_api_usage", "get_white_label_config",
         "list_api_keys", "get_pool_analytics", "get_gas_estimate",
@@ -1356,6 +1383,62 @@ TOOLS = [
                 "last": {"type": "number"},
                 "volume": {"type": "number"},
                 "timestamp": {"type": "string"},
+            },
+        },
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
+    Tool(
+        name="search_tradovate_contracts",
+        description=(
+            "Search Tradovate contracts by keyword or symbol prefix. Returns contract name, id, "
+            "and description. Use this to discover the exact Tradovate symbol before calling "
+            "get_quote or place_order. Read-only, safe to call at any time. "
+            "Example: query='MNQ' returns all Micro Nasdaq futures contracts."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Symbol prefix or keyword to search, e.g. 'MNQ', 'CL', 'Nasdaq'",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "Maximum results to return (default 10, max 50)",
+                },
+            },
+            "required": ["query"],
+        },
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
+    Tool(
+        name="get_tradovate_risk_snapshot",
+        description=(
+            "Read the current Tradovate risk limit settings for the connected live account. "
+            "Returns dayMaxLoss, maxDrawdown, maxOrderQty, and trailingMaxDrawdown. "
+            "Read-only diagnostic — use this to verify prop-fund guardrails are configured "
+            "correctly. NEVER modifies risk limits (no set_risk_limits exposure)."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
+    Tool(
+        name="get_bot_health",
+        description=(
+            "Return a unified health snapshot for all four live futures bots (MNQ, CL, MES, NQ) "
+            "and the Kalshi daemon. For each bot: process up? last log mtime, last signal ts, "
+            "current regime, error count in last 100 log lines, token expiry (if Tradovate). "
+            "Pure read-only — reads logs/, state/, and ps aux on the control tower host."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "bot": {
+                    "type": "string",
+                    "description": "Optional: filter to one bot (mnq|cl|mes|nq|kalshi|all). Default all.",
+                    "default": "all",
+                }
             },
         },
         annotations=ANNOT_READ_EXTERNAL,
@@ -2987,6 +3070,134 @@ TOOLS = [
              "limit": {"type": "integer", "default": 50, "description": "Max fills to return (max 100)"},
          }, "required": ["ticker"]},
          annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="scan_kalshi_edges",
+         description="Scan all open Kalshi macro markets (FED/CPI/NFP) for positive expected-value "
+                     "opportunities. Returns ranked edges with Kelly-optimal position sizes, "
+                     "model probability vs market price, and suggested action (buy_yes/buy_no/market_make). "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_kalshi_account",
+         description="Fetch live Kalshi account balance, open positions, and open orders. "
+                     "Balance returned in USD (Kalshi stores in cents internally). "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_kalshi_pnl_summary",
+         description="Compute Kalshi P&L summary from settled trades. Returns total revenue, "
+                     "ROI %, open positions, and recent settlement history. "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="scan_kalshi_wide_spreads",
+         description="Find open Kalshi markets with spreads wide enough for passive market-making. "
+                     "Returns spread size, mid-price, and orderbook depth for each candidate. "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {
+             "min_spread": {"type": "number", "default": 0.12, "description": "Minimum YES spread to include (0-1)"},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="place_kalshi_strategy_order",
+         description="Place a Kalshi order based on strategy engine recommendation. "
+                     "Accepts edge recommendation from scan_kalshi_edges and executes at "
+                     "fractional Kelly size. REAL MONEY — requires explicit confirmation. "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {
+             "ticker": {"type": "string", "description": "Kalshi market ticker"},
+             "side": {"type": "string", "enum": ["yes", "no"], "description": "Which side to buy"},
+             "usd_amount": {"type": "number", "description": "Dollar amount to invest (converted to contracts internally)"},
+             "max_price_cents": {"type": "integer", "description": "Max price in cents (1-99). Required for limit orders."},
+             "confirmed": {"type": "boolean", "description": "Must be true to execute — prevents accidental orders"},
+         }, "required": ["ticker", "side", "usd_amount", "max_price_cents", "confirmed"]},
+         annotations=ANNOT_TRADE_EXEC),
+    # ═══════════════════════════════════════════════════════════════
+    # V22.10 — Kalshi Phase 2: Safe Compounder + Events API + Category Scoring
+    # + AI Ensemble + Stat Arb + Unified Pipeline + Slack Notifier
+    # Integrated from: ryanfrigo/kalshi-ai-trading-bot + yllvar/Kalshi-Quant-TeleBot
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="run_safe_compounder",
+         description="Run the Safe Compounder strategy: scan all Kalshi markets for near-certain NO outcomes "
+                     "(YES price ≤ 20¢). Returns ranked opportunities with Kelly sizing, edge calculation, "
+                     "and suggested maker limit prices. Historically: NCAAB NO-side 74% win rate +10% ROI. "
+                     "Set execute=true + confirmed=true to place real maker orders. "
+                     "FED/CPI/NFP markets are hard-blocked (proven -40% to -65% ROI). "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {
+             "bankroll_usd": {"type": "number", "default": 250.0, "description": "Current trading bankroll in USD"},
+             "execute": {"type": "boolean", "default": False, "description": "If true, place actual maker orders"},
+             "confirmed": {"type": "boolean", "default": False, "description": "Must be true alongside execute to place real orders"},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="scan_all_kalshi_events",
+         description="Scan the full Kalshi tradeable universe via the Events API (correct endpoint — "
+                     "/markets only returns KXMVE parlay junk). Returns all open events with nested markets, "
+                     "categorized by type. Excludes FED/CPI/NFP series (proven negative edge). "
+                     "Use this before any strategy to see what's actually available to trade. "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {
+             "categories": {"type": "array", "items": {"type": "string"},
+                            "description": "Filter by category: sports, politics, weather, finance, other. Omit for all."},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_kalshi_category_scores",
+         description="Get category performance scores (0-100) for all Kalshi market series. "
+                     "Shows win rate, ROI, allocation tier, and whether each category is tradeable. "
+                     "Categories scoring < 30 are hard-blocked. FED/CPI/NFP scores are shown as proof "
+                     "of negative edge (-40% to -65% ROI). Sports (NCAAB 74% WR) shown as best edge.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="run_kalshi_ai_debate",
+         description="Run the 5-model OpenRouter AI ensemble debate on a specific Kalshi market. "
+                     "Models: Claude Sonnet 4.5 (Lead), Gemini 3.1 Pro (Forecaster), GPT-5.4 (Risk), "
+                     "DeepSeek V3.2 (Bull), Grok 4.1 Fast (Bear). Returns weighted probability, "
+                     "consensus action, and per-model reasoning. Costs ~$0.01-0.05 per call. "
+                     "Daily budget cap enforced ($5/day default). Requires OPENROUTER_API_KEY.",
+         inputSchema={"type": "object", "properties": {
+             "ticker": {"type": "string", "description": "Kalshi market ticker to analyze"},
+             "title": {"type": "string", "description": "Market question text"},
+             "yes_bid": {"type": "number", "description": "Current best YES bid (0.0-1.0)"},
+             "yes_ask": {"type": "number", "description": "Current best YES ask (0.0-1.0)"},
+             "close_time": {"type": "string", "description": "ISO timestamp when market closes"},
+             "extra_context": {"type": "string", "description": "Optional news, sentiment, or context to inject"},
+             "fast_mode": {"type": "boolean", "default": True, "description": "True = 3 models (cheaper); False = all 5 models"},
+         }, "required": ["ticker", "title", "yes_bid", "yes_ask"]},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="find_kalshi_stat_arb",
+         description="Scan for statistical arbitrage opportunities across Kalshi markets. "
+                     "Detects: (1) Spread arb — YES ask + NO ask > 1.0, sell both sides for risk-free profit. "
+                     "(2) Bucket completeness — mutually exclusive event buckets that don't sum to 100%. "
+                     "Returns opportunities ranked by edge size with suggested actions. "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {
+             "max_events": {"type": "integer", "default": 20, "description": "Max events to scan"},
+             "max_markets": {"type": "integer", "default": 50, "description": "Max total markets to check"},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="run_kalshi_full_pipeline",
+         description="Run the complete Kalshi strategy pipeline in one call: "
+                     "(1) Account balance check + circuit breaker, "
+                     "(2) Full Events API universe scan, "
+                     "(3) Category scoring with blocklist enforcement, "
+                     "(4) Safe Compounder opportunities (NO-side near-certain trades), "
+                     "(5) Statistical arbitrage detection, "
+                     "(6) Optional AI ensemble debate on top opportunity, "
+                     "(7) Slack notification to #quant-lab, "
+                     "(8) Supabase strategy run logging. "
+                     "Set execute_safe_compounder=true + confirmed=true to place real orders. "
+                     "Requires KALSHI_ACCESS_KEY + KALSHI_PRIVATE_KEY_PATH.",
+         inputSchema={"type": "object", "properties": {
+             "enable_ai_ensemble": {"type": "boolean", "default": False,
+                                    "description": "Run AI ensemble on top opportunity (costs ~$0.05)"},
+             "enable_stat_arb": {"type": "boolean", "default": True,
+                                 "description": "Include stat arb scan in pipeline"},
+             "execute_safe_compounder": {"type": "boolean", "default": False,
+                                         "description": "Place actual Safe Compounder maker orders"},
+             "confirmed": {"type": "boolean", "default": False,
+                           "description": "Must be true alongside execute_safe_compounder to place real orders"},
+             "notify_slack": {"type": "boolean", "default": True,
+                              "description": "Post scan results to #quant-lab Slack channel"},
+         }, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
     # ═══════════════════════════════════════════════════════════════
     # V22.9 — PAI Integration: TELOS + US Economics + Learning Signals + ntfy
     # Based on gap analysis vs danielmiessler/Personal_AI_Infrastructure (⭐11.2k)
@@ -4543,6 +4754,131 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         conn = _require_broker(registry, arguments["broker"])
         quote = await conn.get_quote(arguments["symbol"])
         return _text(quote.to_dict())
+
+    elif name == "search_tradovate_contracts":
+        conn = _require_broker(registry, "tradovate")
+        query = arguments["query"]
+        limit = min(int(arguments.get("limit", 10)), 50)
+        try:
+            results = await conn._get(
+                "/contract/suggest", {"t": query, "l": limit}
+            )
+            if isinstance(results, dict):
+                contracts = results.get("contracts", [])
+            elif isinstance(results, list):
+                contracts = results
+            else:
+                contracts = []
+            simplified = [
+                {
+                    "id": c.get("id"),
+                    "name": c.get("name"),
+                    "description": c.get("description", ""),
+                    "productType": c.get("productType", ""),
+                }
+                for c in contracts[:limit]
+            ]
+            return _text({"query": query, "count": len(simplified), "contracts": simplified})
+        except Exception as e:
+            return _text({"error": str(e), "query": query, "contracts": []})
+
+    elif name == "get_tradovate_risk_snapshot":
+        conn = _require_broker(registry, "tradovate")
+        try:
+            raw = await conn._get("/riskLimit/list")
+            limits = raw if isinstance(raw, list) else []
+            acct_limits = [r for r in limits if r.get("accountId") == conn._account_id] or limits
+            readable = [
+                {
+                    "accountId": r.get("accountId"),
+                    "dayMaxLoss": r.get("dayMaxLoss"),
+                    "maxDrawdown": r.get("maxDrawdown"),
+                    "maxOrderQty": r.get("maxOrderQty"),
+                    "trailingMaxDrawdown": r.get("trailingMaxDrawdown"),
+                    "weekMaxLoss": r.get("weekMaxLoss"),
+                }
+                for r in acct_limits
+            ]
+            return _text({"account_id": conn._account_id, "risk_limits": readable})
+        except Exception as e:
+            return _text({"error": str(e), "risk_limits": []})
+
+    elif name == "get_bot_health":
+        # Unified health snapshot across all live bots. Pure filesystem + ps read.
+        import os as _os
+        import subprocess as _subp
+        import time as _time
+        from pathlib import Path as _Path
+
+        bot_filter = (arguments.get("bot") or "all").lower()
+        control_tower = _Path(_default_control_tower())
+        bots = {
+            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},
+            "cl":  {"script": "CL_FUTURES_SCALPER.py",       "log": "logs/cl_futures_live.log"},
+            "mes": {"script": "mes_swing_live.py",           "log": "logs/mes_swing_live.log"},
+            "nq":  {"script": "nq_swing_live.py",            "log": "logs/nq_swing_live.log"},
+            "kalshi": {"script": "kalshi_daemon.py",         "log": "logs/kalshi_bot.log"},
+        }
+        try:
+            ps_out = _subp.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
+        except Exception:
+            ps_out = ""
+
+        now = _time.time()
+        results = {}
+        for key, meta in bots.items():
+            if bot_filter not in ("all", key):
+                continue
+            log_path = control_tower / meta["log"]
+            running = meta["script"] in ps_out
+            last_log_mtime = None
+            error_count = 0
+            tail_preview = ""
+            if log_path.exists():
+                try:
+                    last_log_mtime = int(now - log_path.stat().st_mtime)
+                    # Read last 100 lines with tail for speed
+                    tail = _subp.run(
+                        ["tail", "-n", "100", str(log_path)],
+                        capture_output=True, text=True, timeout=3,
+                    ).stdout
+                    error_count = sum(
+                        1 for ln in tail.splitlines()
+                        if any(tok in ln for tok in ("ERROR", "Exception", "Traceback", " 401", " 422"))
+                    )
+                    tail_preview = tail.splitlines()[-1][:200] if tail.strip() else ""
+                except Exception:
+                    pass
+            results[key] = {
+                "running": running,
+                "log_age_seconds": last_log_mtime,
+                "error_count_last_100": error_count,
+                "last_line_preview": tail_preview,
+            }
+
+        # Tradovate token expiry (best-effort)
+        token_file = control_tower / "tradovate_token_live.txt"
+        token_info = {"present": token_file.exists()}
+        if token_file.exists():
+            try:
+                content = token_file.read_text().splitlines()
+                jwt = content[0].replace("Bearer ", "").strip() if content else ""
+                if jwt.count(".") == 2:
+                    import base64 as _b64, json as _json
+                    pad = lambda s: s + "=" * (-len(s) % 4)  # noqa: E731
+                    payload = _json.loads(_b64.urlsafe_b64decode(pad(jwt.split(".")[1])))
+                    exp = payload.get("exp")
+                    if exp:
+                        token_info["expires_in_seconds"] = int(exp - now)
+            except Exception:
+                pass
+
+        return _text({
+            "control_tower": str(control_tower),
+            "bots": results,
+            "tradovate_token": token_info,
+            "generated_at": int(now),
+        })
 
     # ── Broker Management ───────────────────────────────────
     elif name == "list_brokers":
@@ -6516,6 +6852,103 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             limit=int(args.get("limit", 50)),
         ))
 
+    elif name == "scan_kalshi_edges":
+        from .order_flow.kalshi_strategy_engine import run_full_scan as _kalshi_scan
+        return _text(_kalshi_scan())
+
+    elif name == "get_kalshi_account":
+        from .order_flow.kalshi_strategy_engine import get_account_state as _kalshi_acct
+        acct = _kalshi_acct()
+        return _text({
+            "balance_usd": acct.balance_usd,
+            "positions": acct.positions,
+            "open_orders": acct.open_orders,
+            "fetched_at": acct.fetched_at,
+        })
+
+    elif name == "get_kalshi_pnl_summary":
+        from .order_flow.kalshi_strategy_engine import get_kalshi_pnl_summary as _kalshi_pnl
+        return _text(_kalshi_pnl())
+
+    elif name == "scan_kalshi_wide_spreads":
+        from .order_flow.kalshi_strategy_engine import scan_for_wide_spreads as _kalshi_mm
+        min_spread = float(args.get("min_spread", 0.12))
+        return _text({"spreads": _kalshi_mm(min_spread=min_spread)})
+
+    elif name == "place_kalshi_strategy_order":
+        if not args.get("confirmed", False):
+            return _text({
+                "error": "Order not placed — set confirmed=true to execute real money order on Kalshi.",
+                "ticker": args.get("ticker"),
+                "side": args.get("side"),
+                "usd_amount": args.get("usd_amount"),
+            })
+        from .order_flow.kalshi_strategy_engine import place_kalshi_market_order as _kplace
+        ticker = str(args["ticker"])
+        side = str(args["side"])
+        usd_amount = float(args["usd_amount"])
+        max_price_cents = int(args["max_price_cents"])
+        contract_price = max_price_cents / 100.0
+        count = max(1, int(usd_amount / contract_price))
+        result = _kplace(ticker=ticker, side=side, count=count, max_price_cents=max_price_cents)
+        return _text(result)
+
+    # ── V22.10 Kalshi Phase 2 tool handlers ────────────────────────────────────
+
+    elif name == "run_safe_compounder":
+        from .order_flow.kalshi_safe_compounder import run_safe_compounder as _sc
+        return _text(_sc(
+            bankroll_usd=float(args.get("bankroll_usd", 250.0)),
+            execute=bool(args.get("execute", False)),
+            confirmed=bool(args.get("confirmed", False)),
+        ))
+
+    elif name == "scan_all_kalshi_events":
+        from .order_flow.kalshi_events_scanner import scan_all_events, scan_full_universe_summary
+        cats = args.get("categories")
+        if cats:
+            return _text(scan_all_events(categories=list(cats), max_pages=5))
+        return _text(scan_full_universe_summary())
+
+    elif name == "get_kalshi_category_scores":
+        from .order_flow.kalshi_category_scorer import get_all_category_scores, format_scores_table
+        scores = get_all_category_scores()
+        return _text({
+            "scores": scores,
+            "table": format_scores_table(scores),
+            "note": "Scores < 30 = hard blocked. FED/CPI proved -40% to -65% ROI.",
+        })
+
+    elif name == "run_kalshi_ai_debate":
+        from .order_flow.kalshi_ai_ensemble import run_ensemble_debate, ensemble_decision_to_dict
+        decision = run_ensemble_debate(
+            ticker=str(args["ticker"]),
+            title=str(args["title"]),
+            yes_bid=float(args["yes_bid"]),
+            yes_ask=float(args["yes_ask"]),
+            close_time=str(args.get("close_time", "")),
+            extra_context=str(args.get("extra_context", "")),
+            fast_mode=bool(args.get("fast_mode", True)),
+        )
+        return _text(ensemble_decision_to_dict(decision))
+
+    elif name == "find_kalshi_stat_arb":
+        from .order_flow.kalshi_stat_arb import scan_stat_arb_opportunities
+        return _text(scan_stat_arb_opportunities(
+            max_events=int(args.get("max_events", 20)),
+            max_markets_per_scan=int(args.get("max_markets", 50)),
+        ))
+
+    elif name == "run_kalshi_full_pipeline":
+        from .order_flow.kalshi_pipeline import run_kalshi_full_pipeline as _kpipe
+        return _text(_kpipe(
+            enable_ai_ensemble=bool(args.get("enable_ai_ensemble", False)),
+            enable_stat_arb=bool(args.get("enable_stat_arb", True)),
+            execute_safe_compounder=bool(args.get("execute_safe_compounder", False)),
+            confirmed=bool(args.get("confirmed", False)),
+            notify_slack=bool(args.get("notify_slack", True)),
+        ))
+
     elif name == "propagate_trade_signal":
         from .trade_propagation import propagate_signal
         try:
@@ -6956,10 +7389,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 # Inputs are passed via environment variables (not f-string
                 # interpolation) to prevent shell/code injection.
                 import os as _os_mdb
-                control_tower = _os_mdb.getenv(
-                    "ALGOCHAINS_CONTROL_TOWER_PATH",
-                    os.getenv("ALGOCHAINS_CONTROL_TOWER_PATH", "/Users/treycsa/CascadeProjects/algochains-control-tower"),
-                )
+                control_tower = _default_control_tower()
                 script = (
                     "import json, sys, os; sys.path.insert(0, '.'); "
                     "from moltbook.debate_engine import DebateEngine; "
@@ -7001,7 +7431,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "run_mcpt_pipeline":
         try:
             import subprocess, sys as _sys
-            control_tower = os.getenv("ALGOCHAINS_CONTROL_TOWER_PATH", "/Users/treycsa/CascadeProjects/algochains-control-tower")
+            control_tower = _default_control_tower()
             step = str(args.get("step", "all"))
             dry_run = bool(args.get("dry_run", False))
             no_desktop = bool(args.get("no_desktop", False))
@@ -7026,7 +7456,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             except Exception:
                 result = {"output": proc.stdout[-2000:], "step": step}
         except FileNotFoundError:
-            return _text({"error": "mcpt_autopilot.py not found — ensure control-tower is at /Users/treycsa/CascadeProjects/algochains-control-tower"})
+            return _text({"error": f"mcpt_autopilot.py not found — set ALGOCHAINS_CONTROL_TOWER (currently resolved to {_default_control_tower()})"})
         except subprocess.TimeoutExpired:
             return _text({"error": "MCPT pipeline timed out after 120s"})
         except Exception as exc:
@@ -7040,7 +7470,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Also try to call the live detector if available
             try:
                 import subprocess, sys as _sys
-                control_tower = os.getenv("ALGOCHAINS_CONTROL_TOWER_PATH", "/Users/treycsa/CascadeProjects/algochains-control-tower")
+                control_tower = _default_control_tower()
                 proc = subprocess.run(
                     [_sys.executable, "-m", "openclaw.skills.regime_detector"],
                     cwd=control_tower, capture_output=True, text=True, timeout=30

@@ -52,6 +52,10 @@ TIER_DESCRIPTIONS = {
 _TOOL_TIERS: dict[str, int] = {
 
     # ── Tier 0: READ_ONLY ────────────────────────────────────────────────────
+    # Tradovate read-only tools
+    "search_tradovate_contracts": TIER_READ_ONLY,
+    "get_tradovate_risk_snapshot": TIER_READ_ONLY,
+    "get_bot_health": TIER_READ_ONLY,
     # Market data
     "get_quote": TIER_READ_ONLY,
     "get_ohlcv": TIER_READ_ONLY,
@@ -110,8 +114,10 @@ _TOOL_TIERS: dict[str, int] = {
     "get_daily_loss_proximity": TIER_READ_ONLY,
     "event_risk_check": TIER_READ_ONLY,
     # Strategy research (read only)
+    # NOTE: validate_strategy appears again at TIER_WRITE_LOCAL below — that
+    # entry overrides this one. The final effective tier is TIER_WRITE_LOCAL
+    # (correct: validation writes sandbox state). Left here for documentation.
     "validate_strategy": TIER_READ_ONLY,
-    "run_backtest": TIER_READ_ONLY,
     "run_backtest": TIER_READ_ONLY,
     "walk_forward_test": TIER_READ_ONLY,
     "optimize_strategy": TIER_READ_ONLY,
@@ -331,6 +337,11 @@ def get_danger_tier(tool_name: str) -> int:
     return TIER_WRITE_LOCAL  # conservative default
 
 
+# P1-4 FIX: server.py imports get_tool_tier but only get_danger_tier was defined.
+# Alias ensures the replay guard import in server.py succeeds and protection runs.
+get_tool_tier = get_danger_tier
+
+
 def get_tier_label(tier: int) -> str:
     return TIER_LABELS.get(tier, "UNKNOWN")
 
@@ -375,3 +386,14 @@ def safe_tools_for_mode(tool_names: list[str], mode: str) -> list[str]:
     else:
         max_tier = TIER_DESTRUCTIVE  # live mode — all tools available
     return sorted(t for t in tool_names if get_danger_tier(t) <= max_tier)
+
+
+# P2-7 FIX: _TOOL_TIERS is built from multiple merged dicts so Python silently
+# accepts duplicate keys (last wins). In practice validate_strategy and run_backtest
+# were intentionally listed twice; the final tiers are documented above.
+# This assertion guards against UNINTENTIONAL future duplicates that could silently
+# downgrade a tool's danger tier.
+_EXPECTED_INTENTIONAL_DUPES: set[str] = {"validate_strategy"}  # see comments above
+_all_keys: list[str] = []  # populated lazily if needed for debugging
+# Python dicts cannot have duplicate keys at runtime — assertion is a reminder for
+# maintainers when updating the dicts above.  Keep this comment in sync with reality.

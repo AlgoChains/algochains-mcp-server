@@ -176,6 +176,182 @@ Full team guide: [SAFETY_MODEL.md — Team Access Setup](SAFETY_MODEL.md#team-ac
 
 ---
 
+## Tradovate API Parity
+
+AlgoChains already covers and exceeds the surface area of the community
+[mcp-tradovate](https://github.com/0xjmp/mcp-tradovate) Go server. The detailed mapping of every
+Tradovate REST endpoint to its AlgoChains equivalent (plus gap opportunities and the governance
+rule against running both MCPs concurrently) lives in:
+
+**[docs/TRADOVATE_PARITY.md](docs/TRADOVATE_PARITY.md)**
+
+Key points:
+- `get_positions`, `place_order`, `cancel_order`, `get_fills`, `get_historical_data`, `get_quote` — all covered via `TradovateConnector` in `brokers/tradovate.py`.
+- `authenticate` — handled exclusively by Token Guardian. Never run a second auth session alongside live bots.
+- Risk limits, bracket tracking, bot process health — unique AlgoChains capabilities with no equivalent in the community server.
+- Low-priority gaps (`search_tradovate_contracts`, `get_tradovate_risk_snapshot`) are documented in the parity file with implementation sketches.
+
+---
+
+## Desktop Tower Transfer Guide
+
+> **Use this when switching development from the MacBook to the desktop tower (teespc-1 / `100.89.114.31`) or picking up where you left off.**
+
+### What Runs Where
+
+| Component | MacBook (primary) | Desktop Tower (teespc-1) |
+|-----------|:-----------------:|:------------------------:|
+| Live Tradovate bots (MNQ, CL, MES, NQ) | ✅ launchd | — |
+| Kalshi daemon (autonomous execution) | ✅ launchd | — |
+| Token Guardian | ✅ launchd | — |
+| Command Center (`:3333`) | ✅ cloudflared tunnel | — |
+| Onyx RAG stack | — | ✅ `:8085` |
+| GPU/ML workloads (FinBERT, Kronos, vLLM) | — | ✅ |
+| Heavy backtests via `dispatch_tower_job` | sends job | ✅ executes |
+| Code (synced repo) | source | receives rsync |
+
+**Rule:** Execution (live orders, daemons) stays on Mac. Development and ML work can happen on either machine. The desktop tower is never a primary execution node.
+
+---
+
+### Step 1 — Verify Desktop Connectivity
+
+```bash
+# Check Tailscale sees the tower
+tailscale status | grep teespc
+
+# Test SSH (Windows OpenSSH on port 22)
+ssh -p 22 tyler@100.89.114.31 "echo OK"
+
+# If using WSL2 on the tower, it may listen on port 2222 instead:
+ssh -p 2222 trrey@100.89.114.31 "echo OK"
+```
+
+> **Canonical IP:** `100.89.114.31` (teespc-1). Any docs or scripts referencing `100.99.127.119` are stale — ignore them.
+
+---
+
+### Step 2 — Sync Code to Desktop
+
+Run from the MacBook (dry-run by default):
+
+```bash
+# Review what would be synced (safe, no changes)
+bash scripts/desktop_sync.sh
+
+# Apply the sync (copies both control-tower + mcp-server)
+bash scripts/desktop_sync.sh --live
+
+# Just check connectivity without syncing
+bash scripts/desktop_sync.sh --check
+```
+
+**What is NOT synced** (intentionally excluded):
+- `.env` — secrets must be set manually on the tower (see Step 3)
+- `logs/`, `state/`, `data/` — runtime state stays local to each machine
+- `.git/`, `node_modules/`, `.next/` — rebuild on the tower
+- `*.db-shm`, `*.db-wal`, `vendor/`, `.kronos_cache/`
+
+---
+
+### Step 3 — Set Up Desktop Environment
+
+**On the desktop tower (WSL2 Ubuntu or Windows with Python):**
+
+```bash
+# 1. Navigate to synced repos
+cd /home/trrey/algochains-mcp-server
+
+# 2. Create Python 3.11+ virtual environment
+python3.11 -m venv .venv && source .venv/bin/activate
+
+# 3. Install all dependencies (full stack)
+pip install -e ".[full_v21]"
+
+# 4. Copy and populate .env (secrets not synced by rsync)
+cp .env.example .env
+# Edit .env and fill in: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+# KALSHI_ACCESS_KEY, KALSHI_PRIVATE_KEY_PATH, TRADOVATE_*, SLACK_BOT_TOKEN,
+# OPENROUTER_API_KEY, ONYX_API_URL=http://localhost:8085
+
+# 5. Repeat for control-tower
+cd /home/trrey/algochains-control-tower
+cp .env.example .env   # fill same keys
+```
+
+**Key env vars the desktop needs** (at minimum for Kalshi + MCP):
+
+| Variable | Source |
+|----------|--------|
+| `SUPABASE_URL` | Supabase dashboard |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase dashboard → API settings |
+| `KALSHI_ACCESS_KEY` | Kalshi API portal |
+| `KALSHI_PRIVATE_KEY_PATH` | Path to RSA private key on desktop |
+| `OPENROUTER_API_KEY` | OpenRouter dashboard |
+| `SLACK_BOT_TOKEN` | Slack app settings |
+| `ONYX_API_URL` | `http://localhost:8085` (Onyx runs locally on tower) |
+
+---
+
+### Step 4 — Smoke Test on Desktop
+
+```bash
+# Verify MCP server starts
+cd /home/trrey/algochains-mcp-server
+source .venv/bin/activate
+python scripts/quickstart.py --mode demo
+
+# Run Kalshi pipeline dry-run (no real orders)
+cd /home/trrey/algochains-control-tower
+python3 autonomous/kalshi_daemon.py --once
+
+# Run with execution (manual one-shot, not daemon)
+python3 autonomous/kalshi_daemon.py --once --execute --confirmed
+```
+
+> **Important:** Do NOT run `--daemon` on the desktop tower for bots that also run on Mac. The Mac launchd is the single authoritative execution node. Run `--once` for ad-hoc testing only.
+
+---
+
+### Step 5 — GPU / ML Workloads
+
+The desktop runs Onyx (RAG), Kronos (foundation model), and heavy backtests. From the Mac:
+
+```bash
+# Dispatch a backtest job to the desktop GPU
+python3 -c "
+from algochains_mcp.algoclaw.desktop_tower import dispatch_tower_job
+dispatch_tower_job('backtest', {'strategy': 'mnq_scalper', 'lookback_days': 90})
+"
+
+# Check desktop Onyx is reachable
+curl http://100.89.114.31:8085/health
+```
+
+---
+
+### Audit: Mac vs Desktop (as of Apr 2026)
+
+| Service | Mac PID / launchd | Desktop |
+|---------|:-----------------:|:-------:|
+| MNQ bot (`FUTURES_SCALPER_UPGRADED.py`) | `com.algochains.futures-scalper-upgraded` | — |
+| CL bot (`CL_FUTURES_SCALPER.py`) | `com.algochains.cl-futures-scalper` | — |
+| MES bot (`mes_swing_live.py`) | `com.algochains.mes-bot` | — |
+| NQ bot (`nq_swing_live.py`) | `com.algochains.nq-bot` | — |
+| Kalshi daemon | `com.algochains.kalshi-bot` | — |
+| Token Guardian | `com.algochains.token-guardian` | — |
+| Autonomous Watchdog | `com.algochains.autonomous-watchdog` | — |
+| Onyx RAG | — | port 8085 |
+| MCP server (HTTP bridge) | `com.algochains.mcp-bridge` | dev only |
+| Command Center UI | `com.algochains.command-center` (`:3333`) | — |
+
+To list all active Mac launchd services:
+```bash
+launchctl list | grep com.algochains
+```
+
+---
+
 ## Tool Starter Pack — Start Here, Not With 400 Tools
 
 Most first-time use cases are covered by these tools. All are safe in demo mode unless marked.
