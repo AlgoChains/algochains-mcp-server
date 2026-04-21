@@ -302,7 +302,7 @@ _LAZY_SPECS = {
 # logger and basicConfig already configured above (before guardrails import)
 
 SERVER_INSTRUCTIONS = (
-    "AlgoChains MCP Server v22.0 — The Ultimate Algo Quant Stack. "
+    "AlgoChains MCP Server v22.2 — The Ultimate Algo Quant Stack. "
     "338 tools across 19 domains: market data, trading, strategy building, ML/AI, execution, "
     "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
     "Onyx RAG intelligence, MCP 2025-11-25 spec compliance, SaaS hardening, and "
@@ -310,6 +310,14 @@ SERVER_INSTRUCTIONS = (
     "Real data only — all tools connect to live brokers, real tick feeds, and real APIs. "
     "In smart mode (default), ~54 Tier-1 tools exposed. "
     "Use 'discover_tools' to find 280+ additional tools on demand. "
+    "V22.2: get_bot_health now includes ml_env_flags (MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, "
+    "MASSIVE_HALT_GUARD) and cc_health (Command Center watchdog state from cc_health_state.json). "
+    "Data vendor standard: Massive.com (Polygon white-label) for options/news/PCR-style metrics — "
+    "core/massive_pcr_features.py provides live SPY/QQQ PCR gated by MASSIVE_PCR_FEATURES; "
+    "see control-tower docs/BACKTEST_FEATURE_TRACE.md for train/serve skew map and feature flags. "
+    "Note: get_feature_importance is the v10 ML engine path (feature_set_id); for MNQ LightGBM/XGBoost "
+    "gain importance on the promoted pkl run scripts/feature_importance_report.py on control-tower. "
+    "V22.1: get_bot_health signal_health slice (params + risk_bootstrap); get_kronos_shadow_stats path fix. "
     "V22.0 NEW: Autonomous marketplace autopilot (run_marketplace_autopilot), "
     "marketplace listings (get_marketplace_listings), Onyx ingest trigger (run_onyx_ingest), "
     "Onyx status (get_onyx_status). Signal conflict manager (get_signal_conflict_stats). "
@@ -393,6 +401,9 @@ def _classify_tool_annotations() -> dict[str, ToolAnnotations]:
     return m
 
 _TOOL_ANNOTATION_MAP = _classify_tool_annotations()
+
+# ── Process start time — used by server_diagnostics to report uptime ──────────
+_SERVER_START_TIME: float = time.monotonic()
 
 # ── Singletons — typed where class is always available, untyped where lazy ──
 _config: ServerConfig | None = None
@@ -2212,7 +2223,7 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}},
         annotations=ANNOT_READ_EXTERNAL,
     ),
-    Tool(name="get_feature_importance", description="Get feature importance rankings for a trained model's feature set.",
+    Tool(name="get_feature_importance", description="Get feature importance rankings for a v10 ML engine feature set (by feature_set_id/model_id). NOTE: this is the abstract feature-engine path and is NOT the same as the MNQ futures bot's gain-based importance on futures_model_latest.pkl. To inspect importance for the live MNQ LightGBM/XGBoost model, run `python3 scripts/feature_importance_report.py` on the algochains-control-tower repo (ALGOCHAINS_CONTROL_TOWER path) — that script reads the promoted .pkl directly and highlights flow_pcr_spy/qqq, geopol_mnq_risk, and news features. Use this tool for v10 feature-set experiment tracking.",
          inputSchema={"type": "object", "properties": {"feature_set_id": {"type": "string"}, "model_id": {"type": "string"}}, "required": ["feature_set_id"]},
         annotations=ANNOT_READ_EXTERNAL,
     ),
@@ -3598,6 +3609,19 @@ TOOLS = [
          description="List all research attachments available for a bot: MCPT validation JSON files, backtest PDFs, whitepapers, and blueprint markdown files. Shows local path and whether the file exists. Use to prepare uploads to Supabase storage for bot card attachment panel.",
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq. Use 'all' for every bot.", "default": "all"}}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_finalized_backtests",
+         description="Query Supabase strategy_backtest_run for all finalized (promoted) backtest runs. Returns run_id, strategy_id, run_label, git_sha, metrics_summary (sharpe, win_rate, max_dd, total_trades), and finalized_at. Use to answer 'what is the current source of truth for MNQ/CL/MES/NQ?' or to display on the algochains.ai marketplace cards.",
+         inputSchema={"type": "object", "properties": {
+             "strategy_id": {"type": "string", "description": "Filter by strategy (e.g. MNQ_UPGRADED_SCALPER). Omit for all.", "default": ""},
+             "limit":       {"type": "integer", "description": "Max rows to return (default 10)", "default": 10},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_backtest_run_detail",
+         description="Get full detail for a single finalized backtest run including per-fold metrics. Returns run metadata, metrics_summary, decision_text, artifact_paths, and all fold rows (oos_start, oos_end, trades, win_rate, sharpe, max_dd). Use to answer deep questions about a specific backtest run.",
+         inputSchema={"type": "object", "properties": {
+             "run_id": {"type": "string", "description": "UUID of the strategy_backtest_run row"},
+         }, "required": ["run_id"]},
+         annotations=ANNOT_READ_ONLY),
 
     # V26.0: Bot Ops — Bracket status, position state, pipeline health, restart, flatten
     # ═══════════════════════════════════════════════════════════════════════════════════
@@ -4873,9 +4897,78 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             except Exception:
                 pass
 
+        # ── signal_health.json slice (params + risk_bootstrap) ──
+        # Provides MCP clients one-stop visibility into bot params and validated
+        # risk metrics without requiring filesystem access.
+        import json as _json_gh
+        signal_health_slice = {}
+        _sh_path = control_tower / "state" / "signal_health.json"
+        if _sh_path.exists():
+            try:
+                _sh_data = _json_gh.loads(_sh_path.read_text())
+                _bot_key_map = {
+                    "mnq": "MNQ_Upgraded_Scalper",
+                    "cl":  "CL_Swing_Scalper",
+                    "mes": "MES_EMA_Swing",
+                    "nq":  "NQ_EMA_Swing",
+                }
+                for _k, _sh_key in _bot_key_map.items():
+                    if bot_filter not in ("all", _k):
+                        continue
+                    _entry = _sh_data.get(_sh_key, {})
+                    signal_health_slice[_k] = {
+                        "params": _entry.get("params"),
+                        "risk_bootstrap": _entry.get("risk_bootstrap"),
+                        "bot_version": _entry.get("bot_version"),
+                        "trading_mode": _sh_data.get("ws_health", {}).get("status"),
+                    }
+            except Exception:
+                signal_health_slice = {"error": "signal_health.json parse failure"}
+
+        # ── ML feature flags (env mirrors for Massive-standard stack) ────────
+        # Exposes MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, and
+        # MASSIVE_HALT_GUARD so agents can verify the live bot's feature-flag
+        # state without a separate config fetch. Values are "0"/"1" only;
+        # no secrets are surfaced. NOTE: parity with the running bot requires
+        # the MCP server process to share the same .env as trading. If they
+        # differ, see control-tower docs/BACKTEST_FEATURE_TRACE.md §3 for
+        # train/serve risk implications of each flag.
+        ml_env_flags = {
+            "MASSIVE_NEWS_FEATURES": _os.environ.get("MASSIVE_NEWS_FEATURES", "0"),
+            "MASSIVE_PCR_FEATURES": _os.environ.get("MASSIVE_PCR_FEATURES", "0"),
+            "MASSIVE_HALT_GUARD": _os.environ.get("MASSIVE_HALT_GUARD", "0"),
+        }
+
+        # ── Command Center watchdog state (cc_health_state.json) ─────────────
+        # Mirrors the OpenClaw "CC degraded" alert sources so agents get
+        # the same health picture as Slack without a separate file read.
+        # Populated by autonomous/cc_health_watchdog.py every 5 minutes.
+        cc_health: dict = {}
+        _cc_state_path = control_tower / "state" / "cc_health_state.json"
+        if _cc_state_path.exists():
+            try:
+                import json as _json_cc
+                _cc_raw = _json_cc.loads(_cc_state_path.read_text())
+                cc_health = {
+                    "status": _cc_raw.get("status"),
+                    "issues": _cc_raw.get("issues", []),
+                    "cc_log_age_minutes": _cc_raw.get("cc_log_age_minutes"),
+                    "consecutive_failures": _cc_raw.get("consecutive_failures"),
+                    "cc_restarts": _cc_raw.get("cc_restarts"),
+                    "circuit_breakers_open": _cc_raw.get("circuit_breakers_open"),
+                    "last_check_utc": _cc_raw.get("last_check_utc"),
+                }
+            except Exception as _cc_err:
+                cc_health = {"error": f"cc_health_state.json parse failure: {_cc_err}"}
+        else:
+            cc_health = {"status": "unknown", "detail": "cc_health_state.json not found"}
+
         return _text({
             "control_tower": str(control_tower),
             "bots": results,
+            "signal_health": signal_health_slice,
+            "ml_env_flags": ml_env_flags,
+            "cc_health": cc_health,
             "tradovate_token": token_info,
             "generated_at": int(now),
         })
@@ -5002,11 +5095,29 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     # ── Server diagnostics ──────────────────────────────────
     elif name == "server_diagnostics":
         tlog = get_tool_logger()
+        configured = registry.list_configured()
+        connected = registry.list_available()
+        uptime_s = round(time.monotonic() - _SERVER_START_TIME)
         return _text({
             "tool_call_stats": tlog.stats(),
             "recent_calls": tlog.recent(10),
-            "configured_brokers": registry.list_configured(),
-            "connected_brokers": registry.list_available(),
+            "configured_brokers": configured,
+            "connected_brokers": connected,
+            # ── Added fields to prevent misreading low total_calls ──────────
+            # tool_call_stats resets on process restart (in-memory only).
+            # A low total_calls count means "quiet session / fresh restart",
+            # not "system idle". Use process_uptime_seconds to calibrate.
+            "process_uptime_seconds": uptime_s,
+            # broker_pool_warm=false means brokers are configured but
+            # connect_broker has not been called yet in this session.
+            # Broker-dependent tools (get_account, get_tradovate_risk_snapshot)
+            # require an explicit connect_broker call first.
+            "broker_pool_warm": len(connected) > 0,
+            "broker_pool_status": {
+                "configured": len(configured),
+                "connected": len(connected),
+                "cold_brokers": [b for b in configured if b not in connected],
+            },
         })
 
     # ── V4: Streaming ────────────────────────────────────────
@@ -7267,6 +7378,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             )
             if spec and spec.loader:
                 mod = importlib.util.module_from_spec(spec)
+                _sys.modules[spec.name] = mod  # @dataclass needs module in sys.modules (Py 3.14+)
                 spec.loader.exec_module(mod)  # type: ignore
                 daemon = mod.MetricsStreamingDaemon()
                 if name == "get_bot_dashboard":
@@ -7596,19 +7708,21 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     # Desktop Tower Job Dispatcher
     # ═══════════════════════════════════════════════════════════════
     elif name in ("dispatch_tower_job", "get_tower_job_status", "get_tower_health", "list_tower_jobs"):
+        import os as _os_tower
         import sys as _sys
-        _ct_path = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+        _ct_path = _os_tower.path.expanduser("~/CascadeProjects/algochains-control-tower")
         if _ct_path not in _sys.path:
             _sys.path.insert(0, _ct_path)
         try:
             import importlib.util
             spec = importlib.util.spec_from_file_location(
                 "desktop_tower_dispatcher",
-                os.path.join(_ct_path, "autonomous", "desktop_tower_dispatcher.py"),
+                _os_tower.path.join(_ct_path, "autonomous", "desktop_tower_dispatcher.py"),
             )
             if not spec or not spec.loader:
                 return _text({"error": "Desktop tower dispatcher not found in control tower"})
             mod = importlib.util.module_from_spec(spec)
+            _sys.modules[spec.name] = mod  # @dataclass needs module in sys.modules (Py 3.14+)
             spec.loader.exec_module(mod)  # type: ignore
             dispatcher = mod.get_dispatcher()
             if name == "dispatch_tower_job":
@@ -7636,18 +7750,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Tower dispatcher error: {exc}"})
 
     elif name == "get_signal_conflict_stats":
-        _ct_path = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+        import os as _os_sc
         import sys as _sys
+        _ct_path = _os_sc.path.expanduser("~/CascadeProjects/algochains-control-tower")
         if _ct_path not in _sys.path:
             _sys.path.insert(0, _ct_path)
         try:
             import importlib.util
             spec = importlib.util.spec_from_file_location(
                 "signal_conflict_manager",
-                os.path.join(_ct_path, "signal_conflict_manager.py"),
+                _os_sc.path.join(_ct_path, "signal_conflict_manager.py"),
             )
             if spec and spec.loader:
                 mod = importlib.util.module_from_spec(spec)
+                _sys.modules[spec.name] = mod  # @dataclass needs module in sys.modules (Py 3.14+)
                 spec.loader.exec_module(mod)  # type: ignore
                 mgr = mod.get_conflict_manager(args.get("bot_name", ""))
                 stats = mgr.get_conflict_stats(hours=args.get("hours", 24))
@@ -7663,7 +7779,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             import os as _os
             from dotenv import load_dotenv as _ld
-            _ld(os.path.expanduser("~/CascadeProjects/algochains-control-tower/.env"), override=False)
+            _ld(_os.path.expanduser("~/CascadeProjects/algochains-control-tower/.env"), override=False)
             key = _os.getenv("ALPACA_PAPER_KEY", "")
             secret = _os.getenv("ALPACA_PAPER_SECRET", "")
             if not key:
@@ -7890,6 +8006,39 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(card.to_dict())
         except Exception as exc:
             return _text({"error": f"Bot card data error: {exc}", "bot_id": args.get("bot_id")})
+
+    elif name == "get_finalized_backtests":
+        try:
+            from supabase import create_client as _sb_create
+            _sb = _sb_create(os.environ["SUPABASE_URL"], os.environ["SUPABASE_ANON_KEY"])
+            strategy_id = args.get("strategy_id", "")
+            limit = int(args.get("limit", 10))
+            q = _sb.table("strategy_backtest_run").select(
+                "id,strategy_id,run_label,git_sha,promotion,decision_text,metrics_summary,finalized_at,finalized_by"
+            ).eq("status", "finalized")
+            if strategy_id:
+                q = q.eq("strategy_id", strategy_id)
+            result = q.order("finalized_at", desc=True).limit(limit).execute()
+            return _text({"runs": result.data or [], "count": len(result.data or [])})
+        except Exception as exc:
+            return _text({"error": f"get_finalized_backtests error: {exc}"})
+
+    elif name == "get_backtest_run_detail":
+        try:
+            from supabase import create_client as _sb_create
+            _sb = _sb_create(os.environ["SUPABASE_URL"], os.environ["SUPABASE_ANON_KEY"])
+            run_id = args.get("run_id", "")
+            if not run_id:
+                return _text({"error": "run_id is required"})
+            run_r = _sb.table("strategy_backtest_run").select("*").eq("id", run_id).single().execute()
+            folds_r = _sb.table("strategy_backtest_fold").select("*").eq("run_id", run_id).order("fold_index").execute()
+            return _text({
+                "run": run_r.data,
+                "folds": folds_r.data or [],
+                "fold_count": len(folds_r.data or []),
+            })
+        except Exception as exc:
+            return _text({"error": f"get_backtest_run_detail error: {exc}"})
 
     elif name == "list_bot_research_attachments":
         try:
@@ -8447,7 +8596,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Loop status error: {exc}"})
 
     elif name == "get_latency_profile":
-        _t_session_start = t0 - (time.monotonic() - t0)  # approximate
+        _call_start = time.monotonic()
         return _text({
             "execution_tier": "Tier 4: MCP AI-assisted (120ms–2s per tool call)",
             "suitable_for": [
@@ -8464,7 +8613,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "1-minute intraday execution (borderline — use direct bot WebSocket)",
             ],
             "measured_latency_ms": {
-                "this_tool_call_overhead": round((time.monotonic() - t0) * 1000, 1),
+                "this_tool_call_overhead": round((time.monotonic() - _call_start) * 1000, 1),
                 "mcp_tool_overhead_typical": "2–5ms",
                 "llm_inference_typical": "80–400ms",
                 "tradovate_api_roundtrip": "15–80ms",
@@ -8981,10 +9130,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             import json as _json
             from pathlib import Path as _Path
-            _ct = _Path(__file__).resolve().parent.parent.parent.parent.parent / "algochains-control-tower"
+            # Use _default_control_tower() — honours ALGOCHAINS_CONTROL_TOWER env and
+            # the shared legacy path list so this works on both Mac and desktop.
+            # The previous 5x .parent traversal was path-layout-specific and broke
+            # on any non-default install location.
+            _ct = _Path(_default_control_tower())
             _sh = _ct / "state" / "signal_health.json"
             if not _sh.exists():
-                return _text({"error": "signal_health.json not found — control tower not on this machine"})
+                return _text({"error": f"signal_health.json not found at {_sh} — set ALGOCHAINS_CONTROL_TOWER env or verify control-tower path"})
             data = _json.loads(_sh.read_text())
             bot_key = str(args.get("bot_key", "all"))
             if bot_key == "all":
