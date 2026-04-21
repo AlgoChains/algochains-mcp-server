@@ -304,6 +304,17 @@ _TOOL_TIERS: dict[str, int] = {
     "delete_all_alerts": TIER_DESTRUCTIVE,
     "purge_trade_memory": TIER_DESTRUCTIVE,
     "destroy_all_sandboxes": TIER_DESTRUCTIVE,
+
+    # ── Subscriber tools (HTTP bridge SUBSCRIBER_TOOLS surface) ──────────────
+    # Read-only subscriber views
+    "get_signal_stream": TIER_READ_ONLY,
+    "get_my_pnl": TIER_READ_ONLY,
+    "get_my_fills": TIER_READ_ONLY,
+    "get_my_assignments": TIER_READ_ONLY,
+    # Subscriber writes are scoped to their own rows; treat as WRITE_LOCAL.
+    "report_fill": TIER_WRITE_LOCAL,
+    "heartbeat": TIER_WRITE_LOCAL,
+    "ack_signal": TIER_WRITE_LOCAL,
 }
 
 # Prefix-based defaults for tools not explicitly listed

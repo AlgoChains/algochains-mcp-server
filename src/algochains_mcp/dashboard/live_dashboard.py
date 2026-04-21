@@ -38,7 +38,13 @@ try:
 except ImportError:
     FASTAPI_AVAILABLE = False
 
-CONTROL_TOWER = Path(os.path.expanduser("~/CascadeProjects/algochains-control-tower"))
+# Use shared resolver; retain the legacy `~/CascadeProjects/...` location as an
+# extra candidate so existing Mac installs see identical behavior.
+from algochains_mcp.paths import default_control_tower  # noqa: E402
+
+CONTROL_TOWER = default_control_tower(
+    extra_candidates=[Path(os.path.expanduser("~/CascadeProjects/algochains-control-tower"))]
+)
 METRICS_DB = Path.home() / ".algochains" / "bot_metrics.db"
 
 

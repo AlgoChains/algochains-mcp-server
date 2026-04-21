@@ -1,33 +1,49 @@
 """
 http_bridge.py — AlgoChains MCP HTTP Bridge
 =============================================
-Exposes the AlgoChains MCP Server as a simple HTTP API for algochains.ai.
-Translates POST /api/mcp { tool, arguments } → MCP tool call → JSON response.
+Exposes the AlgoChains MCP Server as a simple HTTP API for algochains.ai
+and for the Command Center on port 3333.
 
-This is the bridge between algochains.ai (Next.js/Vercel) and the MCP server.
-Can run as:
-  - A standalone FastAPI server:  uvicorn algochains_mcp.http_bridge:app
-  - A Vercel serverless function (see api/mcp.py in algochains.ai repo)
-  - A Cloudflare Worker proxy
+Three auth modes are supported on every protected endpoint:
+  1. No key configured (BRIDGE_API_KEY unset) → public tools only.
+  2. Owner key (BRIDGE_API_KEY) + matching `user_email == OWNER_EMAIL`
+     → full owner tool set.
+  3. Subscriber key (`sub_live_…`) → resolved against
+     `subscriber_api_keys` in Supabase. The bridge then exposes only the
+     SUBSCRIBER_TOOLS surface, scoped to that subscriber's data.
 
-Authentication:
-  - Requires API_KEY header matching ALGOCHAINS_BRIDGE_API_KEY env var
-  - Owner-only tools (trading, bot metrics) validate against OWNER_EMAIL env var
+Run standalone with:
+    uvicorn algochains_mcp.http_bridge:app
+or via the convenience entry point at the bottom of this file.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 # FastAPI imports at module level so inner functions can resolve Request type
 try:
     from fastapi import FastAPI, HTTPException, Header, Request
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import StreamingResponse
     _FASTAPI_AVAILABLE = True
 except ImportError:
     _FASTAPI_AVAILABLE = False
+
+from .subscriber_auth import (
+    ResolvedSubscriber,
+    is_subscriber_key,
+    resolve_subscriber_key,
+)
+from .subscriber_tools import (
+    SUBSCRIBER_TOOL_SCOPES,
+    SUBSCRIBER_TOOLS,
+    call_subscriber_tool,
+)
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +62,7 @@ PUBLIC_TOOLS = {
     "list_bot_research_attachments",
     "get_vix_term_structure",
     "get_earnings_catalyst",
+    "get_latency_profile",
 }
 
 OWNER_TOOLS = {
@@ -65,29 +82,80 @@ OWNER_TOOLS = {
     "get_protection_config",
     "submit_to_marketplace",
     "get_circuit_breaker_status",
+    "get_onboarding_status",
 }
 
 
-async def handle_mcp_request(tool_name: str, arguments: dict, is_owner: bool = False) -> dict:
+async def handle_mcp_request(
+    tool_name: str,
+    arguments: dict,
+    *,
+    is_owner: bool = False,
+    subscriber: ResolvedSubscriber | None = None,
+) -> dict:
     """
     Route an MCP tool call from the HTTP bridge.
-    Returns dict that will be serialized to JSON.
+
+    Resolution order:
+      1. Subscriber-scoped tools (when `subscriber` is provided).
+      2. Owner tools (require `is_owner`).
+      3. Public tools.
+
+    Returns a dict that will be serialised to JSON.
     """
-    # Authorization check
+    # ── 1. Subscriber surface ─────────────────────────────────────────────
+    if subscriber is not None:
+        if tool_name not in SUBSCRIBER_TOOLS:
+            return {
+                "error": "Tool not available to subscribers",
+                "tool": tool_name,
+                "available_tools": sorted(SUBSCRIBER_TOOLS),
+            }
+        required_scope = SUBSCRIBER_TOOL_SCOPES.get(tool_name)
+        if required_scope and required_scope not in subscriber.scopes:
+            return {
+                "error": "Missing scope on this API key",
+                "tool": tool_name,
+                "required_scope": required_scope,
+            }
+        return call_subscriber_tool(tool_name, subscriber.subscriber_id, arguments)
+
+    # ── 2/3. Owner / public surfaces ─────────────────────────────────────
     if tool_name in OWNER_TOOLS and not is_owner:
         return {"error": "Unauthorized — this tool requires owner access", "tool": tool_name}
     if tool_name not in PUBLIC_TOOLS and tool_name not in OWNER_TOOLS:
-        return {"error": f"Tool '{tool_name}' not available via HTTP bridge", "available_tools": sorted(PUBLIC_TOOLS)}
+        return {
+            "error": f"Tool '{tool_name}' not available via HTTP bridge",
+            "available_tools": sorted(PUBLIC_TOOLS),
+        }
 
-    # Import and call the server's tool handler
+    # K-1 fix: enforce danger tiers at dispatch — not just as metadata.
+    # TIER_ORDER_EXEC (2) and TIER_DESTRUCTIVE (3) require owner access AND
+    # an explicit confirm=true argument to prevent accidental or automated calls.
+    if is_owner:
+        try:
+            from algochains_mcp.tool_danger_tiers import get_danger_tier, TIER_ORDER_EXEC, TIER_DESTRUCTIVE
+            tool_tier = get_danger_tier(tool_name)
+            if tool_tier >= TIER_ORDER_EXEC:
+                if not arguments.get("confirm"):
+                    tier_label = "ORDER_EXEC" if tool_tier == TIER_ORDER_EXEC else "DESTRUCTIVE"
+                    return {
+                        "error": (
+                            f"Tool '{tool_name}' has danger tier {tier_label} ({tool_tier}). "
+                            "Pass confirm=true in arguments to execute."
+                        ),
+                        "tool": tool_name,
+                        "danger_tier": tool_tier,
+                        "required_arg": "confirm=true",
+                    }
+        except Exception as _tier_err:
+            log.warning("Danger tier check failed for %s: %s", tool_name, _tier_err)
+
     try:
         from algochains_mcp import server as _server
-        import asyncio
 
-        # Call the tool handler directly
         result = await _server.call_tool(tool_name, arguments)
 
-        # Extract text content
         if result and hasattr(result[0], "text"):
             try:
                 return json.loads(result[0].text)
@@ -132,37 +200,70 @@ def create_fastapi_app():
 
     BRIDGE_API_KEY = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
     OWNER_EMAIL = os.getenv("OWNER_EMAIL", "tyler@algochains.ai")
+    # K-8 fix: dev-mode escape hatch — set ALGOCHAINS_BRIDGE_DEV_MODE=true to
+    # allow unauthenticated public-tool access on localhost during development.
+    # In production (default) an empty key means the bridge refuses all requests.
+    _DEV_MODE = os.getenv("ALGOCHAINS_BRIDGE_DEV_MODE", "").lower() in ("1", "true", "yes")
 
-    # Warn loudly at startup if the bridge is running without a key (open to the internet)
     if not BRIDGE_API_KEY:
-        import logging as _log
-        _log.getLogger(__name__).warning(
-            "⚠️  SECURITY: ALGOCHAINS_BRIDGE_API_KEY is not set — HTTP bridge accepts ANY API key. "
-            "Set this env var in production to restrict access."
-        )
+        if _DEV_MODE:
+            log.warning(
+                "⚠️  BRIDGE_API_KEY not set — running in dev mode (public tools only, "
+                "no owner access). Set ALGOCHAINS_BRIDGE_DEV_MODE=false in production."
+            )
+        else:
+            log.error(
+                "FATAL: ALGOCHAINS_BRIDGE_API_KEY is not set and "
+                "ALGOCHAINS_BRIDGE_DEV_MODE is not enabled. "
+                "The HTTP bridge will reject all requests until the key is configured."
+            )
 
     def _resolve_auth(
         x_api_key: str | None,
         authorization: str | None,
         user_email: str | None = None,
-    ) -> tuple[bool, bool]:
+    ) -> tuple[bool, bool, ResolvedSubscriber | None]:
         """
-        Returns (key_valid, is_owner).
-        key_valid: True if the provided key matches BRIDGE_API_KEY.
-        is_owner: True only when key_valid AND user_email matches OWNER_EMAIL.
-        When BRIDGE_API_KEY is unset: public tools remain accessible, but owner
-        tools are BLOCKED (is_owner=False) to prevent privilege escalation via
-        a spoofed user_email field.
+        Returns (key_valid, is_owner, subscriber).
+
+        Legitimate outcomes:
+          • Owner key matches BRIDGE_API_KEY → (True, True, None)
+          • Subscriber key (sub_live_…) resolves in Supabase
+                → (True, False, ResolvedSubscriber)
+          • No BRIDGE_API_KEY AND dev mode active
+                → (True, False, None) — public tools only, no owner privilege ever
+
+        K-8 fix: when BRIDGE_API_KEY is empty and dev mode is off, all requests
+        return (False, False, None) — the endpoint raises 401.
+
+        NOTE: is_owner is now derived exclusively from the API key match, NOT from
+        the user_email body field. user_email is accepted only for audit-log
+        attribution and never confers owner privilege.
         """
         provided_key = x_api_key or (authorization.replace("Bearer ", "") if authorization else "")
+
+        # Subscriber path takes precedence so a subscriber key is never treated
+        # as an invalid owner key.
+        if is_subscriber_key(provided_key):
+            sub = resolve_subscriber_key(provided_key)
+            if sub:
+                return True, False, sub
+            return False, False, None
+
         if BRIDGE_API_KEY:
             key_valid = provided_key == BRIDGE_API_KEY
-            is_owner = key_valid and (user_email == OWNER_EMAIL)
-        else:
-            # No API key configured — allow public tool access but never grant owner
-            key_valid = True
-            is_owner = False
-        return key_valid, is_owner
+            # Owner privilege is derived from key match only — user_email is
+            # accepted for audit attribution but NEVER grants owner access.
+            is_owner = key_valid
+            return key_valid, is_owner, None
+
+        # No bridge key configured.
+        if _DEV_MODE:
+            # Dev: accept anything for public tools, owner is never True.
+            return True, False, None
+
+        # K-8 fix: production with no key — fail closed.
+        return False, False, None
 
     class McpRequest(BaseModel):
         tool: str
@@ -190,34 +291,44 @@ def create_fastapi_app():
         """
         from algochains_mcp.tool_danger_tiers import get_tool_danger_info
 
-        key_valid, is_owner = _resolve_auth(x_api_key, authorization)
-        visible_tools = sorted(PUBLIC_TOOLS) + (sorted(OWNER_TOOLS) if is_owner else [])
+        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization)
+
+        # Subscribers see ONLY the subscriber tool surface — never owner / public marketplace.
+        if subscriber is not None:
+            visible_tools = sorted(SUBSCRIBER_TOOLS)
+        else:
+            visible_tools = sorted(PUBLIC_TOOLS) + (sorted(OWNER_TOOLS) if is_owner else [])
 
         if include_danger_tiers:
             tools_with_tiers = [get_tool_danger_info(t) for t in sorted(set(visible_tools))]
+            tier_legend = {
+                "0": "READ_ONLY — no side effects, safe for any agent",
+                "1": "WRITE_LOCAL — internal state writes only, no broker",
+                "2": "ORDER_EXEC — executes real broker orders",
+                "3": "DESTRUCTIVE — irreversible bulk actions",
+            }
+            if subscriber is not None:
+                return {
+                    "tools": tools_with_tiers,
+                    "subscriber_tool_count": len(SUBSCRIBER_TOOLS),
+                    "scopes": list(subscriber.scopes),
+                    "tier_legend": tier_legend,
+                }
             if is_owner:
                 return {
                     "tools": tools_with_tiers,
                     "public_tool_count": len(PUBLIC_TOOLS),
                     "owner_tool_count": len(OWNER_TOOLS),
-                    "tier_legend": {
-                        "0": "READ_ONLY — no side effects, safe for any agent",
-                        "1": "WRITE_LOCAL — internal state writes only, no broker",
-                        "2": "ORDER_EXEC — executes real broker orders",
-                        "3": "DESTRUCTIVE — irreversible bulk actions",
-                    },
+                    "tier_legend": tier_legend,
                 }
             return {
                 "tools": tools_with_tiers,
                 "public_tool_count": len(PUBLIC_TOOLS),
-                "tier_legend": {
-                    "0": "READ_ONLY — no side effects, safe for any agent",
-                    "1": "WRITE_LOCAL — internal state writes only, no broker",
-                    "2": "ORDER_EXEC — executes real broker orders",
-                    "3": "DESTRUCTIVE — irreversible bulk actions",
-                },
+                "tier_legend": tier_legend,
             }
 
+        if subscriber is not None:
+            return {"subscriber_tools": sorted(SUBSCRIBER_TOOLS), "scopes": list(subscriber.scopes)}
         if is_owner:
             return {"public_tools": sorted(PUBLIC_TOOLS), "owner_tools": sorted(OWNER_TOOLS)}
         return {"public_tools": sorted(PUBLIC_TOOLS)}
@@ -237,11 +348,68 @@ def create_fastapi_app():
         user_email = body.get("user_email")
         if not tool:
             raise HTTPException(status_code=400, detail="Missing 'tool' field")
-        key_valid, is_owner = _resolve_auth(x_api_key, authorization, user_email)
+        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization, user_email)
         if not key_valid:
             raise HTTPException(status_code=401, detail="Invalid API key")
-        result = await handle_mcp_request(tool, arguments, is_owner=is_owner)
+        result = await handle_mcp_request(
+            tool,
+            arguments,
+            is_owner=is_owner,
+            subscriber=subscriber,
+        )
         return result
+
+    # ── SSE: copy-trade signal stream for subscriber daemons ────────────
+    @app_http.get("/api/signals/stream")
+    async def signals_stream(
+        request: Request,
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        bots: str | None = None,
+        poll_interval: float = 1.5,
+    ):
+        """
+        Server-Sent Events stream of fresh copy_trade_signals scoped to the
+        caller's subscriber assignments.
+
+        Daemons should prefer this over polling get_signal_stream because:
+          - new entries are pushed within `poll_interval` seconds
+          - the connection auto-prunes already-delivered signal IDs
+          - on disconnect the daemon will simply reconnect and re-sync via
+            get_signal_stream
+
+        Auth: subscriber API key only.
+        """
+        key_valid, _is_owner, subscriber = _resolve_auth(x_api_key, authorization)
+        if not key_valid or subscriber is None:
+            raise HTTPException(status_code=401, detail="Subscriber API key required")
+        bot_filter = [b.strip().upper() for b in bots.split(",")] if bots else None
+        interval = max(0.5, min(float(poll_interval), 10.0))
+
+        async def event_gen():
+            seen: set[str] = set()
+            yield f"event: ready\ndata: {json.dumps({'subscriber_id': subscriber.subscriber_id})}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                payload = await asyncio.to_thread(
+                    call_subscriber_tool,
+                    "get_signal_stream",
+                    subscriber.subscriber_id,
+                    {"bots": bot_filter, "limit": 50},
+                )
+                signals = payload.get("signals") or []
+                fresh = [s for s in signals if s.get("id") and s["id"] not in seen]
+                for sig in fresh:
+                    seen.add(sig["id"])
+                    yield f"event: signal\ndata: {json.dumps(sig, default=str)}\n\n"
+                # Bound the seen set to avoid unbounded memory on long sessions
+                if len(seen) > 4096:
+                    seen = set(list(seen)[-2048:])
+                yield f"event: heartbeat\ndata: {datetime.now(timezone.utc).isoformat()}\n\n"
+                await asyncio.sleep(interval)
+
+        return StreamingResponse(event_gen(), media_type="text/event-stream")
 
     # SECURITY FIX (V22 audit): All GET convenience endpoints now require API key.
     # Previously these called handle_mcp_request(is_owner=True) with no auth check —
@@ -253,10 +421,10 @@ def create_fastapi_app():
         authorization: str | None = Header(default=None),
         user_email: str | None = None,
     ):
-        """Convenience endpoint: get all 4 bot metrics. Requires API key."""
-        key_valid, is_owner = _resolve_auth(x_api_key, authorization, user_email)
-        if not key_valid:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        """Convenience endpoint: get all 4 bot metrics. Owner key required."""
+        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization, user_email)
+        if not key_valid or subscriber is not None:
+            raise HTTPException(status_code=401, detail="Owner API key required")
         return await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner)
 
     @app_http.get("/api/bots/{bot_id}")
@@ -266,12 +434,12 @@ def create_fastapi_app():
         authorization: str | None = Header(default=None),
         user_email: str | None = None,
     ):
-        """Convenience endpoint: get metrics for a specific bot. Requires API key."""
+        """Convenience endpoint: get metrics for a specific bot. Owner key required."""
         if bot_id not in {"mnq", "cl", "mes", "nq"}:
             raise HTTPException(status_code=400, detail="bot_id must be mnq | cl | mes | nq")
-        key_valid, is_owner = _resolve_auth(x_api_key, authorization, user_email)
-        if not key_valid:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization, user_email)
+        if not key_valid or subscriber is not None:
+            raise HTTPException(status_code=401, detail="Owner API key required")
         return await handle_mcp_request("get_live_bot_metrics", {"bot_id": bot_id}, is_owner=is_owner)
 
     @app_http.get("/api/bots/{bot_id}/card")
@@ -284,7 +452,7 @@ def create_fastapi_app():
         """Get full bot card data. Public card data is unauthenticated; attachments require owner."""
         if bot_id not in {"mnq", "cl", "mes", "nq"}:
             raise HTTPException(status_code=400, detail="bot_id must be mnq | cl | mes | nq")
-        key_valid, is_owner = _resolve_auth(x_api_key, authorization, user_email)
+        _key_valid, is_owner, _subscriber = _resolve_auth(x_api_key, authorization, user_email)
         card = await handle_mcp_request("get_bot_card_data", {"bot_id": bot_id}, is_owner=False)
         if is_owner:
             attachments = await handle_mcp_request("list_bot_research_attachments", {"bot_id": bot_id}, is_owner=True)
@@ -303,10 +471,10 @@ def create_fastapi_app():
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
     ):
-        """Get system heartbeat. Requires API key — reveals infrastructure topology."""
-        key_valid, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        """Get system heartbeat. Requires owner API key — reveals infrastructure topology."""
+        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization)
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
         return await handle_mcp_request("get_system_heartbeat", {}, is_owner=True)
 
     @app_http.get("/api/guardrails")
@@ -314,10 +482,10 @@ def create_fastapi_app():
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
     ):
-        """Get circuit breaker and guardrail status. Requires API key."""
-        key_valid, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
-            raise HTTPException(status_code=401, detail="Invalid API key")
+        """Get circuit breaker and guardrail status. Requires owner API key."""
+        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization)
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
         return await handle_mcp_request("get_circuit_breaker_status", {}, is_owner=True)
 
     return app_http

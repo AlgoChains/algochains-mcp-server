@@ -24,12 +24,12 @@ from pathlib import Path
 from typing import Optional
 
 # ── Path resolution ──────────────────────────────────────────────────────────
-_POSSIBLE_ROOTS = [
-    Path("/Users/treycsa/CascadeProjects/algochains-control-tower"),
-    Path("/home/trrey/algochains-control-tower"),
-    Path("/mnt/c/Users/trrey/algochains-control-tower"),
-]
-CONTROL_TOWER = next((p for p in _POSSIBLE_ROOTS if p.exists()), _POSSIBLE_ROOTS[0])
+# Unified resolver honors ALGOCHAINS_CONTROL_TOWER first, then falls back to
+# the shared legacy list (Mac, /home/trrey, WSL). Behavior on the MacBook is
+# unchanged: env typically unset → first existing legacy path = Mac repo.
+from algochains_mcp.paths import default_control_tower
+
+CONTROL_TOWER = default_control_tower()
 
 BOT_MAP = {
     "mnq": {"grep": "FUTURES_SCALPER_UPGRADED", "script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},

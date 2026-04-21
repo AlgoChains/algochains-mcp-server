@@ -6,6 +6,84 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [22.2.0] — 2026-04-21
+
+### Added
+
+#### Kalshi Prediction Markets Pipeline
+- `order_flow/kalshi_ai_ensemble.py` (404 lines) — AI ensemble for Kalshi event probability scoring; combines FinBERT, market microstructure, and macro signals into a single directional edge estimate
+- `order_flow/kalshi_pipeline.py` (361 lines) — Full pipeline: event discovery → AI scoring → position sizing → order execution (paper + live) with Kelly fraction gate
+- `order_flow/kalshi_slack_notifier.py` — Pushes Kalshi signals + fills to #openclaw Slack channel
+
+#### Subscriber Auth + Tools
+- `src/algochains_mcp/subscriber_auth.py` (142 lines) — JWT-based subscriber token issuance and validation; rate-limit guards per tier (free / paper / live)
+- `src/algochains_mcp/subscriber_tools.py` (381 lines) — Subscriber-facing read-only tools: `get_subscriber_portfolio`, `get_subscriber_bot_metrics`, `get_marketplace_listings`, `subscribe_to_bot`, `unsubscribe_from_bot`
+
+#### Unified Path Resolution
+- `src/algochains_mcp/paths.py` (120 lines) — `default_control_tower()` resolver: honours `ALGOCHAINS_CONTROL_TOWER` env first, then `ALGOCHAINS_CONTROL_TOWER_PATH`, then Mac/WSL/desktop legacy paths. Eliminates layout-specific `parents[N]` chains that broke on desktop tower WSL2.
+
+#### Data Backends (control-tower research pipeline)
+- `research/ssrn_3904097/data_backends.py` — Priority chain: **Databento** (XNAS.ITCH, confirmed accessible) → **Massive S3** (`us_stocks_sip/day_aggs_v1/`, back to 2003) → yfinance fallback. Used by SSRN smart-beta + dollar-bar replication pipeline.
+
+#### Test Coverage
+- `tests/test_bot_health_signal_slice.py` — Unit tests for `get_bot_health` signal_health slice contract (params, risk_bootstrap, bot_version, trading_mode)
+
+### Changed
+
+- **`get_bot_health`**: Added `ml_env_flags` slice (MASSIVE_NEWS_FEATURES, MASSIVE_HALT_GUARD, ENABLE_INTRINIO_MNQ, train/serve skew note) and `cc_health` (Command Center last-seen, WS status, Databento live feed age)
+- **`verify_model_artifact.py`**: Now checks `.pkl.sha256` sidecar (blocking on mismatch), reports XGBoost JSON companion and manifest presence
+- **Tradovate parity**: Full endpoint mapping → `docs/TRADOVATE_PARITY.md` (vs community `mcp-tradovate`)
+- **`FUTURES_SCALPER_UPGRADED.py`**: SHA-256 startup check (raises RuntimeError on tampered pkl), `drawdown_start_ts` Triple Penance tracking, `ws_health.NO_CLIENT` explanatory note
+
+### Fixed
+
+- `dashboard/live_dashboard.py`: path resolution now uses `_default_control_tower()` on all render paths (was hardcoded Mac path)
+- `live_bot_intelligence/heartbeat.py`: stale-signal alert threshold now configurable (default 60 min); CL false-positive suppressed when volume-filtered scanning is active
+- `academic_registry.py`: updated with SSRN 3904097 replication entry (Harke, Shishlenin, Koppisetti 2021)
+
+### Security / Hardening
+
+- Model artifact SHA-256 sidecar (`futures_model_latest.pkl.sha256`) now generated post-retrain by CI workflow
+- XGBoost companion JSON (`futures_model_latest.json`) exported via `booster.save_model()` — non-executable safe-load path
+- `model_manifest.json` stores sha256 of both formats + OOS metrics for cross-reference
+
+---
+
+## [22.1.0] — 2026-04-20
+
+### Docs / metadata (Plan v3 alignment)
+
+- **README version parity**: Version badge moved from stale `26.0` to `22.1.0`, matching both this CHANGELOG entry and `SERVER_INSTRUCTIONS` in `server.py`. `pyproject.toml` bumped from `22.0.0` to `22.1.0` and the project description now names Massive.com and the control-tower validation framework so CLI metadata matches the README.
+- **README tool count**: Tools badge updated from `407` to `468`, reflecting the current registered `TOOLS_ANNOTATED` size. Architecture diagram now reads `460+ tools` instead of the stale `350+`.
+- **New section: Quality & Trust** — documents (a) bot-path vs agent-path latency tiers with a link to `LATENCY_GUIDE.md`, (b) the control-tower validation framework (how `retrain_mnq_v2.py` and `publish_backtest_run.py` write `validation_submissions` rows with `data_fingerprint`, `engine_version`, `seed`, and the live `feature_snapshot_hash`), and (c) deprecations (Intrinio on the MNQ path → Massive.com, default-approve FinGPT sentiment → fail-closed without news context).
+
+### Changed
+
+- **`get_bot_health`**: Response now includes a `signal_health` key. For each bot (or the filtered bot), this slice exposes `params`, `risk_bootstrap`, `bot_version`, and `trading_mode` from `state/signal_health.json`. If the file is absent or unparseable the field is `{"error": "..."}` and the rest of the response remains intact.
+
+- **`get_kronos_shadow_stats`**: Fixed broken control-tower path resolution. Previously used `Path(__file__).resolve().parent.parent.parent.parent.parent / "algochains-control-tower"` which was layout-specific and returned the wrong directory on any non-default install. Now resolves via `_default_control_tower()`, which honours `ALGOCHAINS_CONTROL_TOWER` env, `ALGOCHAINS_CONTROL_TOWER_PATH`, the shared legacy path list, and the Mac hardcoded fallback — consistent with all other tools.
+
+- **Server version**: `v22.0` → `v22.1` in `SERVER_INSTRUCTIONS`.
+
+### Fixed (risk metric definitions)
+
+- `state/signal_health.json` `MNQ_Upgraded_Scalper` now has a structured `risk_bootstrap` object with unambiguous field names and `_definitions` explaining what P5 total P&L vs P95 max drawdown mean, their correct use in capital planning, and the relationship to the `max_daily_loss` hard cap. Previously these were documented only in the prose trust report.
+
+### Path resolution audit
+
+Audited all 7 files in `src/` that reference `algochains-control-tower`. Findings:
+
+- `order_flow/kalshi_pipeline.py`: `parents[4]` (deeper nesting) → `/Users/treycsa/CascadeProjects` ✅ correct
+- `telos.py`: 4× `.parent` → `/Users/treycsa/CascadeProjects` ✅ correct
+- `brokers/prop_fund_autopilot.py`: `os.getenv("ALGOCHAINS_CONTROL_TOWER", hardcoded)` ✅ env-var-aware
+- `dashboard/live_dashboard.py`: passed as `extra_candidates` to `_default_control_tower()` ✅
+- `order_flow/kalshi_slack_notifier.py`: comment only ✅
+- `server.py` (other tools): already use `_default_control_tower()` ✅
+
+Only `get_kronos_shadow_stats` (5× `.parent` = wrong `/Users/treycsa/algochains-control-tower`) was broken. Fixed in this release.
+
+---
+
 ## [26.0.0] — 2026-04-08
 
 ### Added

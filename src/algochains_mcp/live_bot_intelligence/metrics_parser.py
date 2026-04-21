@@ -15,13 +15,11 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-# Resolve control tower path (works on Mac and Desktop WSL)
-_POSSIBLE_ROOTS = [
-    Path("/Users/treycsa/CascadeProjects/algochains-control-tower"),
-    Path("/home/trrey/algochains-control-tower"),
-    Path("/mnt/c/Users/trrey/algochains-control-tower"),
-]
-CONTROL_TOWER = next((p for p in _POSSIBLE_ROOTS if p.exists()), _POSSIBLE_ROOTS[0])
+# Resolve control tower path (works on Mac and Desktop WSL).
+# Uses the shared helper so ALGOCHAINS_CONTROL_TOWER env is honored everywhere.
+from algochains_mcp.paths import default_control_tower
+
+CONTROL_TOWER = default_control_tower()
 
 BOT_LOG_PATHS: dict[str, Path] = {
     "mnq": CONTROL_TOWER / "logs" / "futures_bot_live.log",

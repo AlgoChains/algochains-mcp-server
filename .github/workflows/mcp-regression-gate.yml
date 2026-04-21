@@ -34,12 +34,15 @@ jobs:
           }
           EOF
 
-      # Gate 1: Tool count must not decrease
-      - name: "Gate 1: Tool Count (≥242)"
+      # Gate 1: Tool count must not decrease.
+      # Floor is conservatively below the current README badge (468) to allow
+      # small non-regression deltas; bump both together when we intentionally
+      # add or remove tool families.
+      - name: "Gate 1: Tool Count (≥450)"
         run: |
           TOOLS=$(npx mcporter list algochains --json | jq '.tools | length')
           echo "Tool count: $TOOLS"
-          [ "$TOOLS" -ge 242 ] || (echo "❌ FAIL: Expected ≥242 tools, got $TOOLS" && exit 1)
+          [ "$TOOLS" -ge 450 ] || (echo "❌ FAIL: Expected ≥450 tools, got $TOOLS" && exit 1)
           echo "✅ Tool count: $TOOLS"
 
       # Gate 2: All Tier 1 tools must be present in smart mode
@@ -137,3 +140,42 @@ jobs:
                   ast.parse(fh.read())
               print(f'✅ {f} OK')
           "
+
+      # Gate 7: Massive white-label provider imports cleanly and the 4 composable
+      # tool methods are addressable. When a MASSIVE_API_KEY is available in CI
+      # (encrypted secret), build the BM25 index and run a read-only search so we
+      # catch upstream `llms.txt` drift before it hits the Tyler account.
+      - name: "Gate 7: Massive Provider Import + Optional Mocked API"
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: |
+          python3 - << 'PYEOF'
+          import asyncio
+          import os
+          import sys
+          sys.path.insert(0, 'src')
+
+          from algochains_mcp.data_providers.massive_whitelabel import (
+              MassiveWhiteLabelProvider,
+          )
+          from algochains_mcp.config import MassiveConfig
+
+          required = {"search_endpoints", "get_endpoint_docs", "call_api", "query_data", "startup"}
+          missing = [m for m in required if not hasattr(MassiveWhiteLabelProvider, m)]
+          assert not missing, f"MassiveWhiteLabelProvider missing methods: {missing}"
+          print(f"✅ Massive provider exposes composable tool surface: {sorted(required)}")
+
+          if not os.environ.get("MASSIVE_API_KEY"):
+              print("ℹ️  MASSIVE_API_KEY absent in this CI context — skipping live BM25 smoke")
+              sys.exit(0)
+
+          async def _smoke():
+              cfg = MassiveConfig(api_key=os.environ["MASSIVE_API_KEY"])
+              prov = MassiveWhiteLabelProvider(cfg)
+              await prov.startup()
+              hits = prov.search_endpoints(query="aggregates", top_k=3)
+              assert isinstance(hits, list) and hits, f"search_endpoints returned nothing: {hits!r}"
+              print(f"✅ Massive BM25 returned {len(hits)} hits (top: {hits[0].get('path', '?')})")
+
+          asyncio.run(_smoke())
+          PYEOF

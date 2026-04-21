@@ -40,7 +40,19 @@ jobs:
         run: |
           TOOLS=$(npx mcporter list algochains --json | jq '.tools | length')
           echo "TOOL_COUNT=$TOOLS" >> $GITHUB_ENV
-          [ "$TOOLS" -ge 242 ] || (echo "Tool count regression: $TOOLS < 242" && exit 1)
+          # Floor aligned with mcp-regression-gate.yml and the README badge (468 current).
+          [ "$TOOLS" -ge 450 ] || (echo "Tool count regression: $TOOLS < 450" && exit 1)
+
+      - name: Verify pyproject version matches tag
+        run: |
+          TAG="${{ github.ref_name }}"
+          VER="${TAG#v}"
+          PYVER=$(grep -E '^version\s*=' pyproject.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$PYVER" != "$VER" ]; then
+            echo "pyproject version ($PYVER) does not match tag ($VER). Bump pyproject.toml before tagging."
+            exit 1
+          fi
+          echo "✅ tag=$TAG matches pyproject version=$PYVER"
 
       - name: Create release artifacts
         run: |
@@ -62,6 +74,19 @@ jobs:
             **Tools:** ${{ env.TOOL_COUNT }}
             **CLI Bundle:** ${{ env.CLI_SIZE }} bytes
             **SDK Types:** ${{ env.SDK_LINES }} lines
+
+            ### Versioning
+
+            Tags follow [SemVer](https://semver.org/): `vMAJOR.MINOR.PATCH` (no pre-release suffix here). The tag version must match `pyproject.toml::version` and the README "Version" badge — the CI gate in `Verify pyproject version matches tag` enforces this and will fail the release if they drift.
+
+            Companion `CHANGELOG.md` entry must exist under a heading matching the tag's version (e.g. `[22.1.0]` for tag `v22.1.0`).
+
+            ### NPM publish prerequisites
+
+            The `publish-sdk` job pushes `@algochains/sdk` to npmjs.org as `--access public`. Requirements:
+            - `NPM_TOKEN` secret on this repo with **Automation** scope + publish rights on `@algochains`
+            - Node 22 resolves `registry.npmjs.org`
+            - `packages/sdk/package.json::version` tracks the tag (script regenerates types/client each release)
 
             ### Quick Start
             ```bash

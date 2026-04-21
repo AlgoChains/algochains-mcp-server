@@ -11,12 +11,9 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
-_POSSIBLE_ROOTS = [
-    Path("/Users/treycsa/CascadeProjects/algochains-control-tower"),
-    Path("/home/trrey/algochains-control-tower"),
-    Path("/mnt/c/Users/trrey/algochains-control-tower"),
-]
-CONTROL_TOWER = next((p for p in _POSSIBLE_ROOTS if p.exists()), _POSSIBLE_ROOTS[0])
+from algochains_mcp.paths import default_control_tower
+
+CONTROL_TOWER = default_control_tower()
 
 
 @dataclass
@@ -63,6 +60,25 @@ class BotCardData:
 CITATIONS_DB: dict[str, list[AcademicCitation]] = {
 
     "mnq": [
+        AcademicCitation(
+            title="Kronos: A Foundation Model for the Language of Financial Markets",
+            authors="Shi, Y., et al.",
+            year=2025,
+            venue="arXiv preprint",
+            doi_or_ssrn="arXiv:2508.02739",
+            relevance=(
+                "Kronos foundation model integrated in MNQ shadow mode (Kronos-small, 24.7M params, MPS). "
+                "Autoregressive K-line forecaster pre-trained on 12B records from 45 global exchanges. "
+                "Zero-shot: 93% RankIC improvement over leading TSFM, 22% generative fidelity gain over DiffusionTS. "
+                "Used for: (1) directional signal shadow-voting in 7-AI ensemble, (2) synthetic tail scenario generation "
+                "(flash crash, high_vol, gap_up, bear_trend) for stress testing, (3) TSTR corpus generation for "
+                "XGBoost/LightGBM class imbalance correction. "
+                "Kronoslarge (499M) runs on desktop RTX 5080 via scripts/kronos_synthetic_gen.py. "
+                "Guardrail: all synthetic output tagged data_source='synthetic_kronos_v1', "
+                "never mixed silently with real data (assert_data_source_tagged enforced)."
+            ),
+            url="https://arxiv.org/abs/2508.02739",
+        ),
         AcademicCitation(
             title="…and the Cross-Section of Expected Returns",
             authors="Harvey, C.R., Liu, Y., & Zhu, H.",

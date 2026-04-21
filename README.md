@@ -1,12 +1,14 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-407-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-468%2B-green?style=flat-square)](#tool-categories)
 [![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/version-26.0-blueviolet?style=flat-square)](#changelog)
+[![Version](https://img.shields.io/badge/version-22.2.0-blueviolet?style=flat-square)](#changelog)
 [![Docs](https://img.shields.io/badge/gotchas-docs%2FGOTCHAS__AND__BUGS.md-red?style=flat-square)](docs/GOTCHAS_AND_BUGS.md)
+[![Data](https://img.shields.io/badge/data-Databento%20%7C%20Massive%20S3%20%7C%20Polygon-yellow?style=flat-square)](#data-backends)
+[![Kalshi](https://img.shields.io/badge/markets-Kalshi%20prediction-teal?style=flat-square)](#kalshi-integration)
 
 ---
 
@@ -173,6 +175,44 @@ Once connected, you can ask your AI:
 All team members' AI tools point at the same Onyx knowledge base. When Tyler runs a research cycle or makes a decision, it's automatically indexed. When you ask your AI about it, it finds it.
 
 Full team guide: [SAFETY_MODEL.md — Team Access Setup](SAFETY_MODEL.md#team-access-setup)
+
+---
+
+## Data Backends
+
+AlgoChains uses a priority chain for all market data — best available source wins automatically:
+
+| Priority | Backend | Coverage | Use case |
+|----------|---------|----------|----------|
+| 1 | **Databento** (`DATABENTO_API_KEY`) | XNAS.ITCH + XNYS.PILLAR; OHLCV-1d + OHLCV-1m; back to ~2000 on paid plans | Futures tick data, equity OHLCV, live streaming |
+| 2 | **Massive S3** (`MASSIVE_S3_ACCESS_KEY_ID` + `MASSIVE_S3_SECRET_ACCESS_KEY`) | `us_stocks_sip/day_aggs_v1/` daily bars back to **2003**; futures session aggs to 2017 | Historical equity backtests (SSRN replications), survival-bias-free universe |
+| 3 | **Polygon** (`POLYGON_API_KEY`) | REST bars + news snapshots | News features, intraday bars |
+| 4 | **yfinance** | Free, ~5 yr history | Dev fallback, swing bots |
+
+Set `DATA_BACKEND=databento|massive|polygon|yfinance` in `.env` to force a specific backend. Default: `auto` (tries in order above).
+
+```python
+# research/ssrn_3904097/data_backends.py
+from research.ssrn_3904097.data_backends import fetch_ohlcv, fetch_fundamentals
+bars = fetch_ohlcv("AAPL", "2015-11-01", "2019-11-01")   # → Massive S3 (2003+ coverage)
+fins = fetch_fundamentals("AAPL")                          # → Massive API → yfinance
+```
+
+---
+
+## Kalshi Prediction Markets
+
+AlgoChains now integrates Kalshi prediction market data and trading via an AI ensemble pipeline:
+
+- **`order_flow/kalshi_ai_ensemble.py`** — Probability scoring using FinBERT + market microstructure + macro signals
+- **`order_flow/kalshi_pipeline.py`** — Full pipeline: event discovery → AI scoring → Kelly sizing → order execution
+- **`order_flow/kalshi_slack_notifier.py`** — Live signal + fill notifications to `#openclaw`
+
+Kalshi tools are exposed via the MCP server for direct AI queries:
+```
+"What's the current AlgoChains probability on the Fed cut event?"
+"Show me open Kalshi positions and their AI scores"
+```
 
 ---
 
@@ -584,7 +624,7 @@ Your AI (Claude / Cursor / ChatGPT)
          │ MCP protocol (stdio or HTTP)
          ▼
 AlgoChains MCP Server
-  ├── 350+ tools (market data, execution, research, intelligence)
+  ├── 460+ tools (market data, execution, research, intelligence)
   ├── Trading Guardrails (hard-coded limits, AI loop detection)
   ├── Account Protection (12 pre-trade guards)
   ├── Onyx RAG Knowledge Base (semantic search over 400+ docs)
@@ -606,6 +646,44 @@ AlgoChains MCP Server
 - If a data source is unavailable: the tool returns an error, not fake data
 - Backtest metrics are computed on real historical data (Databento tick archives)
 - P&L figures are from real broker fills (Tradovate/Alpaca)
+
+---
+
+## Quality & Trust
+
+### Bot vs Agent Latency
+
+Two execution paths share this server but are shaped very differently:
+
+| Path | Who runs it | Latency target | What lives there |
+|------|-------------|----------------|------------------|
+| **Direct bot** | The live Python bots (`FUTURES_SCALPER_UPGRADED.py`, etc.) | 50–500 ms | MNQ, CL, MES, NQ futures bots — bypass the MCP/LLM hop entirely and call brokers over the same libraries exposed here |
+| **Agent / MCP** | Claude, Cursor, ChatGPT calling MCP tools | 120 ms – 2 s | Research, account checks, guarded order placement, post-trade analytics |
+
+The bot path is deterministic, single-process, and written for time-sensitive signals. The agent path adds one LLM round trip (~100–400 ms P50) in exchange for flexibility and conversational control.
+
+Full measured latency table (Mac M3 Max, real tool calls) is in [LATENCY_GUIDE.md](LATENCY_GUIDE.md); the Massive.com/Polygon provider is used by both paths and documented in the same file.
+
+### Control-Tower Validation Framework
+
+Strategy promotion flows out of the **algochains-control-tower** repo and lands here:
+
+1. `scripts/retrain_mnq_v2.py` runs walk-forward validation, writes a JSON artifact plus a per-trade OOS JSONL, and records a `data_fingerprint` (SHA-256[:16] of the source parquet) and `engine_version` (pipeline git SHA).
+2. `scripts/publish_backtest_run.py --finalize` inserts a `strategy_backtest_run` row into Supabase **and** upserts a `validation_submissions` row (submission hash, bot/symbol/timeframe, data fingerprint, engine version, seed, OOS metrics).
+3. Live bots attach a `feature_snapshot_hash` to each signal ([`core/feature_snapshot.py`](https://github.com/trey1234/algochains-control-tower/blob/main/core/feature_snapshot.py)) so the validation framework can detect train/serve drift after the fact.
+
+The Supabase schema is in [`supabase/migrations/20260420_validation_framework.sql`](https://github.com/trey1234/algochains-control-tower/blob/main/supabase/migrations/20260420_validation_framework.sql); gate definitions live in [`algochains_library/validation/submission_schema.py`](https://github.com/trey1234/algochains-control-tower/blob/main/algochains_library/validation/submission_schema.py).
+
+### Deprecations
+
+- **Intrinio on the MNQ path** — Massive.com (Polygon white-label) is now the canonical news/fundamentals provider. The MNQ bot will only import Intrinio when `ENABLE_INTRINIO_MNQ=1`; the default zero-footprint behavior is documented in `control-tower/core/massive_news_features.py` and `control-tower/core/halt_guard.py`. Massive keys are required for `news_sentiment_15m`, `news_sentiment_1h`, `news_high_impact_15m`, and the SPY/QQQ LULD halt guard.
+- **Default-approve FinGPT sentiment** — The vLLM sentiment veto used to auto-approve when the model was reachable but no news context was present. It now fails closed (skips the vote) unless a Massive-backed news digest is attached to the signal.
+
+### Release & SemVer
+
+- **Tag format** — `vMAJOR.MINOR.PATCH` (no pre-release suffix). `release.yml` refuses to publish when `pyproject.toml::version` does not match the tag.
+- **Regression gate (`.github/workflows/mcp-regression-gate.yml`)** — runs on every push/PR and blocks if (a) tool count falls below 450, (b) any Tier-1 tool disappears, (c) the BM25 discovery index misses sentiment/portfolio queries, (d) any V18 intent tool goes missing, (e) `server.py` fails AST parse, or (f) the Massive white-label provider surface (`search_endpoints`, `get_endpoint_docs`, `call_api`, `query_data`, `startup`) changes. When `MASSIVE_API_KEY` is configured as a repo secret, the gate also does a live BM25 search smoke test.
+- **NPM publish (`@algochains/sdk`)** — requires `NPM_TOKEN` (Automation scope with publish rights on `@algochains`) as a repo secret and a matching `packages/sdk/package.json::version`. `release.yml` regenerates the SDK types and client from the live server before `npm publish --access public`, so the SDK always mirrors the current tool schema.
 
 ---
 
@@ -1142,6 +1220,20 @@ send_ntfy_notification(title="Daily P&L", message="MNQ: +$340, CL: +$180", topic
 ---
 
 ## Changelog
+
+**v22.2.0** (2026-04-21) — Kalshi Pipeline, Subscriber Tools, Unified Paths, Data Backends, Hidden-Killers v6
+
+*New: Kalshi AI ensemble, subscriber auth/tools, unified path resolver, Databento+Massive S3 data chain, SHA-256 model integrity gates, drawdown_start_ts Triple Penance tracking.*
+
+- **Kalshi prediction markets** (`order_flow/kalshi_pipeline.py`, `kalshi_ai_ensemble.py`, `kalshi_slack_notifier.py`): AI ensemble scoring → Kelly sizing → order execution
+- **Subscriber tools** (`subscriber_auth.py`, `subscriber_tools.py`): JWT tier auth + subscriber-facing read-only tools (`get_subscriber_portfolio`, `get_marketplace_listings`, etc.)
+- **Unified path resolver** (`paths.py`): `default_control_tower()` honours ALGOCHAINS_CONTROL_TOWER env, eliminates brittle `parents[N]` chains
+- **Data backend chain**: Databento → Massive S3 (day bars to 2003) → yfinance; wired via `research/ssrn_3904097/data_backends.py`
+- **Model integrity hardening**: startup SHA-256 check raises on tamper; XGBoost JSON companion export; `model_manifest.json`
+- **Drawdown Triple Penance**: `drawdown_start_ts` auto-logged to `signal_health.json` on first daily loss limit hit (Bailey & LdP 2015)
+- **Tools: 468+** (Kalshi + subscriber tools added)
+
+---
 
 **v26.0** (2026-04-08) — Bot Ops Module, Live Incident Fixes, Command Center V22, Pipeline Hardening
 

@@ -18,13 +18,21 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Canonical skill root directories (ordered by priority)
+from algochains_mcp.paths import default_control_tower
+
+_CONTROL_TOWER = default_control_tower()
+
+# Canonical skill root directories (ordered by priority).
+# Skill directories anchored to the control tower now use the shared resolver
+# so ALGOCHAINS_CONTROL_TOWER is honored on the desktop tower. Before this
+# fix, desktop Ubuntu/WSL found 0 skills because only the Mac absolute path
+# was listed.
 _SKILL_ROOTS: list[tuple[str, str]] = [
     # (label, path)
-    ("windsurf", "/Users/treycsa/CascadeProjects/algochains-control-tower/.windsurf/skills"),
-    ("openclaw", str(Path.home() / ".openclaw" / "skills")),
-    ("cursor",   str(Path.home() / ".cursor" / "skills-cursor")),
-    ("claude",   "/Users/treycsa/CascadeProjects/algochains-control-tower/.claude/skills"),
+    ("windsurf",   str(_CONTROL_TOWER / ".windsurf" / "skills")),
+    ("openclaw",   str(Path.home() / ".openclaw" / "skills")),
+    ("cursor",     str(Path.home() / ".cursor" / "skills-cursor")),
+    ("claude",     str(_CONTROL_TOWER / ".claude" / "skills")),
     # algochains-mcp-server built-in skills
     ("mcp-server", str(Path(__file__).parent.parent.parent / "skills")),
 ]

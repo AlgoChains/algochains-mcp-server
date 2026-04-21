@@ -21,11 +21,13 @@ from pathlib import Path
 from typing import Optional
 
 
-_HEARTBEAT_PATHS = [
-    Path("/mnt/c/Users/trrey/mac_heartbeat.json"),   # Desktop WSL → Windows path
-    Path("/home/trrey/mac_heartbeat.json"),            # Desktop WSL home
-    Path("/Users/treycsa/CascadeProjects/algochains-control-tower/scripts/mac_heartbeat.json"),  # Mac
-]
+from algochains_mcp.paths import default_heartbeat_paths
+
+# Canonical ordered candidate list (control-tower/scripts first, then legacy
+# WSL/Windows/Ubuntu fallbacks). The control-tower path is where the Mac bot
+# actually writes the heartbeat, so the prior Linux-first order was inverted
+# for the desktop tower.
+_HEARTBEAT_PATHS = default_heartbeat_paths()
 
 
 @dataclass
