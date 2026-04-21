@@ -22,6 +22,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -46,6 +48,33 @@ from .subscriber_tools import (
 )
 
 log = logging.getLogger(__name__)
+
+# Single source of truth: read version from pyproject.toml at startup.
+# Prevents version drift between FastAPI /docs and package metadata
+# (hidden-killers v8 Phase J fix — previously hardcoded "22.0.0").
+def _read_project_version() -> str:
+    # Prefer pyproject.toml (source of truth when running from dev checkout).
+    # Fall back to importlib.metadata (installed wheel), then hardcoded constant.
+    try:
+        import tomllib  # Python 3.11+
+        _toml_path = __file__
+        for _ in range(6):
+            _toml_path = os.path.dirname(_toml_path)
+            _candidate = os.path.join(_toml_path, "pyproject.toml")
+            if os.path.exists(_candidate):
+                with open(_candidate, "rb") as _f:
+                    _data = tomllib.load(_f)
+                return _data["project"]["version"]
+    except Exception:
+        pass
+    try:
+        from importlib.metadata import version as _pkg_version
+        return _pkg_version("algochains-mcp-server")
+    except Exception:
+        pass
+    return "22.2.0"  # fallback
+
+_SERVER_VERSION = _read_project_version()
 
 # ─── Tool whitelist (what the site is allowed to call) ───────────────────────
 
@@ -148,6 +177,18 @@ async def handle_mcp_request(
                         "danger_tier": tool_tier,
                         "required_arg": "confirm=true",
                     }
+        except ImportError as _tier_import_err:
+            # H-F3 fix: tool_danger_tiers module missing → fail closed, not open.
+            # Previously logged a warning and allowed execution — now blocks with explicit error.
+            log.error("Danger tier module unavailable for %s: %s — blocking execution", tool_name, _tier_import_err)
+            return {
+                "error": (
+                    f"Danger tier check unavailable for tool '{tool_name}' "
+                    "(tool_danger_tiers module missing). Execution blocked for safety."
+                ),
+                "tool": tool_name,
+                "hint": "Install algochains-mcp-server package fully or check import paths.",
+            }
         except Exception as _tier_err:
             log.warning("Danger tier check failed for %s: %s", tool_name, _tier_err)
 
@@ -179,8 +220,8 @@ def create_fastapi_app():
 
     app_http = FastAPI(
         title="AlgoChains MCP HTTP Bridge",
-        description="REST bridge to AlgoChains MCP Server v22 for algochains.ai",
-        version="22.0.0",
+        description="REST bridge to AlgoChains MCP Server for algochains.ai",
+        version=_SERVER_VERSION,
     )
 
     app_http.add_middleware(
@@ -197,6 +238,34 @@ def create_fastapi_app():
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
+
+    # Request-ID + structured access logging middleware (Phase J observability)
+    # Adds X-Request-Id response header and emits one structured log line per request.
+    try:
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        class _RequestIdMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request: Request, call_next):
+                req_id = request.headers.get("X-Request-Id") or str(uuid.uuid4())[:8]
+                t0 = time.monotonic()
+                response = await call_next(request)
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                response.headers["X-Request-Id"] = req_id
+                log.info(
+                    "bridge_request",
+                    extra={
+                        "req_id": req_id,
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status": response.status_code,
+                        "elapsed_ms": elapsed_ms,
+                    },
+                )
+                return response
+
+        app_http.add_middleware(_RequestIdMiddleware)
+    except Exception as _mw_err:
+        log.warning("Request-ID middleware unavailable: %s", _mw_err)
 
     BRIDGE_API_KEY = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
     OWNER_EMAIL = os.getenv("OWNER_EMAIL", "tyler@algochains.ai")
@@ -272,7 +341,27 @@ def create_fastapi_app():
 
     @app_http.get("/health")
     async def health():
-        return {"status": "ok", "server": "AlgoChains MCP Bridge v22"}
+        """
+        Bridge health — includes version, auth mode, and server import check.
+        Phase J observability: richer /health for incident triage.
+        """
+        auth_mode = "owner" if BRIDGE_API_KEY else ("dev_open" if _DEV_MODE else "no_key_locked")
+        server_ok = True
+        try:
+            from . import server as _srv
+            tool_count = len(getattr(_srv, "TOOLS", []))
+        except Exception as _srv_err:
+            server_ok = False
+            tool_count = -1
+        return {
+            "status": "ok",
+            "server": f"AlgoChains MCP Bridge v{_SERVER_VERSION}",
+            "version": _SERVER_VERSION,
+            "auth_mode": auth_mode,
+            "server_import_ok": server_ok,
+            "tool_count": tool_count,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
 
     @app_http.get("/tools")
     async def list_available_tools(
