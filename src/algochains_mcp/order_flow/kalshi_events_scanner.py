@@ -21,15 +21,36 @@ from algochains_mcp.order_flow.kalshi_signed import (
 
 logger = logging.getLogger("algochains_mcp.order_flow.kalshi_events_scanner")
 
-# Category → Kalshi event_ticker prefix mapping
+# Category → Kalshi event_ticker prefix mapping.
+# Broadened to capture the full tradeable universe. Add new prefixes here as
+# Kalshi launches new series — the scanner uses startswith() matching so exact
+# ticker formats do not need to be known in advance.
 CATEGORY_PREFIXES: dict[str, list[str]] = {
-    "sports": ["KXNCAAB", "KXNBA", "KXNFL", "KXMLB", "KXNHL", "KXNASCAR", "KXSOCCER"],
-    "politics": ["KXPRES", "KXSENA", "KXHOUSE", "KXGOV", "KXLEGAL"],
-    "weather": ["KXHURR", "KXSN", "KXTEMP", "KXRAIN"],
-    "finance": ["KXBTC", "KXETH", "KXSPY", "KXINX", "KXNASD", "KXOIL"],
+    "sports": [
+        "KXNCAAB", "KXNBA", "KXNFL", "KXMLB", "KXNHL", "KXNASCAR",
+        "KXSOCCER", "KXMLS", "KXPGA", "KXGOLF", "KXTENNIS", "KXATP",
+        "KXWTA", "KXMMA", "KXUFC", "KXBOXING", "KXNCAAF", "KXCFB",
+        "KXOLYMPIC", "KXNWSL", "KXWNBA", "KXFORMULA", "KXCRICKET",
+    ],
+    "politics": [
+        "KXPRES", "KXSENA", "KXHOUSE", "KXGOV", "KXLEGAL",
+        "KXELECT", "KXPOLL", "KXAPPROVAL", "KXCONGRESS", "KXWORLD",
+        "KXSUPREME", "KXPOTUS", "KXVP",
+    ],
+    "weather": ["KXHURR", "KXSN", "KXTEMP", "KXRAIN", "KXWILD", "KXSTORM"],
+    "finance": [
+        "KXBTC", "KXETH", "KXSPY", "KXINX", "KXNASD", "KXOIL",
+        "KXGOLD", "KXSILVER", "KXDXY", "KXVIX", "KXNQ", "KXDOW",
+        "KXRUS", "KXCRYPTO", "KXSOL", "KXBNB", "KXDOGE",
+    ],
+    "culture": [
+        "KXOSCARS", "KXEMMY", "KXGRAMMY", "KXAWARD", "KXPOP",
+        "KXMOVIE", "KXBOX", "KXCHARTS", "KXMUSIC",
+    ],
+    "tech": ["KXAI", "KXTECH", "KXAPPLE", "KXGOOG", "KXAMZN", "KXMETA", "KXNVDA"],
     # DO NOT TRADE — economic series have structural negative edge (see BLOCKED_SERIES in
-    # kalshi_strategy_engine.py for per-series win-rate data). KXECON added to catch
-    # any catch-all economic series not enumerated above.
+    # kalshi_strategy_engine.py for per-series win-rate data). KXECON catches any
+    # catch-all economic series not enumerated above.
     "econ_blocked": ["KXFED", "KXCPI", "KXNFP", "KXGDP", "KXUNRATE", "KXECON"],
 }
 
@@ -235,7 +256,7 @@ def scan_full_universe_summary() -> dict[str, Any]:
     Returns category counts, total markets, and top categories by market count.
     Does not fetch orderbook data.
     """
-    result = scan_all_events(max_pages=5)
+    result = scan_all_events(max_pages=10)
     by_cat = result.get("events_by_category", {})
 
     summary: list[dict[str, Any]] = []

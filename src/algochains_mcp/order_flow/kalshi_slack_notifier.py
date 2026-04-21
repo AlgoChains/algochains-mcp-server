@@ -209,8 +209,14 @@ def notify_circuit_breaker(
     trigger_reason: str,
     balance_usd: float,
     loss_pct: float,
+    balance_is_estimate: bool = False,
 ) -> dict[str, Any]:
     """Urgent alert: circuit breaker triggered, trading halted."""
+    balance_label = (
+        f"`${balance_usd:.2f}` _(estimated — live API unavailable)_"
+        if balance_is_estimate
+        else f"`${balance_usd:.2f}`"
+    )
     blocks = [
         {
             "type": "header",
@@ -225,7 +231,7 @@ def notify_circuit_breaker(
                 "type": "mrkdwn",
                 "text": (
                     f"*Reason:* {trigger_reason}\n"
-                    f"*Balance:* `${balance_usd:.2f}`\n"
+                    f"*Balance:* {balance_label}\n"
                     f"*Loss:* `{loss_pct:.1%}` (limit exceeded)\n"
                     f"*Action:* All trading HALTED until manual review\n"
                     f"*Time:* `{datetime.now(timezone.utc).isoformat()}`"

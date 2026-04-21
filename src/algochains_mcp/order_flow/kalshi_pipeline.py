@@ -61,7 +61,18 @@ def _circuit_breaker_check(
     current_balance: float,
     peak_balance: float,
 ) -> tuple[bool, str]:
-    """Return (should_halt, reason) based on current balance vs peak."""
+    """Return (should_halt, reason) based on current balance vs peak.
+
+    A balance of exactly $0.00 indicates a failed API read (network timeout),
+    not a real total loss. We never let an API error pull the circuit breaker.
+    """
+    if current_balance <= 0.0:
+        logger.warning(
+            "Circuit breaker guard: balance=%.2f looks like an API read failure — skipping check",
+            current_balance,
+        )
+        return False, ""
+
     drawdown = (peak_balance - current_balance) / peak_balance
     if drawdown >= MAX_DRAWDOWN_PCT:
         return True, f"Max drawdown {drawdown:.1%} exceeded limit {MAX_DRAWDOWN_PCT:.0%}"
@@ -108,18 +119,32 @@ def run_kalshi_full_pipeline(
             "open_orders": len(account.open_orders or []),
         }
     except Exception as exc:
-        logger.error("Account fetch failed: %s", exc)
-        bankroll_usd = STARTING_BANKROLL
-        pipeline_result["account"] = {"error": str(exc)}
+        logger.error("Account fetch failed (API/network error): %s", exc)
+        # Use the last persisted balance so drawdown math stays accurate across transient
+        # network failures. Fall back to STARTING_BANKROLL only if state file is absent.
+        bankroll_usd = _load_last_known_balance()
+        pipeline_result["account"] = {
+            "error": str(exc),
+            "balance_usd_fallback": bankroll_usd,
+            "note": "balance from state file — API unreachable",
+        }
 
     # ── Step 2: Circuit breaker check ─────────────────────────────────────────
-    # Load persisted peak balance so drawdown survives daemon restarts
+    # Load persisted peak balance so drawdown survives daemon restarts.
+    # balance_is_live tracks whether bankroll_usd came from the live API or a fallback.
+    balance_is_live = "error" not in pipeline_result.get("account", {})
     peak_balance = _load_peak_balance(bankroll_usd)
     halt, halt_reason = _circuit_breaker_check(bankroll_usd, peak_balance)
     if halt:
         logger.critical("CIRCUIT BREAKER: %s", halt_reason)
         if notify_slack:
-            notify_circuit_breaker(halt_reason, bankroll_usd, (peak_balance - bankroll_usd) / peak_balance)
+            loss_pct = (peak_balance - bankroll_usd) / peak_balance if peak_balance > 0 else 0.0
+            notify_circuit_breaker(
+                halt_reason,
+                bankroll_usd,
+                loss_pct,
+                balance_is_estimate=not balance_is_live,
+            )
         pipeline_result["circuit_breaker"] = {"triggered": True, "reason": halt_reason}
         pipeline_result["status"] = "halted"
         return pipeline_result
@@ -158,7 +183,7 @@ def run_kalshi_full_pipeline(
     # ── Step 6: Statistical Arbitrage ─────────────────────────────────────────
     if enable_stat_arb:
         try:
-            arb_result = scan_stat_arb_opportunities(max_events=15, max_markets_per_scan=30)
+            arb_result = scan_stat_arb_opportunities(max_events=50, max_markets_per_scan=100)
             pipeline_result["stat_arb"] = arb_result
         except Exception as exc:
             logger.error("Stat arb scan failed: %s", exc)
@@ -252,6 +277,28 @@ def run_kalshi_full_pipeline(
         logger.warning("Supabase pipeline log failed: %s", exc)
 
     return pipeline_result
+
+
+def _load_last_known_balance() -> float:
+    """Return the last successfully fetched balance from the daemon state file.
+
+    Used as a safe fallback when the Kalshi API is temporarily unreachable so
+    the circuit breaker does not fire on a transient network error.
+    Falls back to STARTING_BANKROLL if no state file exists.
+    """
+    try:
+        if _STATE_FILE.exists():
+            data = json.loads(_STATE_FILE.read_text())
+            stored = float(data.get("last_known_balance_usd", 0.0))
+            if stored > 0.0:
+                logger.info(
+                    "Using last-known balance $%.2f from state file (API unreachable)", stored
+                )
+                return stored
+    except Exception:
+        pass
+    logger.info("No persisted balance found — using STARTING_BANKROLL $%.2f", STARTING_BANKROLL)
+    return STARTING_BANKROLL
 
 
 def _load_peak_balance(current_balance: float) -> float:

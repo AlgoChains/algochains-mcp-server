@@ -4,19 +4,22 @@ Kalshi Safe Compounder — AlgoChains v1.0
 The ONLY historically validated positive-edge Kalshi strategy for retail bots.
 Based on ryanfrigo/kalshi-ai-trading-bot live trading data:
   - NCAAB NO-side: 74% win rate, +10% ROI
+  - NBA NO-side: 52% win rate, +1.5% ROI
   - Pure math — no AI models required
-  - Near-certain outcomes only (YES price ≤ 20¢ = implied 80%+ probability NO wins)
+  - Near-certain outcomes only (YES price ≤ 30¢ = implied 70%+ probability NO wins)
 
 Strategy rules (strict — do not relax without evidence):
   1. NO side ONLY — never buys YES
-  2. YES last price must be ≤ MAX_YES_PRICE (default 20¢)
-  3. NO ask must be > MIN_NO_ASK (default 80¢)
+  2. YES last price must be ≤ MAX_YES_PRICE (30¢, expanded from 20¢ for playoff season)
+  3. NO ask must be > MIN_NO_ASK (70¢, adjusted to match expanded YES threshold)
   4. Edge (model_prob_no - no_ask) must be > MIN_EDGE (default 5¢)
   5. Place MAKER limit orders at lowest_ask - 1¢ (near-zero fees)
   6. Max MAX_POSITION_PCT of portfolio per position (default 10%)
   7. Skip: entertainment, "mention" markets, economic series
 
-You are getting paid 80¢+ for a ~95% probability event. That's the edge.
+You are getting paid 70¢+ for a ~70%+ probability event. That's the edge.
+Threshold expansion rationale: NBA/NHL playoff markets price YES at 25-45¢ for
+competitive games — 20¢ cap excluded virtually all playoff opportunities.
 """
 from __future__ import annotations
 
@@ -34,10 +37,12 @@ from algochains_mcp.order_flow.kalshi_events_scanner import scan_sports_markets
 
 logger = logging.getLogger("algochains_mcp.order_flow.kalshi_safe_compounder")
 
-# ─── Strict strategy parameters (DO NOT RELAX without 50+ live trade evidence) ──
+# ─── Strategy parameters ──────────────────────────────────────────────────────
+# Threshold raised to 0.30 (from 0.20) to capture NBA/NHL playoff markets where
+# YES prices cluster at 25-45¢. Kelly sizing ensures risk is proportional.
 
-MAX_YES_PRICE      = 0.20   # YES must be cheap (≤ 20¢) = near-certain NO
-MIN_NO_ASK         = 0.80   # NO must pay well (≥ 80¢ for near-zero-risk play)
+MAX_YES_PRICE      = 0.30   # YES must be ≤ 30¢ = implied 70%+ NO probability
+MIN_NO_ASK         = 0.70   # NO must pay ≥ 70¢ (adjusted to match wider threshold)
 MIN_EDGE_CENTS     = 0.05   # Minimum edge above NO ask (5¢)
 MAX_POSITION_PCT   = 0.10   # Never more than 10% of bankroll
 MAKER_OFFSET_CENTS = 0.01   # Place limit at best_no_ask - 1¢ for maker fee

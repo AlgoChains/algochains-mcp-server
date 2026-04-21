@@ -129,9 +129,21 @@ class KalshiAccountState:
 # ─── Account ──────────────────────────────────────────────────────────────────
 
 def get_account_state() -> KalshiAccountState:
-    """Fetch live balance, positions, and open orders."""
+    """Fetch live balance, positions, and open orders.
+
+    Raises RuntimeError on network failure or unexpected API response so callers
+    can distinguish a genuine $0 balance from a transient read error.
+    """
     code_b, data_b = kalshi_signed_get("/trade-api/v2/portfolio/balance")
-    balance_cents = data_b.get("balance", 0) if isinstance(data_b, dict) else 0
+    if code_b == 0:
+        raise RuntimeError(
+            f"Kalshi balance API network error (code=0): {str(data_b)[:200]}"
+        )
+    if not isinstance(data_b, dict):
+        raise RuntimeError(
+            f"Kalshi balance API unexpected response (code={code_b}): {str(data_b)[:200]}"
+        )
+    balance_cents = data_b.get("balance", 0)
     balance_usd = balance_cents / 100.0
 
     code_p, data_p = kalshi_signed_get("/trade-api/v2/portfolio/positions", {"count": "100"})
