@@ -4127,6 +4127,126 @@ TOOLS = [
              "max_age_days": {"type": "integer", "default": 30},
          }, "required": []},
          annotations=ANNOT_READ_SAFE),
+
+    # ── Numerai Tournament Tools (§9 / §28 / HK-17) ────────────────────────
+    # Isolated from futures bots per §26.2 — no shared code paths or PKLs.
+    Tool(name="numerai_status",
+         description=(
+             "Return Numerai tournament configuration status: env vars as booleans (never key values), "
+             "dataset version, round cadence, and proxy_mmc labeling notes. "
+             "Safe to call anytime — no API calls made. "
+             "HK-6: NUMERAI_SECRET_KEY never appears in response."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_SAFE),
+
+    Tool(name="numerai_round_info",
+         description=(
+             "Return the current and upcoming Numerai tournament round information via numerapi. "
+             "Requires NUMERAI_PUBLIC_ID and NUMERAI_SECRET_KEY in environment. "
+             "Returns {current_round, submission_window, scoring_lag} — no predictions."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_SAFE),
+
+    Tool(name="numerai_download_dataset",
+         description=(
+             "Download Numerai Classic dataset (train.parquet + live.parquet + features.json) "
+             "to ALGOCHAINS_STATE_DIR/numerai/data/. "
+             "HK-3: live.parquet always re-downloaded (IDs change each round). "
+             "HK-14: uses feature_set (small|medium|all) to avoid OOM. "
+             "GCS mirror optional via use_gcs=true."
+         ),
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "feature_set": {"type": "string", "enum": ["small", "medium", "all"], "default": "medium"},
+                 "force_redownload": {"type": "boolean", "default": False},
+                 "use_gcs": {"type": "boolean", "default": False},
+             },
+             "required": [],
+         }),
+
+    Tool(name="numerai_train_baseline",
+         description=(
+             "Train a LightGBM baseline model on the downloaded Numerai dataset. "
+             "Era-based k-fold CV with embargo gap (HK-1). "
+             "Saves model to models/numerai/model_<round>.pkl (HK-16: never touches CL/MNQ PKLs). "
+             "Returns {proxy_corr_mean, proxy_corr_std, era_stability, model_path}. "
+             "CPU-intensive — may take several minutes."
+         ),
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "holdout_n": {"type": "integer", "default": 4, "description": "Eras for holdout (min 4)"},
+                 "embargo_eras": {"type": "integer", "default": 4, "description": "Embargo gap between train/val"},
+                 "feature_set": {"type": "string", "enum": ["small", "medium", "all"], "default": "medium"},
+             },
+             "required": [],
+         }),
+
+    Tool(name="numerai_validate_metrics",
+         description=(
+             "Compute per-era validation metrics on the holdout set. "
+             "Returns {proxy_corr_mean, proxy_corr_std, era_stability, calibration_ok}. "
+             "HK-10: ALL metrics are labeled proxy_corr/proxy_mmc — not bit-identical to "
+             "Numerai server scoring. Only leaderboard mmcRep after scoring is authoritative."
+         ),
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "neutralized": {"type": "boolean", "default": True, "description": "Whether to apply feature neutralization"},
+             },
+             "required": [],
+         }),
+
+    Tool(name="numerai_dry_run_submit",
+         description=(
+             "Generate submission CSV without uploading. "
+             "Validates: IDs == live.parquet IDs (HK-3), all values in [0,1] (HK-5), std > 0. "
+             "Returns {output_path, checksum_sha256, row_count, prediction_mean, prediction_std}. "
+             "Run this before numerai_upload_predictions."
+         ),
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "neutralized": {"type": "boolean", "default": True},
+             },
+             "required": [],
+         }),
+
+    Tool(name="numerai_upload_predictions",
+         description=(
+             "Upload submission CSV to Numerai tournament. IRREVERSIBLE — fail closed by default. "
+             "REQUIRES: NUMERAI_ALLOW_LIVE=1 in environment AND confirm=true AND model_id set. "
+             "HK-17: TIER_ORDER_EXEC. HK-7: no NMR staking here (Gate 2 = manual UI only). "
+             "Default mode = dry-run even if called. Verifies round_id before upload."
+         ),
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "model_id": {"type": "string", "description": "Numerai model UUID from numer.ai/models"},
+                 "confirm": {"type": "boolean", "default": False, "description": "Must be true to proceed with upload"},
+                 "round_id": {"type": "integer", "description": "Expected round ID for validation"},
+             },
+             "required": ["model_id", "confirm"],
+         }),
+
+    Tool(name="numerai_get_model_scores",
+         description=(
+             "Fetch model performance scores from Numerai leaderboard via numerapi. "
+             "Returns raw response dict (pass-through — HK-13: no hardcoded field names). "
+             "HK-10: proxy_mmc != live mmcRep. "
+             "BMC note: diagnostics BMC != leaderboard BMC (highest-stake vs ensemble)."
+         ),
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "model_id": {"type": "string", "description": "Numerai model UUID (optional — defaults to env NUMERAI_MODEL_ID)"},
+                 "n_rounds": {"type": "integer", "default": 20, "description": "Number of recent rounds to fetch"},
+             },
+             "required": [],
+         }),
 ]
 
 
@@ -4333,6 +4453,8 @@ TIER1_TOOL_NAMES = {
     "list_prop_funds",
     "evaluate_strategy_for_prop_fund",
     "get_prop_mode_status",
+    # Numerai tournament — status tool is Tier 1 for discoverability (§9)
+    "numerai_status",
 }
 
 
@@ -9338,6 +9460,226 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 sys.path.insert(0, _ac_dir)
             from algoclaw.cli import get_status
             return _text(get_status())
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    # ── Numerai Tournament Tools (§9 / §28 / HK-6/HK-17) ────────────────────
+    # Isolated from futures bots. No futures imports. HK-6: no secret values in responses.
+
+    elif name == "numerai_status":
+        try:
+            from .tournament.numerai.config import get_config
+            cfg = get_config()
+            return _text(cfg.status_dict())
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "numerai_round_info":
+        try:
+            from .tournament.numerai.config import _get_napi
+            napi = _get_napi()
+            current_round = napi.get_current_round()
+            return _text({
+                "current_round": current_round,
+                "submission_window": "Tuesday–Saturday",
+                "scoring_lag": "~20 business days + 2 lag (20D2L)",
+                "note": "Verify exact window at numer.ai — this is the standard cadence.",
+            })
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "numerai_download_dataset":
+        try:
+            from .tournament.numerai.config import get_config
+            from .tournament.numerai.download import download_training_data, download_live_data
+            cfg = get_config()
+            feature_set = arguments.get("feature_set", cfg.feature_set)
+            force = arguments.get("force_redownload", False)
+            train_paths = download_training_data(feature_set=feature_set, force_redownload=force)
+            live_paths = download_live_data()
+            return _text({
+                "train_parquet": str(train_paths["train_parquet"]),
+                "features_json": str(train_paths["features_json"]),
+                "live_parquet": str(live_paths["live_parquet"]),
+                "round_id": live_paths["round_id"],
+                "feature_set": feature_set,
+                "note": "live.parquet always re-downloaded (HK-3: IDs change each round).",
+            })
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "numerai_train_baseline":
+        try:
+            from .tournament.numerai.config import get_config
+            from .tournament.numerai.download import (
+                load_feature_names, load_train_dataframe,
+                download_training_data, download_live_data,
+            )
+            from .tournament.numerai.train import train_baseline
+            cfg = get_config()
+            feature_set = arguments.get("feature_set", cfg.feature_set)
+            holdout_n = int(arguments.get("holdout_n", cfg.holdout_eras))
+            embargo_eras = int(arguments.get("embargo_eras", cfg.embargo_eras))
+
+            train_paths = download_training_data(feature_set=feature_set)
+            live_paths = download_live_data()
+            feature_names = load_feature_names(train_paths["features_json"], feature_set)
+            train_df = load_train_dataframe(
+                train_paths["train_parquet"], train_paths["features_json"],
+                feature_set=feature_set, target_col=cfg.target_column,
+            )
+            meta = train_baseline(
+                train_df, feature_names,
+                target_col=cfg.target_column,
+                holdout_n=holdout_n, embargo_eras=embargo_eras,
+                models_dir=cfg.models_dir(),
+                round_id=live_paths["round_id"], cfg=cfg,
+            )
+            return _text(meta)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "numerai_validate_metrics":
+        try:
+            from .tournament.numerai.config import get_config
+            from .tournament.numerai.download import (
+                load_feature_names, load_train_dataframe,
+                download_training_data, download_live_data,
+            )
+            from .tournament.numerai.era_utils import era_split
+            from .tournament.numerai.train import load_model, predict
+            from .tournament.numerai.neutralize import neutralize_predictions
+            from .tournament.numerai.validate import validate_metrics
+            import json as _json
+            from pathlib import Path as _Path
+
+            cfg = get_config()
+            use_neutralized = arguments.get("neutralized", True)
+            train_paths = download_training_data(feature_set=cfg.feature_set)
+            live_paths = download_live_data()
+            feature_names = load_feature_names(train_paths["features_json"], cfg.feature_set)
+            train_df = load_train_dataframe(
+                train_paths["train_parquet"], train_paths["features_json"],
+                feature_set=cfg.feature_set, target_col=cfg.target_column,
+            )
+            _, val_df = era_split(train_df, holdout_n=cfg.holdout_eras, embargo_gap=cfg.embargo_eras)
+
+            # Load most recent model
+            models_dir = cfg.models_dir()
+            pkls = sorted(models_dir.glob("model_*.pkl"), key=lambda p: p.stat().st_mtime)
+            if not pkls:
+                return _text({"error": "No trained model found. Run numerai_train_baseline first."})
+            model_artifact = load_model(pkls[-1])
+            feat_cols = [f for f in feature_names if f in val_df.columns]
+            val_preds = predict(model_artifact, val_df[feat_cols])
+            if use_neutralized:
+                val_preds = neutralize_predictions(val_preds, val_df, feature_names)
+            report = validate_metrics(val_preds, val_df, target_col=cfg.target_column)
+            report.pop("per_era_proxy_corr", None)  # too verbose for MCP response
+            return _text(report)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "numerai_dry_run_submit":
+        try:
+            from .tournament.numerai.config import get_config
+            from .tournament.numerai.download import (
+                load_feature_names, load_live_dataframe,
+                download_training_data, download_live_data,
+            )
+            from .tournament.numerai.train import load_model, predict
+            from .tournament.numerai.neutralize import neutralize_predictions
+            from .tournament.numerai.submit import build_submission
+            from pathlib import Path as _Path
+
+            cfg = get_config()
+            use_neutralized = arguments.get("neutralized", True)
+            train_paths = download_training_data(feature_set=cfg.feature_set)
+            live_paths = download_live_data()
+            feature_names = load_feature_names(train_paths["features_json"], cfg.feature_set)
+            live_df = load_live_dataframe(
+                live_paths["live_parquet"], train_paths["features_json"],
+                feature_set=cfg.feature_set,
+            )
+            models_dir = cfg.models_dir()
+            pkls = sorted(models_dir.glob("model_*.pkl"), key=lambda p: p.stat().st_mtime)
+            if not pkls:
+                return _text({"error": "No trained model found. Run numerai_train_baseline first."})
+            model_artifact = load_model(pkls[-1])
+            feat_cols = [f for f in feature_names if f in live_df.columns]
+            preds = predict(model_artifact, live_df[feat_cols])
+            if use_neutralized:
+                preds = neutralize_predictions(preds, live_df, feature_names)
+            submission_path = cfg.submissions_dir() / f"dry_run_r{live_paths['round_id']}.csv"
+            result = build_submission(preds, live_df, submission_path)
+            result["round_id"] = live_paths["round_id"]
+            result["dry_run"] = True
+            return _text(result)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "numerai_upload_predictions":
+        try:
+            from .tournament.numerai.config import get_config
+            from .tournament.numerai.submit import upload_predictions_gated
+            from pathlib import Path as _Path
+
+            cfg = get_config()
+            model_id = arguments.get("model_id", "").strip()
+            confirm = arguments.get("confirm", False)
+            round_id = arguments.get("round_id")
+
+            if not confirm:
+                return _text({
+                    "uploaded": False,
+                    "reason": "confirm=false — set confirm=true to attempt upload",
+                    "note": "Also requires NUMERAI_ALLOW_LIVE=1 in environment (HK-7).",
+                    "secret_in_response": False,
+                })
+
+            # Find most recent dry-run submission
+            submissions_dir = cfg.submissions_dir()
+            csvs = sorted(submissions_dir.glob("*.csv"), key=lambda p: p.stat().st_mtime)
+            if not csvs:
+                return _text({"error": "No submission CSV found. Run numerai_dry_run_submit first."})
+
+            result = upload_predictions_gated(
+                csvs[-1], model_id=model_id, round_id=round_id,
+                dry_run=not cfg.allow_live,
+            )
+            return _text(result)
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "numerai_get_model_scores":
+        try:
+            from .tournament.numerai.config import _get_napi
+            import numerapi as _napi_mod
+
+            napi = _get_napi()
+            model_id = arguments.get("model_id", "").strip() or None
+            n_rounds = int(arguments.get("n_rounds", 20))
+
+            # Pass-through JSON — no hardcoded field names (HK-13)
+            leaderboard = napi.get_leaderboard(limit=100)
+            result = {
+                "note_proxy_mmc": (
+                    "These are leaderboard scores — authoritative for live performance. "
+                    "Do not confuse with proxy_mmc from local validation (HK-10)."
+                ),
+                "note_bmc": (
+                    "BMC on leaderboard = stake-weighted ensemble benchmark. "
+                    "BMC in diagnostics = highest-stake benchmark. They differ (§14)."
+                ),
+                "leaderboard_sample": leaderboard[:20] if isinstance(leaderboard, list) else leaderboard,
+            }
+            if model_id:
+                try:
+                    perf = napi.round_model_performances_v2(model_id)
+                    result["model_performances"] = perf[-n_rounds:] if isinstance(perf, list) else perf
+                except Exception as perf_exc:
+                    result["model_performances_error"] = str(perf_exc)
+            return _text(result)
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 

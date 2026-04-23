@@ -112,6 +112,17 @@ OWNER_TOOLS = {
     "submit_to_marketplace",
     "get_circuit_breaker_status",
     "get_onboarding_status",
+    # Numerai tournament tools — owner-only (tournament credentials required).
+    # Read tools: anyone with owner key. Upload: gated by NUMERAI_ALLOW_LIVE=1 in handler.
+    "numerai_status",
+    "numerai_round_info",
+    "numerai_download_dataset",
+    "numerai_train_baseline",
+    "numerai_validate_metrics",
+    "numerai_dry_run_submit",
+    "numerai_get_model_scores",
+    # HK-17: upload is TIER_ORDER_EXEC — restricted tier. Confirm gate in handler.
+    "numerai_upload_predictions",
 }
 
 

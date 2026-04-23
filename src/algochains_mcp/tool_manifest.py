@@ -19,6 +19,9 @@ _PREFIX_RULES: list[tuple[str, str, list[str]]] = [
     ("tradovate_", "partial", ["TRADOVATE_CID", "TRADOVATE_SECRET"]),
     ("alpaca_", "full", ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"]),
     ("oanda_", "full", ["OANDA_ACCESS_TOKEN", "OANDA_ACCOUNT_ID"]),
+    # Numerai tournament tools — partial until live-tested against tournament API.
+    # NUMERAI_SECRET_KEY must NEVER appear in logs/responses (HK-6).
+    ("numerai_", "partial", ["NUMERAI_SECRET_KEY"]),
 ]
 
 # Explicit entries for Tier-1 and other high-traffic tools
@@ -55,6 +58,55 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
     "browse_marketplace": {"implementation_status": "full", "required_env": ["LISTING_API_KEY"], "notes": "Fails fast if LISTING_API_KEY missing (unless skip env set)."},
     "get_listing_detail": {"implementation_status": "full", "required_env": ["LISTING_API_KEY"], "notes": ""},
     "subscribe_to_bot": {"implementation_status": "full", "required_env": ["LISTING_API_KEY"], "notes": ""},
+
+    # ── Numerai tournament tools (§9 / §28.3 build order step 12) ──────────
+    "numerai_status": {
+        "implementation_status": "partial",
+        "required_env": [],
+        "notes": "Returns env flags as booleans only. HK-6: never logs key values.",
+    },
+    "numerai_round_info": {
+        "implementation_status": "partial",
+        "required_env": ["NUMERAI_PUBLIC_ID", "NUMERAI_SECRET_KEY"],
+        "notes": "Calls napi.get_current_round(). Requires credentials.",
+    },
+    "numerai_download_dataset": {
+        "implementation_status": "partial",
+        "required_env": ["NUMERAI_PUBLIC_ID", "NUMERAI_SECRET_KEY"],
+        "notes": "Downloads train/live parquet to ALGOCHAINS_STATE_DIR/numerai/data/. GCS mirror optional.",
+    },
+    "numerai_train_baseline": {
+        "implementation_status": "partial",
+        "required_env": [],
+        "notes": "CPU-heavy LightGBM train with era k-fold. Saves to models/numerai/. HK-1: era-based split enforced.",
+    },
+    "numerai_validate_metrics": {
+        "implementation_status": "partial",
+        "required_env": [],
+        "notes": "Per-era Spearman; calibration check. All metrics labeled proxy_corr/proxy_mmc (HK-10).",
+    },
+    "numerai_dry_run_submit": {
+        "implementation_status": "partial",
+        "required_env": [],
+        "notes": "Generates submission CSV with ID validation and range check. No upload. HK-3, HK-5.",
+    },
+    "numerai_upload_predictions": {
+        "implementation_status": "partial",
+        "required_env": ["NUMERAI_SECRET_KEY", "NUMERAI_ALLOW_LIVE"],
+        "notes": (
+            "Irreversible tournament submission. Gated: NUMERAI_ALLOW_LIVE=1 AND model_id required. "
+            "HK-17: TIER_ORDER_EXEC. HK-7: no NMR staking (Gate 2, manual UI only). "
+            "Default = dry-run. NUMERAI_SECRET_KEY never logged."
+        ),
+    },
+    "numerai_get_model_scores": {
+        "implementation_status": "partial",
+        "required_env": ["NUMERAI_PUBLIC_ID", "NUMERAI_SECRET_KEY"],
+        "notes": (
+            "Returns raw numerapi response dict (pass-through). HK-13: no hardcoded field names. "
+            "HK-10: proxy_mmc != live mmcRep. BMC disclaimer included."
+        ),
+    },
 }
 
 
@@ -116,3 +168,16 @@ def build_manifest(
         "summary_by_status": summary,
         "tools": tools_out,
     }
+
+
+def mcp_tool_manifest() -> dict[str, Any]:
+    """
+    Convenience wrapper — returns manifest using only the static tool overrides and prefix rules.
+    Used by tests and external callers that do not have access to the live TOOLS list.
+    """
+    all_tool_names = sorted(set(list(_TOOL_OVERRIDES.keys())))
+    return build_manifest(
+        tool_names=all_tool_names,
+        tier1_names=set(),
+        tool_mode="static",
+    )

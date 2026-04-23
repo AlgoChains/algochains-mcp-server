@@ -61,6 +61,11 @@ _CATEGORY_KEYWORDS: dict[str, list[str]] = {
            "vertex", "gpu", "predict", "classify"],
     "marketplace": ["marketplace", "mcpt", "promote", "listing", "subscriber",
                     "strategy-vault", "creator"],
+    # Numerai tournament keywords (§9 / skill-keywords todo)
+    "numerai": ["numerai", "nmr", "mmc", "tournament", "ender20", "ender", "corr",
+                "numeroo", "proxy_mmc", "proxy_corr", "mmcrep", "numerapi",
+                "era-based", "feature-neutralization", "submission-window",
+                "classic-tournament", "signals-tournament", "staking"],
 }
 
 

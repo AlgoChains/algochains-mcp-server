@@ -305,6 +305,19 @@ _TOOL_TIERS: dict[str, int] = {
     "purge_trade_memory": TIER_DESTRUCTIVE,
     "destroy_all_sandboxes": TIER_DESTRUCTIVE,
 
+    # ── Numerai tournament tools (HK-17: upload is irreversible — must be ORDER_EXEC) ──
+    "numerai_status": TIER_READ_ONLY,           # env flags as booleans; no API calls
+    "numerai_round_info": TIER_READ_ONLY,       # reads current round from numerapi
+    "numerai_get_model_scores": TIER_READ_ONLY, # leaderboard read via numerapi
+    "numerai_validate_metrics": TIER_READ_ONLY, # per-era corr on local holdout; no write
+    "numerai_download_dataset": TIER_WRITE_LOCAL,  # writes parquet to ALGOCHAINS_STATE_DIR
+    "numerai_train_baseline": TIER_WRITE_LOCAL,    # trains model; writes PKL to models/numerai/
+    "numerai_dry_run_submit": TIER_WRITE_LOCAL,    # writes submission CSV; no upload
+    # HK-17: upload is irreversible — must NOT be TIER_READ_ONLY or TIER_WRITE_LOCAL.
+    # Uses TIER_ORDER_EXEC (same as place_order) as "TIER_WRITE_REMOTE" equivalent.
+    # Requires NUMERAI_ALLOW_LIVE=1 AND model_id. Gated in submit.py gate logic.
+    "numerai_upload_predictions": TIER_ORDER_EXEC,
+
     # ── Subscriber tools (HTTP bridge SUBSCRIBER_TOOLS surface) ──────────────
     # Read-only subscriber views
     "get_signal_stream": TIER_READ_ONLY,
@@ -398,6 +411,9 @@ def safe_tools_for_mode(tool_names: list[str], mode: str) -> list[str]:
         max_tier = TIER_DESTRUCTIVE  # live mode — all tools available
     return sorted(t for t in tool_names if get_danger_tier(t) <= max_tier)
 
+
+# Public alias — tests and external code should use TOOL_TIERS (without underscore).
+TOOL_TIERS = _TOOL_TIERS
 
 # P2-7 FIX: _TOOL_TIERS is built from multiple merged dicts so Python silently
 # accepts duplicate keys (last wins). In practice validate_strategy and run_backtest
