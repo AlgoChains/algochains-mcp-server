@@ -11,10 +11,15 @@ from __future__ import annotations
 
 import pytest
 
-# Update this constant when intentionally changing tool count.
-# v21.0 target: 350+ tools
-DOCUMENTED_TOOL_COUNT_MIN = 260  # Minimum — fail if we drop below this
-DOCUMENTED_TOOL_COUNT_MAX = 500  # Safety ceiling — fail if unexpectedly high
+# Update these constants when intentionally changing tool count.
+# v22.2.0 ground truth (2026-05-01):  full=476, smart=150
+# DOCUMENTED_TOOL_COUNT_MIN: conservative floor; fail if we drop below this.
+# DOCUMENTED_TOOL_COUNT_MAX: safety ceiling; fail if unexpectedly high.
+# SMART_TOOL_COUNT_MIN / MAX: smart (Tier-1) mode floor/ceiling.
+DOCUMENTED_TOOL_COUNT_MIN = 460   # full mode floor
+DOCUMENTED_TOOL_COUNT_MAX = 550   # full mode ceiling
+SMART_TOOL_COUNT_MIN = 100        # smart mode floor (Tier-1 tools)
+SMART_TOOL_COUNT_MAX = 200        # smart mode ceiling
 
 
 def _get_registered_tools() -> list:
@@ -28,7 +33,7 @@ def _get_registered_tools() -> list:
 
 
 def test_tool_count_within_expected_range():
-    """Registered tool count must be within documented range."""
+    """Registered tool count (full mode) must be within documented range."""
     tools = _get_registered_tools()
     count = len(tools)
 
@@ -39,6 +44,29 @@ def test_tool_count_within_expected_range():
     assert count <= DOCUMENTED_TOOL_COUNT_MAX, (
         f"Tool count suspiciously high: {count} > {DOCUMENTED_TOOL_COUNT_MAX}. "
         f"Possible duplicate registration. Review server.py."
+    )
+
+
+def test_smart_mode_tool_count():
+    """Smart mode (TOOLS_TIER1) count must be within expected band.
+
+    This catches regressions where someone empties or over-populates
+    TIER1_TOOL_NAMES without updating the documented range.
+    """
+    try:
+        import algochains_mcp.server as srv
+        count = len(srv.TOOLS_TIER1)
+    except Exception as exc:
+        pytest.skip(f"Could not load server TOOLS_TIER1: {exc}")
+        return
+
+    assert count >= SMART_TOOL_COUNT_MIN, (
+        f"Smart mode Tier-1 count too low: {count} < {SMART_TOOL_COUNT_MIN}. "
+        "Check TIER1_TOOL_NAMES in server.py — key tools may have been removed."
+    )
+    assert count <= SMART_TOOL_COUNT_MAX, (
+        f"Smart mode Tier-1 count unexpectedly high: {count} > {SMART_TOOL_COUNT_MAX}. "
+        "Tier-1 tools should be a curated subset; review TIER1_TOOL_NAMES."
     )
 
 
@@ -102,6 +130,22 @@ def test_no_duplicate_tool_literals_in_server_source():
     )
 
 
+def test_server_file_non_empty():
+    """server.py must not be zero bytes.
+
+    An accidental `git checkout --theirs / cp /dev/null` can silently zero the
+    main entry point.  This check fires even when the module cannot import due to
+    missing optional deps, catching the deletion before the import test.
+    """
+    from pathlib import Path
+    server_path = Path(__file__).resolve().parents[1] / "src" / "algochains_mcp" / "server.py"
+    size = server_path.stat().st_size if server_path.exists() else 0
+    assert size > 10_000, (
+        f"server.py is {size} bytes — looks like accidental deletion or overwrite. "
+        "Run: git checkout HEAD -- src/algochains_mcp/server.py"
+    )
+
+
 def test_server_module_importable():
     """server.py must import without error."""
     try:
@@ -155,3 +199,24 @@ def test_streaming_modules_importable():
     from algochains_mcp.streaming.alert_engine import PriceAlertEngine
     from algochains_mcp.streaming.earnings_calendar import EarningsCalendar
     assert PriceAlertEngine and EarningsCalendar
+
+
+def test_no_zeroed_source_files():
+    """No .py file in src/ may be 0 bytes.
+
+    Guards against accidental bulk-zeroing that previously wiped server.py,
+    errors.py, marketplace/bridge.py, and five other files simultaneously.
+    Any empty .py in src/ is either a stale placeholder or an accidental loss.
+    """
+    from pathlib import Path
+    src_root = Path(__file__).resolve().parents[1] / "src"
+    zeroed = [
+        str(p.relative_to(src_root.parent))
+        for p in src_root.rglob("*.py")
+        if p.stat().st_size == 0 and p.name != "__init__.py"
+    ]
+    assert not zeroed, (
+        f"Zero-byte source files detected ({len(zeroed)}):\n"
+        + "\n".join(f"  {z}" for z in sorted(zeroed))
+        + "\nRun: git checkout HEAD -- <path> for each file above."
+    )

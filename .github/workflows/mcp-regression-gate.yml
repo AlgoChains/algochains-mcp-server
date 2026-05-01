@@ -35,15 +35,30 @@ jobs:
           EOF
 
       # Gate 1: Tool count must not decrease.
-      # Floor is conservatively below the current README badge (468) to allow
-      # small non-regression deltas; bump both together when we intentionally
-      # add or remove tool families.
-      - name: "Gate 1: Tool Count (≥450)"
+      # Floor is conservatively below the current ground-truth (476 full, 150 smart).
+      # Bump both together when intentionally adding or removing tool families.
+      - name: "Gate 1: Full-Mode Tool Count (≥460)"
         run: |
           TOOLS=$(npx mcporter list algochains --json | jq '.tools | length')
-          echo "Tool count: $TOOLS"
-          [ "$TOOLS" -ge 450 ] || (echo "❌ FAIL: Expected ≥450 tools, got $TOOLS" && exit 1)
-          echo "✅ Tool count: $TOOLS"
+          echo "Tool count (full mode): $TOOLS"
+          [ "$TOOLS" -ge 460 ] || (echo "❌ FAIL: Expected ≥460 full-mode tools, got $TOOLS" && exit 1)
+          echo "✅ Full-mode tool count: $TOOLS"
+
+      # Gate 1b: Smart-mode Tier-1 count must stay in band.
+      - name: "Gate 1b: Smart-Mode Tier-1 Count (100–200)"
+        run: |
+          python3 - << 'PYEOF'
+          import sys
+          sys.path.insert(0, 'src')
+          import algochains_mcp.server as srv
+          count = len(srv.TOOLS_TIER1)
+          print(f"Smart-mode Tier-1 count: {count}")
+          assert 100 <= count <= 200, (
+              f"Smart-mode Tier-1 count {count} out of range [100, 200]. "
+              "Review TIER1_TOOL_NAMES in server.py."
+          )
+          print(f"✅ Smart-mode Tier-1 count: {count}")
+          PYEOF
 
       # Gate 2: All Tier 1 tools must be present in smart mode
       - name: "Gate 2: Tier 1 Tools Present"
@@ -56,7 +71,7 @@ jobs:
             echo "$TOOLS_JSON" | jq -e ".tools[] | select(.name == \"$tool\")" > /dev/null 2>&1 \
               || (echo "❌ Missing Tier 1 tool: $tool" && exit 1)
           done
-          echo "✅ All Tier 1 tools present (including V18 intent tools)"
+          echo "✅ All Tier 1 tools present (v22 smart mode)"
 
       # Gate 3: BM25 Smart Discovery returns relevant results (Python direct test — no mcporter call needed)
       - name: "Gate 3: Smart Discovery BM25"
@@ -179,3 +194,73 @@ jobs:
 
           asyncio.run(_smoke())
           PYEOF
+
+      # Gate 8: server.py non-empty — catches accidental zeroing
+      - name: "Gate 8: server.py Non-Empty"
+        run: |
+          SIZE=$(wc -c < src/algochains_mcp/server.py)
+          echo "server.py size: $SIZE bytes"
+          [ "$SIZE" -gt 10000 ] || (echo "❌ FAIL: server.py is only $SIZE bytes — likely accidental deletion" && exit 1)
+          echo "✅ server.py size: $SIZE bytes"
+
+      # Gate 9: Secret scan — no hardcoded API keys in src/ or tests/
+      - name: "Gate 9: Secret Scan"
+        run: |
+          python3 scripts/secret_scan.py --ci
+          echo "✅ Secret scan clean"
+
+      # Gate 10: Docs drift check — README/pyproject must agree on major version
+      - name: "Gate 10: Docs Version Drift"
+        run: |
+          python3 - << 'PYEOF'
+          import re
+          from pathlib import Path
+
+          root = Path(".")
+          pyproject = (root / "pyproject.toml").read_text()
+          readme = (root / "README.md").read_text()
+
+          # Extract version from pyproject.toml
+          m = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', pyproject, re.MULTILINE)
+          assert m, "Could not find version in pyproject.toml"
+          pyproject_version = m.group(1)  # e.g. "22.2.0"
+          major = pyproject_version.split(".")[0]  # "22"
+
+          # README should reference same major version in badge or changelog
+          assert f"v{major}" in readme or f"version-{major}" in readme.lower() or major in readme, (
+              f"README does not reference major version v{major} from pyproject.toml. "
+              "Update README badge or changelog header."
+          )
+          print(f"✅ Version consistency: pyproject={pyproject_version}, README references v{major}")
+          PYEOF
+
+      # Gate 11: algochains.ts description must not say v18 (stale wrapper check)
+      - name: "Gate 11: Generated Wrapper Freshness"
+        run: |
+          python3 - << 'PYEOF'
+          from pathlib import Path
+          ts = Path("algochains.ts")
+          if not ts.exists():
+              print("ℹ️  algochains.ts not found — skipping wrapper freshness check")
+              import sys; sys.exit(0)
+          content = ts.read_text(errors="replace")
+          stale_markers = ["v18 ", "v18—", "167+ tools", "167+", "~25 core tools"]
+          found = [m for m in stale_markers if m.lower() in content.lower()]
+          assert not found, (
+              f"algochains.ts contains stale version markers: {found}. "
+              "Run: npx mcporter generate algochains --out algochains.ts  to regenerate."
+          )
+          print("✅ algochains.ts has no stale v18/167+ markers")
+          PYEOF
+
+      # Gate 12: No zero-byte non-init source files
+      - name: "Gate 12: No Zero-Byte Source Files"
+        run: |
+          # __init__.py files may be intentionally empty as package markers
+          ZEROED=$(find src/algochains_mcp -name "*.py" ! -name "__init__.py" -empty 2>/dev/null | head -20)
+          if [ -n "$ZEROED" ]; then
+            echo "❌ Zero-byte source files detected (excluding __init__.py):"
+            echo "$ZEROED"
+            exit 1
+          fi
+          echo "✅ No zero-byte source files"

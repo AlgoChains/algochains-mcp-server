@@ -1,7 +1,7 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-468%2B-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-476%20full%20%7C%20150%20smart-green?style=flat-square)](#tool-categories)
 [![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
@@ -1231,7 +1231,7 @@ send_ntfy_notification(title="Daily P&L", message="MNQ: +$340, CL: +$180", topic
 - **Data backend chain**: Databento → Massive S3 (day bars to 2003) → yfinance; wired via `research/ssrn_3904097/data_backends.py`
 - **Model integrity hardening**: startup SHA-256 check raises on tamper; XGBoost JSON companion export; `model_manifest.json`
 - **Drawdown Triple Penance**: `drawdown_start_ts` auto-logged to `signal_health.json` on first daily loss limit hit (Bailey & LdP 2015)
-- **Tools: 468+** (Kalshi + subscriber tools added)
+- **Tools: 476 full / 150 smart** (Kalshi + subscriber tools added)
 
 ---
 

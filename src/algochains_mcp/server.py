@@ -1206,6 +1206,7 @@ TOOLS = [
                 "stop_price": {"type": "number", "description": "Stop price (for stop/stop-limit orders)"},
                 "trail_pct": {"type": "number", "description": "Trailing stop percentage"},
                 "time_in_force": {"type": "string", "default": "day"},
+                "client_trace_id": {"type": "string", "description": "Optional caller-provided trace/signal ID echoed in the response for join-key audit traceability (e.g. control-tower signal_id UUID)."},
             },
             "required": ["broker", "symbol", "side", "qty"],
         },
@@ -1232,6 +1233,7 @@ TOOLS = [
             "properties": {
                 "broker": {"type": "string"},
                 "order_id": {"type": "string"},
+                "client_trace_id": {"type": "string", "description": "Optional caller-provided trace/signal ID echoed in the response for audit traceability."},
             },
             "required": ["broker", "order_id"],
         },
@@ -4815,12 +4817,22 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 get_guardrails().record_order_success(arguments.get("broker", "tradovate"))
             except Exception:
                 pass
-        return _text(order.to_dict())
+        result_dict = order.to_dict()
+        # Traceability: echo client_trace_id if provided so callers can join MCP
+        # order responses to control-tower trade_log / bracket_audit rows.
+        _ctid = arguments.get("client_trace_id")
+        if _ctid:
+            result_dict["client_trace_id"] = _ctid
+        return _text(result_dict)
 
     elif name == "cancel_order":
         conn = _require_broker(registry, arguments["broker"])
         ok = await conn.cancel_order(arguments["order_id"])
-        return _text({"cancelled": ok, "order_id": arguments["order_id"]})
+        result_dict = {"cancelled": ok, "order_id": arguments["order_id"]}
+        _ctid = arguments.get("client_trace_id")
+        if _ctid:
+            result_dict["client_trace_id"] = _ctid
+        return _text(result_dict)
 
     elif name == "close_position":
         # MCP 2025-06-18 Elicitation — confirm position close
@@ -6386,28 +6398,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "execute_dynamic_tool":
         inner_name = arguments["tool_name"]
         inner_args = arguments.get("arguments", {})
-        # V2-BUG-21 FIX: execute_dynamic_tool is Tier-1 (always exposed) but can
-        # dispatch to Tier-2 destructive handlers if the caller knows the inner tool
-        # name — bypassing the Tier-2 obscurity model.
-        # Denylist of destructive inner tools that require an explicit owner_token
-        # to be passed inside inner_args.
-        _DESTRUCTIVE_INNER_TOOLS = {
-            "restart_trading_bot",
-            "flatten_bot_position",
-            "flatten_position",
-            "cancel_all_orders",
-            "emergency_stop",
-            "run_marketplace_autopilot",
-            "dispatch_tower_job",
-        }
-        if inner_name in _DESTRUCTIVE_INNER_TOOLS:
+        # V2-BUG-21 / AUDIT-V2 FIX: gate ALL ORDER_EXEC and DESTRUCTIVE tier tools,
+        # not just a hardcoded denylist.  The denylist was incomplete — it missed
+        # place_order, cancel_order, close_position, close_all_positions, and others
+        # classified as TIER_ORDER_EXEC by tool_danger_tiers.
+        try:
+            from .tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
+            _inner_tier = get_tool_tier(inner_name)
+        except ImportError:
+            _inner_tier = 0  # tier module absent — fall through to dispatch
+
+        if _inner_tier >= TIER_ORDER_EXEC:
             _expected_owner = os.environ.get("OWNER_API_TOKEN", "")
             _provided_token = inner_args.get("owner_token", "")
             if not _expected_owner or _provided_token != _expected_owner:
                 return _text({
-                    "error": f"execute_dynamic_tool: '{inner_name}' is a destructive tool. "
+                    "error": f"execute_dynamic_tool: '{inner_name}' requires ORDER_EXEC authorization. "
                              "Pass a matching owner_token inside the 'arguments' payload.",
                     "blocked": True,
+                    "tier": "ORDER_EXEC",
+                    "tool": inner_name,
                 })
         return await _dispatch_tool(inner_name, inner_args, registry)
 

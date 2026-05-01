@@ -1,7 +1,8 @@
 """
 Tradovate futures broker connector — ported from Control Tower patterns.
 
-Auth: OAuth2 + WebSocket streaming
+Auth: OAuth2 REST only (Token Guardian pattern)
+WebSocket: NOT implemented here — live bots own the WS via control tower.
 Assets: Futures (MNQ, MES, NQ, ES, CL, GC, etc.)
 Token: Uses Token Guardian pattern — NEVER use tradovate_token_auto_refresh.py
 Symbology: Use continuous contract format (e.g. MNQZ5 for front-month)
@@ -72,7 +73,23 @@ def _map_order_type(action: str) -> OrderType:
 
 
 class TradovateConnector(BrokerConnector):
-    """Tradovate futures connector — OAuth2 REST + WebSocket."""
+    """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
+
+    WebSocket streaming is intentionally not implemented here.  Live bots own
+    the persistent WebSocket connection via tradovate_websocket_client.py in the
+    control tower.  This MCP connector provides read-only market data and
+    execution via Tradovate REST endpoints, using a pre-existing Token Guardian
+    access token when available to avoid creating a second OAuth session that
+    would race with the guardian.
+
+    Token priority (see connect()):
+      1. TRADOVATE_ACCESS_TOKEN env var (written by tradovate_token_guardian.py)
+      2. Full OAuth username/password flow (fallback when no guardian token)
+      3. Legacy CID+secret fallback (backwards compat)
+
+    NEVER run github.com/0xjmp/mcp-tradovate alongside this connector for live
+    trading — it creates a competing OAuth session.  See docs/TRADOVATE_PARITY.md.
+    """
 
     name = "tradovate"
     supported_asset_classes = [AssetClass.FUTURES]
@@ -99,7 +116,10 @@ class TradovateConnector(BrokerConnector):
     @property
     def capabilities(self) -> dict:
         return {
-            "streaming": True,
+            # streaming=False: WebSocket is intentionally NOT implemented in the MCP
+            # connector.  Live bots own the WS connection via the control tower.
+            # stream_quotes() raises NotImplementedError to enforce this boundary.
+            "streaming": False,
             "futures": True,
             "bracket_orders": True,
             "order_book": True,
@@ -411,7 +431,14 @@ class TradovateConnector(BrokerConnector):
             ))
         return positions
 
-    async def get_orders(self, status: Optional[str] = None) -> list[Order]:
+    async def get_orders(self, status: Optional[str] = None, limit: int = 200) -> list[Order]:
+        """Get orders, optionally filtered by status.
+
+        Args:
+            status: 'open', 'closed', or None for all
+            limit: cap on returned orders (default 200); prevents unbounded
+                   payloads for accounts with large order histories
+        """
         import asyncio as _asyncio
         raw_orders = await self._get("/order/list")
 
@@ -462,6 +489,10 @@ class TradovateConnector(BrokerConnector):
                 asset_class=AssetClass.FUTURES,
                 raw=o,
             ))
+        # Cap payload size — caller can pass higher limit for historical queries
+        if limit and len(orders) > limit:
+            logger.warning("get_orders: returning first %d of %d orders (limit=%d)", limit, len(orders), limit)
+            orders = orders[:limit]
         return orders
 
     async def place_order(
