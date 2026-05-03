@@ -1,7 +1,7 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-227%20full%20%7C%2038%20Tier%201%20%7C%2021%20Cursor-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-477%20full%20%7C%20150%20smart-green?style=flat-square)](#tool-categories)
 [![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
@@ -12,7 +12,7 @@
 
 ---
 
-> **Tool count audit (2026-05-02):** 227 total tools across 14 domains. Smart mode (default) exposes 38 Tier 1 tools directly; 189 Tier 2 tools are discoverable via `discover_tools` → `execute_dynamic_tool`. Cursor clients (80-tool hard limit) see 21 tools in smart mode. Previous badge claimed 476/150 — corrected.
+> **Tool count audit (2026-05-03):** 477 total tools across the full owner surface. Smart mode (default) exposes 150 curated tools directly; the remaining tools are discoverable via `discover_tools` → `execute_dynamic_tool`.
 
 ## What Is This? (Plain English)
 
@@ -406,7 +406,7 @@ Most first-time use cases are covered by these tools. All are safe in demo mode 
 | `discover_tools` | Find the right tool with natural language | ✅ |
 | `onyx_ask` | Ask the knowledge base anything | ✅ |
 | `run_backtest` | Test a strategy on real historical data | ✅ |
-| `validate_strategy` | Check if strategy passes quality gates | ✅ |
+| `validate_strategy_metrics` | Check if reported strategy metrics pass marketplace quality gates | ✅ |
 | `get_positions` | What am I currently holding? | ✅ |
 | `get_live_bot_metrics` | Tyler's live bot P&L (read-only) | ✅ |
 | `compute_gex` | Dealer gamma exposure for options | ✅ |
@@ -446,7 +446,7 @@ These are the exact prompts that work well in Claude / Cursor / GPT-4:
  search_ssrn_strategies for similar academic papers."
 
 # Validate a backtest
-"Run validate_strategy with these results: Sharpe 2.4, MaxDD 9%, WinRate 58%, 180 trades.
+"Run validate_strategy_metrics with these results: Sharpe 2.4, MaxDD 9%, WinRate 58%, 180 trades.
  Does it pass the MCPT gate? What's the DSR?"
 
 # Options analysis
@@ -480,7 +480,8 @@ pair_trade_signal   compute_kelly       compute_vwap
 
 **Research & Backtesting**
 ```
-run_backtest        validate_strategy   optimize_strategy
+run_backtest        validate_strategy   validate_strategy_metrics
+optimize_strategy
 walk_forward_test   run_mcpt_validation compute_sharpe
 analyze_overfitting search_ssrn_strategies
 ```
@@ -552,7 +553,7 @@ generate_bot_tearsheet           get_bot_metrics_full
 
 ```
 create_price_alert  connect_broker      build_strategy
-deploy_strategy     ingest_csv_data     register_strategy
+ingest_csv_data     register_strategy
 submit_to_marketplace  run_onyx_ingest  store_api_key
 ```
 
@@ -1233,7 +1234,7 @@ send_ntfy_notification(title="Daily P&L", message="MNQ: +$340, CL: +$180", topic
 - **Data backend chain**: Databento → Massive S3 (day bars to 2003) → yfinance; wired via `research/ssrn_3904097/data_backends.py`
 - **Model integrity hardening**: startup SHA-256 check raises on tamper; XGBoost JSON companion export; `model_manifest.json`
 - **Drawdown Triple Penance**: `drawdown_start_ts` auto-logged to `signal_health.json` on first daily loss limit hit (Bailey & LdP 2015)
-- **Tools: 476 full / 150 smart** (Kalshi + subscriber tools added)
+- **Tools: 477 full / 150 smart** (Kalshi + subscriber tools + metric-gate validation)
 
 ---
 
@@ -1379,7 +1380,7 @@ send_ntfy_notification(title="Daily P&L", message="MNQ: +$340, CL: +$180", topic
 - Fixed 3 undefined `ANNOT_*` constants in `server.py` causing import failure
 - Deployment persistence: `StrategyDeployer` now persists to `state/deployments.json`
 - SaaS persistence: `StrategyMarketplace`, `TenantManager`, `WhiteLabelEngine` all persist to state dir
-- Tool manifest: `optimize_strategy`, `deploy_strategy`, `create_shadow_portfolio` corrected from `stub` → `partial`
+- Tool manifest: `optimize_strategy`, `create_shadow_portfolio` corrected from `stub` → `partial`; `deploy_strategy` now honestly marked `stub` until real broker deployment exists
 
 **v22.3** (2026-04-06) — Proprietary Data Ingestion
 - `data_ingestion.py` — 5 ingestion tools: ingest_csv_data, ingest_json_signals, connect_onyx_docs, register_strategy, list_ingested_data

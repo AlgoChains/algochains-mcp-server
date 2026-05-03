@@ -15,16 +15,15 @@ IMPORTANT — credentials:
     Finnhub       : FINNHUB_API_KEY
     Massive AI    : MASSIVE_API_KEY
 
-Run locally:
-    source .env && pytest tests/test_live_audit.py -v --live
-
-Run in CI (no secrets — only offline assertions):
+Run local offline checks:
     pytest tests/test_live_audit.py -v
+
+Run live broker/data checks explicitly:
+    source .env && PYTEST_LIVE=1 pytest tests/live/test_live_audit.py -v
 """
 from __future__ import annotations
 
 import ast
-import asyncio
 import os
 import re
 import sys
@@ -33,48 +32,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-# ── live-mode guard ────────────────────────────────────────────────────────────
-# Tests that hit real broker/data APIs require --live flag AND present env vars.
-# This prevents silent skips from being confused with passing tests.
-
-def pytest_addoption(parser):
-    """Declare --live CLI flag (called by conftest; harmless if duplicate)."""
-    try:
-        parser.addoption(
-            "--live",
-            action="store_true",
-            default=False,
-            help="Run tests that contact live broker/data APIs",
-        )
-    except ValueError:
-        pass  # already added by conftest.py
-
-
-def _skip_unless_live(env_vars: list[str]):
-    """Return a pytest.mark.skipif that skips when not in live mode or missing vars."""
-    missing = [v for v in env_vars if not os.environ.get(v)]
-    if missing:
-        return pytest.mark.skip(reason=f"Missing env vars: {', '.join(missing)}.  Run with --live and source .env")
-    return pytest.mark.skipif(
-        not (os.environ.get("PYTEST_LIVE") or False),
-        reason="Live tests require --live flag or PYTEST_LIVE=1",
-    )
-
 
 # ── environment setup (env vars only, no hardcoded values) ─────────────────────
 os.environ.setdefault("ALGOCHAINS_TOOL_MODE", "full")
-# Keys sourced from environment — absent values → tests skip, never fail with fake creds.
-_ALPACA_KEY    = os.environ.get("ALPACA_API_KEY", "")
-_ALPACA_SECRET = os.environ.get("ALPACA_SECRET_KEY", "")
-_ALPACA_URL    = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-_POLYGON_KEY   = os.environ.get("POLYGON_API_KEY", "")
-_MASSIVE_KEY   = os.environ.get("MASSIVE_API_KEY", "")
-_FINNHUB_KEY   = os.environ.get("FINNHUB_API_KEY", "")
-
-_HAVE_ALPACA   = bool(_ALPACA_KEY and _ALPACA_SECRET)
-_HAVE_POLYGON  = bool(_POLYGON_KEY)
-_HAVE_MASSIVE  = bool(_MASSIVE_KEY)
-_HAVE_FINNHUB  = bool(_FINNHUB_KEY)
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -192,72 +152,3 @@ def test_no_hardcoded_secrets_in_server():
         f"Possible hardcoded secrets in server.py ({len(hits)} hits):\n"
         + "\n".join(hits)
     )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LIVE TESTS — require env vars; skipped silently in CI
-# ══════════════════════════════════════════════════════════════════════════════
-
-@pytest.mark.skipif(not _HAVE_ALPACA, reason="ALPACA_API_KEY / ALPACA_SECRET_KEY not set")
-def test_alpaca_paper_live():
-    """Live Alpaca paper account: connect, positions, orders."""
-    async def _run():
-        from algochains_mcp.brokers.registry import BrokerRegistry
-        from algochains_mcp.config import load_config
-
-        cfg = load_config()
-        registry = BrokerRegistry(cfg)
-        results = await registry.connect_all()
-        if "alpaca" not in registry.list_available():
-            pytest.xfail(
-                f"Alpaca not available after connect (may be network/cred issue). Results: {results}"
-            )
-        broker = registry.get("alpaca")
-        try:
-            acct = await broker.get_account()
-            assert acct, "get_account returned empty"
-            positions = await broker.get_positions()
-            assert isinstance(positions, list)
-            orders = await broker.get_orders()
-            assert isinstance(orders, list)
-        except Exception as exc:
-            pytest.xfail(f"Live Alpaca call failed (non-blocking): {exc}")
-
-    asyncio.run(_run())
-
-
-@pytest.mark.skipif(not (_HAVE_POLYGON or _HAVE_FINNHUB), reason="POLYGON_API_KEY and FINNHUB_API_KEY both absent")
-def test_data_providers_live():
-    """Live data provider health checks."""
-    async def _run():
-        from algochains_mcp.data_providers.registry import DataProviderRegistry
-
-        reg = DataProviderRegistry()
-        results = await reg.health_check_all()
-        failed = {k: v for k, v in results.items() if not v}
-        # Warn but do not hard-fail: a degraded provider should not block CI
-        if failed:
-            pytest.xfail(f"Data providers degraded (non-blocking): {list(failed)}")
-
-    asyncio.run(_run())
-
-
-@pytest.mark.skipif(not _HAVE_MASSIVE, reason="MASSIVE_API_KEY not set")
-def test_massive_bad_sql_returns_error():
-    """Massive provider handles invalid SQL gracefully (returns error dict or raises cleanly)."""
-    async def _run():
-        import algochains_mcp.server as srv
-        eng = await srv._get_massive_provider()
-        try:
-            result = await eng.query_data("SELECT * FROM nonexistent_table_xyz")
-            assert isinstance(result, dict) and "error" in result, (
-                f"Expected error dict, got: {str(result)[:200]}"
-            )
-        except Exception as exc:
-            # Acceptable: provider raises a typed exception for invalid SQL
-            # rather than returning an error dict.  Either pattern is safe.
-            assert "sql" in str(exc).lower() or "table" in str(exc).lower() or "query" in str(exc).lower(), (
-                f"Unexpected exception type for bad SQL: {type(exc).__name__}: {exc}"
-            )
-
-    asyncio.run(_run())

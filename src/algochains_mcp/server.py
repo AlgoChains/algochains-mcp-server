@@ -80,6 +80,103 @@ def _default_control_tower() -> str:
         pass
     return "/Users/treycsa/CascadeProjects/algochains-control-tower"
 
+
+def _tail_jsonl(path: _PathGlobal, limit: int = 200) -> list[dict[str, Any]]:
+    """Read the last JSONL rows from a control-tower telemetry file."""
+    if not path.exists():
+        return []
+    try:
+        from collections import deque
+
+        rows: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in deque(handle, maxlen=max(1, limit)):
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+        return rows
+    except Exception:
+        return []
+
+
+def _pctl(values: list[float], pct: float) -> float:
+    vals = sorted(v for v in values if isinstance(v, (int, float)))
+    if not vals:
+        return 0.0
+    idx = min(len(vals) - 1, max(0, int(round((pct / 100.0) * (len(vals) - 1)))))
+    return round(float(vals[idx]), 3)
+
+
+def _rate(count: int, total: int) -> float:
+    return round(count / max(total, 1), 4)
+
+
+def _summarize_desktop_inference_log(control_tower: _PathGlobal) -> dict[str, Any]:
+    rows = _tail_jsonl(control_tower / "logs" / "desktop_inference_latency.jsonl", 200)
+    if not rows:
+        return {"status": "missing_or_empty", "count": 0}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (
+            f"{row.get('model_id', 'unknown')}|"
+            f"{row.get('runtime', 'unknown')}|"
+            f"{row.get('prompt_class', 'unknown')}"
+        )
+        groups.setdefault(key, []).append(row)
+    summary: dict[str, Any] = {}
+    for key, group_rows in groups.items():
+        latencies = [float(r.get("latency_s") or 0.0) for r in group_rows if r.get("latency_s") is not None]
+        failures = [r for r in group_rows if not r.get("ok")]
+        schema_failures = [r for r in group_rows if r.get("validation_errors")]
+        fallback_reasons = sorted(
+            {str(r.get("fallback_reason")) for r in failures if r.get("fallback_reason")}
+        )
+        summary[key] = {
+            "count": len(group_rows),
+            "p50_s": _pctl(latencies, 50),
+            "p95_s": _pctl(latencies, 95),
+            "max_s": round(max(latencies), 3) if latencies else 0.0,
+            "failure_rate": _rate(len(failures), len(group_rows)),
+            "schema_failure_rate": _rate(len(schema_failures), len(group_rows)),
+            "fallback_reasons": fallback_reasons[:10],
+        }
+    return {"status": "ok", "count": len(rows), "groups": summary}
+
+
+def _summarize_decision_latency_log(control_tower: _PathGlobal) -> dict[str, Any]:
+    rows = _tail_jsonl(control_tower / "logs" / "decision_latency.jsonl", 500)
+    if not rows:
+        return {"status": "missing_or_empty", "count": 0}
+    event_counts: dict[str, int] = {}
+    for row in rows:
+        event = str(row.get("event", "unknown"))
+        event_counts[event] = event_counts.get(event, 0) + 1
+    numeric_keys = (
+        "analyze_ms",
+        "multi_agent_ms",
+        "desktop_inference_ms",
+        "cloud_fallback_ms",
+        "order_submit_latency_ms",
+        "broker_ack_latency_ms",
+        "fill_confirm_latency_ms",
+        "signal_to_ack_ms",
+        "signal_to_fill_ms",
+    )
+    metrics: dict[str, Any] = {}
+    for key in numeric_keys:
+        vals = [float(row[key]) for row in rows if isinstance(row.get(key), (int, float))]
+        if vals:
+            metrics[key] = {
+                "count": len(vals),
+                "p50_ms": _pctl(vals, 50),
+                "p95_ms": _pctl(vals, 95),
+                "max_ms": round(max(vals), 3),
+            }
+    return {"status": "ok", "count": len(rows), "events": event_counts, "metrics": metrics}
+
 # ─── Essential V1-V7 imports (minimal, always needed) ───────────────────────
 from .brokers.base import OrderSide, OrderType
 from .brokers.registry import BrokerRegistry
@@ -353,7 +450,7 @@ def _classify_tool_annotations() -> dict[str, ToolAnnotations]:
     """Classify all tools by their behavior for MCP 2025-06-18 annotations."""
     trade_exec = {
         "place_order", "cancel_order", "close_position",
-        "close_all_positions", "modify_order", "deploy_strategy",
+        "close_all_positions", "modify_order",
         "subscribe_to_strategy", "publish_strategy_to_marketplace",
         "execute_dynamic_tool", "submit_inst_order", "cancel_inst_order",
         "start_algo_executor", "stop_algo_executor", "create_yield_position",
@@ -365,6 +462,7 @@ def _classify_tool_annotations() -> dict[str, ToolAnnotations]:
         "create_feature_set", "create_rl_agent", "train_rl_agent",
         "configure_alert", "start_scrape_job", "create_agent_swarm",
         "assign_swarm_task", "set_strategy_state", "build_strategy_spec",
+        "deploy_strategy",
     }
     read_external = {
         "get_quote", "get_account", "get_positions", "get_orders",
@@ -382,7 +480,7 @@ def _classify_tool_annotations() -> dict[str, ToolAnnotations]:
         "list_datasets", "list_rl_agents",
     }
     compute = {
-        "run_backtest", "validate_strategy", "optimize_strategy",
+        "run_backtest", "validate_strategy", "validate_strategy_metrics", "optimize_strategy",
         "massive_query_data", "massive_run_pipeline",
         "predict_model", "evaluate_model", "generate_features",
         "detect_regime", "analyze_sentiment", "run_attribution",
@@ -1248,6 +1346,7 @@ TOOLS = [
             "properties": {
                 "broker": {"type": "string"},
                 "symbol": {"type": "string"},
+                "client_trace_id": {"type": "string", "description": "Optional caller-provided trace/signal ID echoed in the response for audit traceability."},
             },
             "required": ["broker", "symbol"],
         },
@@ -1260,6 +1359,7 @@ TOOLS = [
                 "qty": {"type": "number"},
                 "status": {"type": "string"},
                 "filled_price": {"type": "number"},
+                "client_trace_id": {"type": "string"},
             },
         },
         annotations=ANNOT_TRADE_EXEC,
@@ -1570,6 +1670,31 @@ TOOLS = [
             "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct"],
         },
     
+        annotations=ANNOT_WRITE_SAFE,
+    ),
+    Tool(
+        name="validate_strategy_metrics",
+        description=(
+            "Run the marketplace validation gates against reported strategy metrics "
+            "(Sharpe, OOS trades, drawdown, win rate, MCPT). This is distinct from "
+            "validate_strategy, which validates a StrategySpec schema."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Ticker symbol"},
+                "strategy_type": {"type": "string", "description": "trend, mean_reversion, breakout, momentum, scalp"},
+                "timeframe": {"type": "string", "description": "5min, 15min, hour, 4h, day"},
+                "oos_sharpe": {"type": "number", "description": "Out-of-sample Sharpe ratio"},
+                "oos_trades": {"type": "integer", "description": "Number of OOS trades"},
+                "is_sharpe": {"type": "number", "description": "In-sample Sharpe ratio"},
+                "max_drawdown_pct": {"type": "number", "description": "Maximum drawdown percentage"},
+                "win_rate": {"type": "number", "description": "Win rate percentage"},
+                "parameters": {"type": "object", "description": "Strategy parameters dict"},
+                "mcpt": {"type": "object", "description": "MCPT validation data"},
+            },
+            "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct"],
+        },
         annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
@@ -2011,9 +2136,9 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "n_folds": {"type": "integer", "default": 5}, "train_pct": {"type": "number", "default": 0.70}}, "required": ["spec"]},
         annotations=ANNOT_WRITE_SAFE,
     ),
-    Tool(name="deploy_strategy", description="Deploy a validated strategy to paper or live trading on a connected broker.",
+    Tool(name="deploy_strategy", description="Register a validated StrategySpec locally for tracking only. Does not connect to live or paper broker execution, and must not be treated as a real deployment.",
          inputSchema={"type": "object", "properties": {"spec": {"type": "object"}, "broker": {"type": "string"}, "mode": {"type": "string", "enum": ["paper", "live"], "default": "paper"}, "capital": {"type": "number", "default": 10000}}, "required": ["spec", "broker"]},
-        annotations=ANNOT_TRADE_EXEC,
+        annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(name="list_templates", description="Browse pre-built strategy templates (RSI Momentum, BB Mean Reversion, EMA Crossover, etc).",
          inputSchema={"type": "object", "properties": {"category": {"type": "string", "enum": ["momentum", "mean_reversion", "trend", "breakout", "pairs"]}, "asset_class": {"type": "string"}}},
@@ -4297,8 +4422,8 @@ TIER1_TOOL_NAMES = {
     # Strategy pipeline
     "run_backtest",
     "validate_strategy",
+    "validate_strategy_metrics",
     "optimize_strategy",
-    "deploy_strategy",
     # Portfolio + market
     "portfolio_summary",
     "get_quote",
@@ -4856,7 +4981,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         conn = _require_broker(registry, arguments["broker"])
         order = await conn.close_position(arguments["symbol"])
-        return _text(order.to_dict() if order else {"error": f"No position in {arguments['symbol']}"})
+        result_dict = order.to_dict() if order else {"error": f"No position in {arguments['symbol']}"}
+        _ctid = arguments.get("client_trace_id")
+        if _ctid:
+            result_dict["client_trace_id"] = _ctid
+        return _text(result_dict)
 
     elif name == "close_all_positions":
         if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0") == "1":
@@ -5097,12 +5226,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         else:
             cc_health = {"status": "unknown", "detail": "cc_health_state.json not found"}
 
+        desktop_inference_slo = _summarize_desktop_inference_log(control_tower)
+        decision_latency_slo = _summarize_decision_latency_log(control_tower)
+
         return _text({
             "control_tower": str(control_tower),
             "bots": results,
             "signal_health": signal_health_slice,
             "ml_env_flags": ml_env_flags,
             "cc_health": cc_health,
+            "desktop_inference_slo": desktop_inference_slo,
+            "decision_latency_slo": decision_latency_slo,
             "tradovate_token": token_info,
             "generated_at": int(now),
         })
@@ -5172,6 +5306,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "Strategy passed all gates! Submit to marketplace for listing."
                 if result.passed
                 else f"Strategy rejected (score: {result.score}/100). Fix errors and resubmit."
+            ),
+        })
+
+    elif name == "validate_strategy_metrics":
+        validator = _get_validator()
+        result = validator.validate(arguments)
+        return _text({
+            "validation": result.to_dict(),
+            "semantic_note": (
+                "validate_strategy_metrics checks marketplace performance gates. "
+                "Use validate_strategy for StrategySpec schema validation."
             ),
         })
 

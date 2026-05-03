@@ -80,7 +80,7 @@ result = response.json()
 |---|---|---|---|---|---|
 | `place_order` | ORDER_EXEC | ✅ echoed in response | ✅ via bridge | ✅ order.id in response | ✅ if caller uses signal_id |
 | `cancel_order` | ORDER_EXEC | ✅ echoed in response | ✅ via bridge | ✅ order_id echoed | ✅ if caller uses signal_id |
-| `close_position` | ORDER_EXEC | ❌ not yet added | ✅ via bridge | ✅ order returned | partial |
+| `close_position` | ORDER_EXEC | ✅ echoed in response | ✅ via bridge | ✅ order returned | ✅ if caller uses signal_id |
 | `get_positions` | READ_ONLY | n/a | ✅ via bridge | n/a | n/a |
 | `get_orders` | READ_ONLY | n/a | ✅ via bridge | n/a | n/a |
 
@@ -88,6 +88,5 @@ result = response.json()
 
 ## Gaps / future work
 
-- `close_position` should also accept and echo `client_trace_id`
 - Broker `order.id` returned by `place_order` should be stored in `trade_log.entry_order_id` by the caller if using MCP for ops order placement
 - If MCP order volume grows, consider writing a `bot_events` row with `event="MCP_ORDER_PLACED"` and `detail={"client_trace_id":..., "order_id":...}` automatically
