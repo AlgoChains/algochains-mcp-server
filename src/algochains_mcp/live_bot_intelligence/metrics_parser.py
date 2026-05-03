@@ -20,6 +20,11 @@ from typing import Optional
 from algochains_mcp.paths import default_control_tower
 
 CONTROL_TOWER = default_control_tower()
+try:
+    from dotenv import load_dotenv
+    load_dotenv(CONTROL_TOWER / ".env")
+except Exception:
+    pass
 
 BOT_LOG_PATHS: dict[str, Path] = {
     "mnq": CONTROL_TOWER / "logs" / "futures_bot_live.log",
@@ -89,6 +94,11 @@ class BotMetrics:
     win_rate_today: float = 0.0
     # Rolling metrics (from log tail)
     recent_fills: list = field(default_factory=list)
+    metrics_source: str = "log_tail"
+    last_signal_id: str = ""
+    last_exit_reason: str = ""
+    avg_fill_deviation_ticks: Optional[float] = None
+    avg_exit_slippage_ticks: Optional[float] = None
     # Quality metrics (from MCPT validated JSON if available)
     sharpe_validated: Optional[float] = None
     max_dd_validated: Optional[float] = None
@@ -210,14 +220,129 @@ def _load_mcpt_metrics(bot_id: str) -> tuple[Optional[float], Optional[float], O
     return None, None, None, ""
 
 
+def _get_supabase_client():
+    """Return Supabase client when configured; None keeps log-tail fallback active."""
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_ANON_KEY")
+    if not url or not key:
+        return None
+    try:
+        from supabase import create_client
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def parse_bot_metrics_from_supabase(bot_id: str, sb_client=None) -> BotMetrics | None:
+    """Parse authoritative bot metrics from trade_log/bracket_audit/bot_events."""
+    bot_id = bot_id.lower()
+    meta = BOT_META.get(bot_id, {})
+    symbol = meta.get("symbol", bot_id.upper())
+    sb = sb_client or _get_supabase_client()
+    if sb is None:
+        return None
+
+    metrics = BotMetrics(
+        bot_id=bot_id,
+        symbol=symbol,
+        display_name=meta.get("display_name", bot_id),
+        strategy_type=meta.get("strategy_type", "unknown"),
+        metrics_source="supabase",
+    )
+    try:
+        today_start = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).isoformat()
+        rows = (
+            sb.table("trade_log")
+            .select(
+                "signal_id,ticker,action,confidence,signal_time,exit_time,"
+                "exit_reason,confirmed_pnl,estimated_pnl,broker_pnl,"
+                "fill_deviation_ticks,exit_slippage_ticks"
+            )
+            .eq("ticker", symbol)
+            .gte("signal_time", today_start)
+            .order("signal_time", desc=True)
+            .limit(200)
+            .execute()
+            .data
+        ) or []
+    except Exception:
+        return None
+
+    closed = [r for r in rows if r.get("exit_time")]
+    pnl_values = []
+    for r in closed:
+        value = r.get("broker_pnl")
+        if value is None:
+            value = r.get("confirmed_pnl")
+        if value is None:
+            value = r.get("estimated_pnl")
+        try:
+            pnl_values.append(float(value))
+        except (TypeError, ValueError):
+            pass
+
+    metrics.daily_pnl = round(sum(pnl_values), 2)
+    metrics.daily_trades = len(closed)
+    metrics.daily_wins = sum(1 for p in pnl_values if p > 0)
+    metrics.daily_losses = sum(1 for p in pnl_values if p < 0)
+    metrics.win_rate_today = round(
+        (metrics.daily_wins / metrics.daily_trades * 100)
+        if metrics.daily_trades > 0 else 0.0,
+        1,
+    )
+    if rows:
+        latest = rows[0]
+        metrics.last_signal_id = str(latest.get("signal_id") or "")
+        metrics.last_signal = str(latest.get("action") or "UNKNOWN").upper()
+        try:
+            metrics.last_signal_confidence = round(float(latest.get("confidence") or 0), 3)
+        except (TypeError, ValueError):
+            metrics.last_signal_confidence = 0.0
+        metrics.last_signal_time = str(latest.get("signal_time") or "")
+        metrics.last_exit_reason = str(latest.get("exit_reason") or "")
+
+    def _avg(key: str) -> Optional[float]:
+        vals = []
+        for row in closed:
+            try:
+                if row.get(key) is not None:
+                    vals.append(float(row[key]))
+            except (TypeError, ValueError):
+                pass
+        return round(sum(vals) / len(vals), 2) if vals else None
+
+    metrics.avg_fill_deviation_ticks = _avg("fill_deviation_ticks")
+    metrics.avg_exit_slippage_ticks = _avg("exit_slippage_ticks")
+    try:
+        log_path = BOT_LOG_PATHS.get(bot_id)
+        if log_path and log_path.exists():
+            metrics.last_log_age_sec = time.time() - log_path.stat().st_mtime
+            metrics.is_running = metrics.last_log_age_sec < 300
+    except OSError:
+        pass
+    return metrics
+
+
 def parse_bot_metrics(bot_id: str) -> BotMetrics:
     """
-    Parse real bot log to extract live trading metrics.
-    Returns BotMetrics with all fields populated from actual log data.
+    Parse bot metrics from Supabase truth first, then fall back to logs.
     """
     bot_id = bot_id.lower()
     meta = BOT_META.get(bot_id, {})
     log_path = BOT_LOG_PATHS.get(bot_id)
+
+    supabase_metrics = parse_bot_metrics_from_supabase(bot_id)
+    if supabase_metrics is not None:
+        # Still attach current log health/errors because Supabase is trade truth,
+        # not process liveness truth.
+        if log_path and log_path.exists():
+            lines = _get_log_tail(log_path, 100)
+            last_error, error_count = _parse_errors(lines)
+            supabase_metrics.last_error = last_error
+            supabase_metrics.error_count_1h = error_count
+        return supabase_metrics
 
     metrics = BotMetrics(
         bot_id=bot_id,
