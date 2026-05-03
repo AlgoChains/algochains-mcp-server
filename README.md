@@ -1,7 +1,7 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-476%20full%20%7C%20150%20smart-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-227%20full%20%7C%2038%20Tier%201%20%7C%2021%20Cursor-green?style=flat-square)](#tool-categories)
 [![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
@@ -11,6 +11,8 @@
 [![Kalshi](https://img.shields.io/badge/markets-Kalshi%20prediction-teal?style=flat-square)](#kalshi-integration)
 
 ---
+
+> **Tool count audit (2026-05-02):** 227 total tools across 14 domains. Smart mode (default) exposes 38 Tier 1 tools directly; 189 Tier 2 tools are discoverable via `discover_tools` → `execute_dynamic_tool`. Cursor clients (80-tool hard limit) see 21 tools in smart mode. Previous badge claimed 476/150 — corrected.
 
 ## What Is This? (Plain English)
 
