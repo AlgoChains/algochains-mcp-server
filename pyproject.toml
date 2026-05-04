@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "algochains-mcp-server"
-version = "22.2.0"
+version = "22.4.0"
 description = "AlgoChains MCP Server — The Ultimate Algo Quant Stack. 477 tools (full mode) / 150 smart-mode tools: live trading (Tradovate/Alpaca/OANDA/Binance), AlphaLoop self-improving strategies, order flow intelligence, Massive.com/Polygon/Databento data, Onyx RAG, volatility surfaces, factor models, HMM regime detection, autonomous marketplace pipeline, MCP 2025-11-25 spec, control-tower validation framework, Kalshi prediction markets, subscriber auth/tools, real data only."
 readme = "README.md"
 license = { text = "MIT" }
