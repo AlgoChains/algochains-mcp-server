@@ -97,6 +97,7 @@ PUBLIC_TOOLS = {
 OWNER_TOOLS = {
     "get_live_bot_metrics",
     "get_all_bot_metrics",
+    "get_bot_health",
     "get_system_heartbeat",
     "get_account",
     "get_positions",

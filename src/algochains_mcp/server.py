@@ -407,6 +407,7 @@ SERVER_INSTRUCTIONS = (
     "Real data only — all tools connect to live brokers, real tick feeds, and real APIs. "
     "In smart mode (default), ~54 Tier-1 tools exposed. "
     "Use 'discover_tools' to find 280+ additional tools on demand. "
+    "V22.4: get_bot_health now includes e2e_sentinel lifecycle state for MNQ signal→order→bracket→fill traceability. "
     "V22.2: get_bot_health now includes ml_env_flags (MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, "
     "MASSIVE_HALT_GUARD) and cc_health (Command Center watchdog state from cc_health_state.json). "
     "Data vendor standard: Massive.com (Polygon white-label) for options/news/PCR-style metrics — "
@@ -1542,6 +1543,7 @@ TOOLS = [
             "Return a unified health snapshot for all four live futures bots (MNQ, CL, MES, NQ) "
             "and the Kalshi daemon. For each bot: process up? last log mtime, last signal ts, "
             "current regime, error count in last 100 log lines, token expiry (if Tradovate). "
+            "Includes E2E sentinel lifecycle state for MNQ execution traceability. "
             "Pure read-only — reads logs/, state/, and ps aux on the control tower host."
         ),
         inputSchema={
@@ -5226,6 +5228,48 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         else:
             cc_health = {"status": "unknown", "detail": "cc_health_state.json not found"}
 
+        # ── E2E Execution Sentinel state ─────────────────────────────────────
+        # Keep this intentionally compact: no raw log excerpts, broker payloads,
+        # account details, or secrets. Full evidence stays on the control tower.
+        e2e_sentinel: dict = {"status": "unknown", "detail": "e2e_execution_sentinel.json not found"}
+        _e2e_state_path = control_tower / "state" / "e2e_execution_sentinel.json"
+        if _e2e_state_path.exists():
+            try:
+                import json as _json_e2e
+                _e2e_raw = _json_e2e.loads(_e2e_state_path.read_text())
+                _e2e_class = _e2e_raw.get("classification", {}) or {}
+                _e2e_evidence = _e2e_raw.get("evidence", {}) or {}
+                _e2e_broker = _e2e_evidence.get("broker", {}) or {}
+                _e2e_process = _e2e_evidence.get("process", {}) or {}
+                _e2e_log = _e2e_evidence.get("log", {}) or {}
+                _e2e_rate = _e2e_raw.get("rate_limits", {}) or {}
+                e2e_sentinel = {
+                    "generated_at": _e2e_raw.get("generated_at"),
+                    "state": _e2e_class.get("state"),
+                    "severity": _e2e_class.get("severity"),
+                    "issue_class": _e2e_class.get("issue_class"),
+                    "incident_id": _e2e_class.get("incident_id"),
+                    "why": _e2e_class.get("why"),
+                    "needs_owner": _e2e_class.get("needs_owner"),
+                    "safe_auto_action": _e2e_class.get("safe_auto_action"),
+                    "skill_routes": _e2e_class.get("skill_routes", []),
+                    "broker_flat": (
+                        _e2e_broker.get("positions_count") == 0
+                        and _e2e_broker.get("working_orders_count") == 0
+                    ),
+                    "positions_count": _e2e_broker.get("positions_count"),
+                    "working_orders_count": _e2e_broker.get("working_orders_count"),
+                    "pids": _e2e_process.get("pids", []),
+                    "fd_count": _e2e_process.get("fd_count"),
+                    "last_scan_age_sec": _e2e_log.get("last_scan_age_sec"),
+                    "memory_status": (_e2e_raw.get("memory", {}) or {}).get("status"),
+                    "slack_status": (_e2e_raw.get("slack", {}) or {}).get("status"),
+                    "last_memory_at": _e2e_rate.get("last_memory_at"),
+                    "last_slack_at": _e2e_rate.get("last_slack_at"),
+                }
+            except Exception as _e2e_err:
+                e2e_sentinel = {"status": "error", "detail": f"e2e_execution_sentinel.json parse failure: {_e2e_err}"}
+
         desktop_inference_slo = _summarize_desktop_inference_log(control_tower)
         decision_latency_slo = _summarize_decision_latency_log(control_tower)
 
@@ -5235,6 +5279,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             "signal_health": signal_health_slice,
             "ml_env_flags": ml_env_flags,
             "cc_health": cc_health,
+            "e2e_sentinel": e2e_sentinel,
             "desktop_inference_slo": desktop_inference_slo,
             "decision_latency_slo": decision_latency_slo,
             "tradovate_token": token_info,
