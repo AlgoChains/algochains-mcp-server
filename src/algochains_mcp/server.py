@@ -3044,6 +3044,9 @@ TOOLS = [
     Tool(name="detect_regime_hmm", description="Detect market regime using Hidden Markov Model on real daily returns: bull_trending, bear_trending, choppy, or crisis. Returns regime probability, days in current regime, transition probabilities, vol regime, and Sharpe. Uses hmmlearn if available, statistical fallback otherwise. Real Polygon data only.",
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "default": "SPY", "description": "Symbol to analyze (use SPY for broad market regime)"}, "lookback_days": {"type": "integer", "default": 252}}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_quant_regime_state", description="Aggregate shadow-only quant regime telemetry from bot_metrics_live and state/quant_shadow_snapshot.json: GARCH status, OFI intensity, Kalman shadow slope, HMM regime status, and 7-day agreement summary when available. Does not compute models.",
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Optional bot id: mnq, cl, mes, nq"}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_vix_term_structure", description="Get VIX term structure from real CBOE data: spot VIX, VIX3M, VIX6M contango/backwardation. High contango (>10%) is bullish for equities; backwardation signals fear. Returns regime: contango, backwardation, flat.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
@@ -5162,9 +5165,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             except Exception:
                 pass
 
-        # ── signal_health.json slice (params + risk_bootstrap) ──
-        # Provides MCP clients one-stop visibility into bot params and validated
-        # risk metrics without requiring filesystem access.
+        # ── signal_health.json slice (bounded operational telemetry) ──
+        # Provides MCP clients one-stop visibility into bot params, validated
+        # risk metrics, and bounded validator shadow slices without requiring
+        # direct filesystem access.
         import json as _json_gh
         signal_health_slice = {}
         _sh_path = control_tower / "state" / "signal_health.json"
@@ -5173,19 +5177,41 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 _sh_data = _json_gh.loads(_sh_path.read_text())
                 _bot_key_map = {
                     "mnq": "MNQ_Upgraded_Scalper",
-                    "cl":  "CL_Swing_Scalper",
+                    "cl":  "CL_Futures_Scalper",
                     "mes": "MES_EMA_Swing",
                     "nq":  "NQ_EMA_Swing",
                 }
+                _legacy_bot_key_map = {"cl": "CL_Swing_Scalper"}
+                def _bounded_slice(_entry: dict, _name: str) -> dict | None:
+                    _value = _entry.get(_name)
+                    if not isinstance(_value, dict):
+                        return None
+                    _out = {
+                        "current": _value.get("current"),
+                        "summary": _value.get("summary"),
+                        "last_updated": _value.get("last_updated"),
+                    }
+                    _hist = _value.get("history")
+                    if isinstance(_hist, list):
+                        _out["history"] = _hist[-10:]
+                    return _out
                 for _k, _sh_key in _bot_key_map.items():
                     if bot_filter not in ("all", _k):
                         continue
                     _entry = _sh_data.get(_sh_key, {})
+                    if not _entry and _k in _legacy_bot_key_map:
+                        _entry = _sh_data.get(_legacy_bot_key_map[_k], {})
                     signal_health_slice[_k] = {
                         "params": _entry.get("params"),
                         "risk_bootstrap": _entry.get("risk_bootstrap"),
                         "bot_version": _entry.get("bot_version"),
                         "trading_mode": _sh_data.get("ws_health", {}).get("status"),
+                        "validation_slice": _entry.get("validation_slice"),
+                        "flow_feature_versions": _entry.get("flow_feature_versions"),
+                        "validator_shadow": {
+                            "parallel_shadow": _bounded_slice(_entry, "parallel_shadow"),
+                            "moltbook_shadow": _bounded_slice(_entry, "moltbook_shadow"),
+                        },
                     }
             except Exception:
                 signal_health_slice = {"error": "signal_health.json parse failure"}
@@ -9021,6 +9047,62 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             "sharpe_annualized": regime.sharpe_annualized,
             "transition_probabilities": regime.transition_probability,
             "method": regime.method, "as_of": regime.as_of,
+        })
+
+    elif name == "get_quant_regime_state":
+        import json as _json
+        from pathlib import Path as _Path
+        bot_filter = args.get("bot_id")
+        ct_root = _Path(os.getenv(
+            "ALGOCHAINS_CONTROL_TOWER",
+            str(_Path(__file__).resolve().parents[3] / "algochains-control-tower"),
+        ))
+        snapshot_path = ct_root / "state" / "quant_shadow_snapshot.json"
+        snapshot = {}
+        snapshot_error = None
+        try:
+            if snapshot_path.exists():
+                snapshot = _json.loads(snapshot_path.read_text())
+            else:
+                snapshot_error = "state/quant_shadow_snapshot.json not found"
+        except Exception as exc:
+            snapshot_error = str(exc)
+
+        metrics = {}
+        summary = []
+        try:
+            from .marketplace.supabase_tools import _get_sb_client as _sb_client
+            sb = _sb_client()
+            if sb is not None:
+                q = sb.table("bot_metrics_live").select(
+                    "bot_id,symbol,garch_vol_forecast,garch_vol_status,volume_source,"
+                    "garch_vol_zscore,ofi_intensity,ofi_status,kalman_slope,kalman_status,hmm_regime,"
+                    "hmm_regime_status,sortino_ratio,calmar_ratio,updated_at"
+                )
+                if bot_filter:
+                    q = q.eq("bot_id", bot_filter)
+                res = q.execute()
+                for row in (res.data or []):
+                    metrics[row.get("bot_id")] = row
+                try:
+                    view_res = sb.table("v_quant_model_shadow_summary").select("*").execute()
+                    summary = view_res.data or []
+                except Exception:
+                    summary = []
+        except Exception as exc:
+            metrics = {"error": str(exc)}
+
+        bots = snapshot.get("bots", {}) if isinstance(snapshot, dict) else {}
+        if bot_filter and isinstance(bots, dict):
+            bots = {bot_filter: bots.get(bot_filter)}
+        return _text({
+            "source": "snapshot_plus_supabase_metrics",
+            "snapshot_generated_at": snapshot.get("generated_at") if isinstance(snapshot, dict) else None,
+            "snapshot_error": snapshot_error,
+            "bots": bots,
+            "bot_metrics_live": metrics,
+            "agreement_summary_7d": summary,
+            "computes_models": False,
         })
 
     elif name == "get_vix_term_structure":

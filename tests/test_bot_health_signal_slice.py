@@ -39,6 +39,18 @@ def _write_signal_health(directory: pathlib.Path) -> pathlib.Path:
                 "profitable_pct": 83.84,
                 "n_trades_clean": 7569,
             },
+            "validation_slice": {"cv_mode": "walkforward"},
+            "flow_feature_versions": {"vpin": "window=50"},
+            "parallel_shadow": {
+                "current": {"agreement": True},
+                "history": [{"agreement": False}, {"agreement": True}],
+                "summary": {"valid_samples": 2, "agreements": 1, "agreement_rate": 0.5},
+            },
+            "moltbook_shadow": {
+                "current": {"debate_present": True},
+                "history": [{"debate_present": True}],
+                "summary": {"valid_samples": 1, "agreements": 1, "agreement_rate": 1.0},
+            },
         },
         "ws_health": {"status": "NO_CLIENT"},
     }
@@ -58,19 +70,41 @@ class TestSignalHealthSliceParsing:
         signal_health_slice: dict = {}
         bot_key_map = {
             "mnq": "MNQ_Upgraded_Scalper",
-            "cl":  "CL_Swing_Scalper",
+            "cl":  "CL_Futures_Scalper",
             "mes": "MES_EMA_Swing",
             "nq":  "NQ_EMA_Swing",
         }
+        legacy_bot_key_map = {"cl": "CL_Swing_Scalper"}
+        def bounded_slice(entry: dict, name: str) -> dict | None:
+            value = entry.get(name)
+            if not isinstance(value, dict):
+                return None
+            out = {
+                "current": value.get("current"),
+                "summary": value.get("summary"),
+                "last_updated": value.get("last_updated"),
+            }
+            history = value.get("history")
+            if isinstance(history, list):
+                out["history"] = history[-10:]
+            return out
         for k, sh_key in bot_key_map.items():
             if bot_filter not in ("all", k):
                 continue
             entry = sh_data.get(sh_key, {})
+            if not entry and k in legacy_bot_key_map:
+                entry = sh_data.get(legacy_bot_key_map[k], {})
             signal_health_slice[k] = {
                 "params": entry.get("params"),
                 "risk_bootstrap": entry.get("risk_bootstrap"),
                 "bot_version": entry.get("bot_version"),
                 "trading_mode": sh_data.get("ws_health", {}).get("status"),
+                "validation_slice": entry.get("validation_slice"),
+                "flow_feature_versions": entry.get("flow_feature_versions"),
+                "validator_shadow": {
+                    "parallel_shadow": bounded_slice(entry, "parallel_shadow"),
+                    "moltbook_shadow": bounded_slice(entry, "moltbook_shadow"),
+                },
             }
         return signal_health_slice
 
@@ -83,6 +117,7 @@ class TestSignalHealthSliceParsing:
         assert "mnq" in result
         assert "cl" in result  # present even without sh_data entry (None values)
         assert result["mnq"]["params"]["stop_ticks"] == 6
+        assert "validator_shadow" in result["mnq"]
 
     def test_filter_returns_only_requested_bot(self):
         sh_data = {"MNQ_Upgraded_Scalper": {"params": {"stop_ticks": 6}, "risk_bootstrap": {}}, "ws_health": {"status": "NO_CLIENT"}}
@@ -109,6 +144,39 @@ class TestSignalHealthSliceParsing:
         assert rb["p95_max_drawdown_1ct_usd"] == 1566.0
         assert rb["profitable_pct"] == 83.84
         assert result["mnq"]["trading_mode"] == "DEMO"
+
+    def test_validator_shadow_slices_are_bounded(self):
+        sh_data = {
+            "MNQ_Upgraded_Scalper": {
+                "parallel_shadow": {
+                    "current": {"agreement": True},
+                    "history": [{"i": i} for i in range(20)],
+                    "summary": {"valid_samples": 20},
+                },
+                "moltbook_shadow": {"current": {"debate_present": True}, "history": [{"i": 1}]},
+                "validation_slice": {"cv_mode": "walkforward"},
+                "flow_feature_versions": {"vpin": "window=50"},
+            },
+            "ws_health": {"status": "NO_CLIENT"},
+        }
+        result = self._build_slice(sh_data, "mnq")
+        shadow = result["mnq"]["validator_shadow"]
+        assert len(shadow["parallel_shadow"]["history"]) == 10
+        assert shadow["parallel_shadow"]["history"][0]["i"] == 10
+        assert result["mnq"]["validation_slice"]["cv_mode"] == "walkforward"
+        assert result["mnq"]["flow_feature_versions"]["vpin"] == "window=50"
+
+    def test_cl_uses_live_key_with_legacy_fallback(self):
+        sh_data = {
+            "CL_Futures_Scalper": {"params": {"live": True}},
+            "CL_Swing_Scalper": {"params": {"legacy": True}},
+            "ws_health": {},
+        }
+        result = self._build_slice(sh_data, "cl")
+        assert result["cl"]["params"] == {"live": True}
+
+        fallback = self._build_slice({"CL_Swing_Scalper": {"params": {"legacy": True}}, "ws_health": {}}, "cl")
+        assert fallback["cl"]["params"] == {"legacy": True}
 
     def test_missing_bot_returns_none_values_not_error(self):
         sh_data = {"ws_health": {"status": "NO_CLIENT"}}
