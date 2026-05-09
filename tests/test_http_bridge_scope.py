@@ -98,6 +98,84 @@ def test_order_exec_tool_with_confirm_passes_gate():
         )
 
 
+def test_autonomous_scope_blocks_order_exec_even_with_confirm():
+    """Autonomous callers with owner keys cannot execute ORDER_EXEC tools."""
+    bridge = _bridge()
+    result = asyncio.run(
+        bridge.handle_mcp_request(
+            "place_order",
+            {"confirm": True},
+            is_owner=True,
+            caller_scope="autonomous",
+        )
+    )
+    assert "error" in result, f"Expected scope ceiling error, got: {result}"
+    assert result.get("caller_scope") == "autonomous"
+    assert result.get("required_scope") == "interactive"
+
+
+def test_interactive_scope_allows_order_exec_with_confirm():
+    """Interactive owner callers can pass the scope ceiling for ORDER_EXEC tools."""
+    bridge = _bridge()
+    result = asyncio.run(
+        bridge.handle_mcp_request(
+            "place_order",
+            {"confirm": True},
+            is_owner=True,
+            caller_scope="interactive",
+        )
+    )
+    if "error" in result:
+        assert "caller scope" not in str(result.get("error", "")).lower(), result
+        blocked = "confirm" in str(result.get("error", "")).lower() and "danger_tier" in result
+        assert not blocked, result
+
+
+def test_missing_scope_preserves_legacy_owner_gate():
+    """No caller scope preserves historical owner behavior behind confirm=true."""
+    bridge = _bridge()
+    result = asyncio.run(
+        bridge.handle_mcp_request(
+            "place_order",
+            {"confirm": True},
+            is_owner=True,
+            caller_scope=None,
+        )
+    )
+    if "error" in result:
+        assert "caller scope" not in str(result.get("error", "")).lower(), result
+
+
+def test_tools_listing_respects_autonomous_scope(monkeypatch):
+    """Owner tool listing should not advertise tools blocked by caller scope."""
+    monkeypatch.setenv("ALGOCHAINS_BRIDGE_API_KEY", "test-owner-key-xyz")
+    monkeypatch.setenv("ALGOCHAINS_BRIDGE_DEV_MODE", "false")
+    bridge = _bridge()
+    app = bridge.create_fastapi_app()
+
+    try:
+        from fastapi.testclient import TestClient
+    except Exception as exc:  # pragma: no cover - dependency-level skip
+        pytest.skip(f"FastAPI TestClient unavailable: {exc}")
+
+    client = TestClient(app)
+    response = client.get(
+        "/tools",
+        headers={
+            "X-Api-Key": "test-owner-key-xyz",
+            "X-AlgoChains-Caller-Scope": "autonomous",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    tool_names = {tool["tool"] for tool in payload["tools"]}
+    assert "get_bot_health" in tool_names
+    assert "place_order" not in tool_names
+    assert payload["caller_scope"] == "autonomous"
+    assert payload["caller_scope_max_tier"] == 1
+
+
 def test_read_only_owner_tool_no_confirm_needed():
     """READ_ONLY owner tools do not require confirm=true."""
     bridge = _bridge()

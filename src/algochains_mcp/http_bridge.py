@@ -98,6 +98,7 @@ OWNER_TOOLS = {
     "get_live_bot_metrics",
     "get_all_bot_metrics",
     "get_bot_health",
+    "get_quant_regime_state",
     "get_system_heartbeat",
     "get_account",
     "get_positions",
@@ -133,6 +134,7 @@ async def handle_mcp_request(
     *,
     is_owner: bool = False,
     subscriber: ResolvedSubscriber | None = None,
+    caller_scope: str | None = None,
 ) -> dict:
     """
     Route an MCP tool call from the HTTP bridge.
@@ -175,8 +177,26 @@ async def handle_mcp_request(
     # an explicit confirm=true argument to prevent accidental or automated calls.
     if is_owner:
         try:
-            from algochains_mcp.tool_danger_tiers import get_danger_tier, TIER_ORDER_EXEC, TIER_DESTRUCTIVE
+            from algochains_mcp.tool_danger_tiers import (
+                get_danger_tier,
+                get_scope_max_tier,
+                TIER_ORDER_EXEC,
+                TIER_DESTRUCTIVE,
+            )
             tool_tier = get_danger_tier(tool_name)
+            scope_max_tier = get_scope_max_tier(caller_scope)
+            if scope_max_tier < tool_tier:
+                required_scope = "admin" if tool_tier >= TIER_DESTRUCTIVE else "interactive"
+                return {
+                    "error": (
+                        f"Caller scope '{caller_scope}' is limited to danger tier {scope_max_tier}; "
+                        f"tool '{tool_name}' requires tier {tool_tier}."
+                    ),
+                    "tool": tool_name,
+                    "danger_tier": tool_tier,
+                    "caller_scope": caller_scope,
+                    "required_scope": required_scope,
+                }
             if tool_tier >= TIER_ORDER_EXEC:
                 if not arguments.get("confirm"):
                     tier_label = "ORDER_EXEC" if tool_tier == TIER_ORDER_EXEC else "DESTRUCTIVE"
@@ -202,7 +222,14 @@ async def handle_mcp_request(
                 "hint": "Install algochains-mcp-server package fully or check import paths.",
             }
         except Exception as _tier_err:
-            log.warning("Danger tier check failed for %s: %s", tool_name, _tier_err)
+            log.error("Danger tier check failed for %s: %s — blocking execution", tool_name, _tier_err)
+            return {
+                "error": (
+                    f"Danger tier check failed for tool '{tool_name}'. "
+                    "Execution blocked for safety."
+                ),
+                "tool": tool_name,
+            }
 
     try:
         from algochains_mcp import server as _server
@@ -303,9 +330,10 @@ def create_fastapi_app():
         x_api_key: str | None,
         authorization: str | None,
         user_email: str | None = None,
-    ) -> tuple[bool, bool, ResolvedSubscriber | None]:
+        caller_scope: str | None = None,
+    ) -> tuple[bool, bool, ResolvedSubscriber | None, str | None]:
         """
-        Returns (key_valid, is_owner, subscriber).
+        Returns (key_valid, is_owner, subscriber, caller_scope).
 
         Legitimate outcomes:
           • Owner key matches BRIDGE_API_KEY → (True, True, None)
@@ -328,23 +356,23 @@ def create_fastapi_app():
         if is_subscriber_key(provided_key):
             sub = resolve_subscriber_key(provided_key)
             if sub:
-                return True, False, sub
-            return False, False, None
+                return True, False, sub, caller_scope
+            return False, False, None, caller_scope
 
         if BRIDGE_API_KEY:
             key_valid = provided_key == BRIDGE_API_KEY
             # Owner privilege is derived from key match only — user_email is
             # accepted for audit attribution but NEVER grants owner access.
             is_owner = key_valid
-            return key_valid, is_owner, None
+            return key_valid, is_owner, None, caller_scope
 
         # No bridge key configured.
         if _DEV_MODE:
             # Dev: accept anything for public tools, owner is never True.
-            return True, False, None
+            return True, False, None, caller_scope
 
         # K-8 fix: production with no key — fail closed.
-        return False, False, None
+        return False, False, None, caller_scope
 
     class McpRequest(BaseModel):
         tool: str
@@ -380,6 +408,7 @@ def create_fastapi_app():
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
         include_danger_tiers: bool = True,
+        x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """
         List available tools with danger tier classification.
@@ -390,15 +419,22 @@ def create_fastapi_app():
           2 ORDER_EXEC   — Executes real broker orders.
           3 DESTRUCTIVE  — Irreversible bulk/high-impact actions.
         """
-        from algochains_mcp.tool_danger_tiers import get_tool_danger_info
+        from algochains_mcp.tool_danger_tiers import get_danger_tier, get_scope_max_tier, get_tool_danger_info
 
-        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
 
         # Subscribers see ONLY the subscriber tool surface — never owner / public marketplace.
         if subscriber is not None:
             visible_tools = sorted(SUBSCRIBER_TOOLS)
         else:
             visible_tools = sorted(PUBLIC_TOOLS) + (sorted(OWNER_TOOLS) if is_owner else [])
+            if is_owner and caller_scope:
+                max_tier = get_scope_max_tier(caller_scope)
+                visible_tools = [tool for tool in visible_tools if get_danger_tier(tool) <= max_tier]
 
         if include_danger_tiers:
             tools_with_tiers = [get_tool_danger_info(t) for t in sorted(set(visible_tools))]
@@ -420,6 +456,8 @@ def create_fastapi_app():
                     "tools": tools_with_tiers,
                     "public_tool_count": len(PUBLIC_TOOLS),
                     "owner_tool_count": len(OWNER_TOOLS),
+                    "caller_scope": caller_scope,
+                    "caller_scope_max_tier": get_scope_max_tier(caller_scope),
                     "tier_legend": tier_legend,
                 }
             return {
@@ -439,6 +477,7 @@ def create_fastapi_app():
         request: Request,
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
     ):
         try:
             body = await request.json()
@@ -449,7 +488,12 @@ def create_fastapi_app():
         user_email = body.get("user_email")
         if not tool:
             raise HTTPException(status_code=400, detail="Missing 'tool' field")
-        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization, user_email)
+        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            user_email,
+            x_algochains_caller_scope,
+        )
         if not key_valid:
             raise HTTPException(status_code=401, detail="Invalid API key")
         result = await handle_mcp_request(
@@ -457,6 +501,7 @@ def create_fastapi_app():
             arguments,
             is_owner=is_owner,
             subscriber=subscriber,
+            caller_scope=caller_scope,
         )
         return result
 
@@ -481,7 +526,7 @@ def create_fastapi_app():
 
         Auth: subscriber API key only.
         """
-        key_valid, _is_owner, subscriber = _resolve_auth(x_api_key, authorization)
+        key_valid, _is_owner, subscriber, _caller_scope = _resolve_auth(x_api_key, authorization)
         if not key_valid or subscriber is None:
             raise HTTPException(status_code=401, detail="Subscriber API key required")
         bot_filter = [b.strip().upper() for b in bots.split(",")] if bots else None
@@ -521,12 +566,18 @@ def create_fastapi_app():
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
         user_email: str | None = None,
+        x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Convenience endpoint: get all 4 bot metrics. Owner key required."""
-        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization, user_email)
+        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            user_email,
+            x_algochains_caller_scope,
+        )
         if not key_valid or subscriber is not None:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner)
+        return await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner, caller_scope=caller_scope)
 
     @app_http.get("/api/bots/{bot_id}")
     async def get_bot(
@@ -534,14 +585,25 @@ def create_fastapi_app():
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
         user_email: str | None = None,
+        x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Convenience endpoint: get metrics for a specific bot. Owner key required."""
         if bot_id not in {"mnq", "cl", "mes", "nq"}:
             raise HTTPException(status_code=400, detail="bot_id must be mnq | cl | mes | nq")
-        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization, user_email)
+        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            user_email,
+            x_algochains_caller_scope,
+        )
         if not key_valid or subscriber is not None:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_live_bot_metrics", {"bot_id": bot_id}, is_owner=is_owner)
+        return await handle_mcp_request(
+            "get_live_bot_metrics",
+            {"bot_id": bot_id},
+            is_owner=is_owner,
+            caller_scope=caller_scope,
+        )
 
     @app_http.get("/api/bots/{bot_id}/card")
     async def get_bot_card(
@@ -549,14 +611,25 @@ def create_fastapi_app():
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
         user_email: str | None = None,
+        x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Get full bot card data. Public card data is unauthenticated; attachments require owner."""
         if bot_id not in {"mnq", "cl", "mes", "nq"}:
             raise HTTPException(status_code=400, detail="bot_id must be mnq | cl | mes | nq")
-        _key_valid, is_owner, _subscriber = _resolve_auth(x_api_key, authorization, user_email)
+        _key_valid, is_owner, _subscriber, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            user_email,
+            x_algochains_caller_scope,
+        )
         card = await handle_mcp_request("get_bot_card_data", {"bot_id": bot_id}, is_owner=False)
         if is_owner:
-            attachments = await handle_mcp_request("list_bot_research_attachments", {"bot_id": bot_id}, is_owner=True)
+            attachments = await handle_mcp_request(
+                "list_bot_research_attachments",
+                {"bot_id": bot_id},
+                is_owner=True,
+                caller_scope=caller_scope,
+            )
             card["research_attachments"] = attachments
         return card
 
@@ -571,23 +644,33 @@ def create_fastapi_app():
     async def system_heartbeat(
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Get system heartbeat. Requires owner API key — reveals infrastructure topology."""
-        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
         if not key_valid or subscriber is not None or not is_owner:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_system_heartbeat", {}, is_owner=True)
+        return await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
 
     @app_http.get("/api/guardrails")
     async def guardrail_status(
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Get circuit breaker and guardrail status. Requires owner API key."""
-        key_valid, is_owner, subscriber = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
         if not key_valid or subscriber is not None or not is_owner:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_circuit_breaker_status", {}, is_owner=True)
+        return await handle_mcp_request("get_circuit_breaker_status", {}, is_owner=True, caller_scope=caller_scope)
 
     return app_http
 

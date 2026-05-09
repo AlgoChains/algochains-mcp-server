@@ -65,7 +65,7 @@ jobs:
         env:
           ALGOCHAINS_TOOL_MODE: smart
         run: |
-          TIER1_EXPECTED="discover_tools get_tool_details execute_dynamic_tool massive_search_endpoints massive_call_api massive_query_data massive_run_pipeline place_order cancel_order close_position get_positions get_account portfolio_summary connect_broker run_backtest validate_strategy optimize_strategy deploy_strategy browse_strategy_marketplace execute_intent approve_intent create_shadow_portfolio detect_market_regime"
+          TIER1_EXPECTED="discover_tools get_tool_details execute_dynamic_tool massive_search_endpoints massive_call_api massive_query_data massive_run_pipeline get_positions get_account get_orders get_bot_health get_quant_regime_state portfolio_summary connect_broker run_backtest validate_strategy validate_strategy_metrics optimize_strategy browse_strategy_marketplace execute_intent approve_intent create_shadow_portfolio detect_market_regime"
           TOOLS_JSON=$(npx mcporter list algochains --json)
           for tool in $TIER1_EXPECTED; do
             echo "$TOOLS_JSON" | jq -e ".tools[] | select(.name == \"$tool\")" > /dev/null 2>&1 \

@@ -25,11 +25,17 @@ SMART_TOOL_COUNT_MAX = 200        # smart mode ceiling
 def _get_registered_tools() -> list:
     """Import server and return the registered tool list."""
     try:
-        from algochains_mcp import tool_manifest
-        manifest = tool_manifest.build_manifest()
-        return manifest.get("tools", [])
+        import algochains_mcp.server as srv
+        return [
+            {
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": t.inputSchema,
+            }
+            for t in srv.TOOLS_ANNOTATED
+        ]
     except Exception as exc:
-        pytest.skip(f"Could not load tool manifest: {exc}")
+        pytest.skip(f"Could not load server tool registry: {exc}")
 
 
 def test_tool_count_within_expected_range():

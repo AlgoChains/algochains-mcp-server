@@ -34,6 +34,16 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
     "discover_tools": {"implementation_status": "full", "required_env": [], "notes": "Semantic search over tool index."},
     "get_tool_details": {"implementation_status": "full", "required_env": [], "notes": ""},
     "execute_dynamic_tool": {"implementation_status": "partial", "required_env": [], "notes": "Dispatches to target tool; target may be stub."},
+    "get_bot_health": {
+        "implementation_status": "full",
+        "required_env": ["ALGOCHAINS_CONTROL_TOWER"],
+        "notes": "Reads bounded control-tower health artifacts and degrades when files are missing.",
+    },
+    "get_quant_regime_state": {
+        "implementation_status": "partial",
+        "required_env": ["ALGOCHAINS_CONTROL_TOWER", "SUPABASE_URL"],
+        "notes": "Reads shadow-only quant snapshot plus Supabase metrics; agreement summary needs service-role access.",
+    },
     "place_order": {"implementation_status": "full", "required_env": ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"], "notes": "Also Tradovate/OANDA when configured via connect_broker."},
     "cancel_order": {"implementation_status": "full", "required_env": ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"], "notes": ""},
     "close_position": {"implementation_status": "full", "required_env": ["ALPACA_API_KEY", "ALPACA_SECRET_KEY"], "notes": ""},

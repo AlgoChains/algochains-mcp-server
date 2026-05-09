@@ -46,6 +46,13 @@ TIER_DESCRIPTIONS = {
     TIER_DESTRUCTIVE: "Irreversible bulk action. Touches all positions or cancels all orders.",
 }
 
+CALLER_SCOPE_CEILINGS: dict[str, int] = {
+    "autonomous": TIER_WRITE_LOCAL,
+    "research": TIER_WRITE_LOCAL,
+    "interactive": TIER_ORDER_EXEC,
+    "admin": TIER_DESTRUCTIVE,
+}
+
 # ── Explicit tier overrides ────────────────────────────────────────────────────
 # Any tool not listed here gets TIER_WRITE_LOCAL by default (conservative).
 
@@ -56,6 +63,7 @@ _TOOL_TIERS: dict[str, int] = {
     "search_tradovate_contracts": TIER_READ_ONLY,
     "get_tradovate_risk_snapshot": TIER_READ_ONLY,
     "get_bot_health": TIER_READ_ONLY,
+    "get_quant_regime_state": TIER_READ_ONLY,
     # Market data
     "get_quote": TIER_READ_ONLY,
     "get_ohlcv": TIER_READ_ONLY,
@@ -283,12 +291,19 @@ _TOOL_TIERS: dict[str, int] = {
     "place_order": TIER_ORDER_EXEC,
     "place_bracket_order": TIER_ORDER_EXEC,
     "place_oco_order": TIER_ORDER_EXEC,
+    "restart_trading_bot": TIER_ORDER_EXEC,
+    "flatten_bot_position": TIER_ORDER_EXEC,
     "modify_order": TIER_ORDER_EXEC,
     "cancel_order": TIER_ORDER_EXEC,
     "close_position": TIER_ORDER_EXEC,
     "smart_route_order": TIER_ORDER_EXEC,
+    "route_order": TIER_ORDER_EXEC,
     "execute_twap": TIER_ORDER_EXEC,
     "execute_vwap": TIER_ORDER_EXEC,
+    "execute_swap": TIER_ORDER_EXEC,
+    "start_algo_execution": TIER_ORDER_EXEC,
+    "submit_institutional_order": TIER_ORDER_EXEC,
+    "submit_protected_tx": TIER_ORDER_EXEC,
     "request_trade_confirmation": TIER_ORDER_EXEC,
     "follow_leader": TIER_ORDER_EXEC,
     "process_payment": TIER_ORDER_EXEC,
@@ -338,8 +353,20 @@ _PREFIX_DEFAULT_TIERS: list[tuple[str, int]] = [
     ("check_", TIER_READ_ONLY),          # check_* are generally reads
     ("compute_", TIER_READ_ONLY),        # compute_* are generally reads
     ("detect_", TIER_READ_ONLY),         # detect_* are generally reads
+    ("analyze_", TIER_READ_ONLY),        # analyze_* are generally reads
+    ("validate_", TIER_READ_ONLY),       # validate_* are generally checks
     ("search_", TIER_READ_ONLY),         # search_* are generally reads
     ("onyx_", TIER_READ_ONLY),           # Onyx tools are all reads
+    ("activate_", TIER_WRITE_LOCAL),     # activate_* mutates local/control state
+    ("deactivate_", TIER_WRITE_LOCAL),   # deactivate_* mutates local/control state
+    ("run_", TIER_WRITE_LOCAL),          # run_* may write local artifacts
+    ("set_", TIER_WRITE_LOCAL),          # set_* mutates local/remote config
+    ("start_", TIER_WRITE_LOCAL),        # start_* launches local workflows
+    ("submit_", TIER_WRITE_LOCAL),       # submit_* writes unless explicitly upgraded
+    ("deploy_", TIER_WRITE_LOCAL),       # deploy_* writes deployment state
+    ("delete_", TIER_WRITE_LOCAL),       # delete_* changes local/remote state
+    ("publish_", TIER_WRITE_LOCAL),      # publish_* writes marketplace/content state
+    ("update_", TIER_WRITE_LOCAL),       # update_* writes state
     ("place_", TIER_ORDER_EXEC),         # place_* are always orders
     ("cancel_", TIER_ORDER_EXEC),        # cancel_* touch broker
     ("close_", TIER_ORDER_EXEC),         # close_* touch broker
@@ -359,6 +386,27 @@ def get_danger_tier(tool_name: str) -> int:
         if tool_name.startswith(prefix):
             return tier
     return TIER_WRITE_LOCAL  # conservative default
+
+
+def get_danger_tier_source(tool_name: str) -> str:
+    """Return how a tool's tier was assigned: explicit, prefix, or default."""
+    if tool_name in _TOOL_TIERS:
+        return "explicit"
+    for prefix, _tier in _PREFIX_DEFAULT_TIERS:
+        if tool_name.startswith(prefix):
+            return f"prefix:{prefix}"
+    return "default"
+
+
+def get_scope_max_tier(scope: str | None) -> int:
+    """Return the maximum danger tier available to a caller scope.
+
+    Missing or unknown scopes preserve historical owner behavior and are handled
+    by the existing API key + confirm gates.
+    """
+    if scope is None:
+        return TIER_DESTRUCTIVE
+    return CALLER_SCOPE_CEILINGS.get(str(scope).strip().lower(), TIER_DESTRUCTIVE)
 
 
 # P1-4 FIX: server.py imports get_tool_tier but only get_danger_tier was defined.
