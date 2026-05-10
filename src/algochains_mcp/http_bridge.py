@@ -46,6 +46,11 @@ from .subscriber_tools import (
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
 )
+from .tool_policy import (
+    evaluate_bridge_tool,
+    visible_tools_for_bridge,
+)
+from .otel_tracing import redacted_argument_hash, trace_span
 
 log = logging.getLogger(__name__)
 
@@ -164,77 +169,43 @@ async def handle_mcp_request(
         return call_subscriber_tool(tool_name, subscriber.subscriber_id, arguments)
 
     # ── 2/3. Owner / public surfaces ─────────────────────────────────────
-    if tool_name in OWNER_TOOLS and not is_owner:
-        return {"error": "Unauthorized — this tool requires owner access", "tool": tool_name}
-    if tool_name not in PUBLIC_TOOLS and tool_name not in OWNER_TOOLS:
-        return {
-            "error": f"Tool '{tool_name}' not available via HTTP bridge",
-            "available_tools": sorted(PUBLIC_TOOLS),
-        }
-
-    # K-1 fix: enforce danger tiers at dispatch — not just as metadata.
-    # TIER_ORDER_EXEC (2) and TIER_DESTRUCTIVE (3) require owner access AND
-    # an explicit confirm=true argument to prevent accidental or automated calls.
-    if is_owner:
-        try:
-            from algochains_mcp.tool_danger_tiers import (
-                get_danger_tier,
-                get_scope_max_tier,
-                TIER_ORDER_EXEC,
-                TIER_DESTRUCTIVE,
-            )
-            tool_tier = get_danger_tier(tool_name)
-            scope_max_tier = get_scope_max_tier(caller_scope)
-            if scope_max_tier < tool_tier:
-                required_scope = "admin" if tool_tier >= TIER_DESTRUCTIVE else "interactive"
-                return {
-                    "error": (
-                        f"Caller scope '{caller_scope}' is limited to danger tier {scope_max_tier}; "
-                        f"tool '{tool_name}' requires tier {tool_tier}."
-                    ),
-                    "tool": tool_name,
-                    "danger_tier": tool_tier,
-                    "caller_scope": caller_scope,
-                    "required_scope": required_scope,
-                }
-            if tool_tier >= TIER_ORDER_EXEC:
-                if not arguments.get("confirm"):
-                    tier_label = "ORDER_EXEC" if tool_tier == TIER_ORDER_EXEC else "DESTRUCTIVE"
-                    return {
-                        "error": (
-                            f"Tool '{tool_name}' has danger tier {tier_label} ({tool_tier}). "
-                            "Pass confirm=true in arguments to execute."
-                        ),
-                        "tool": tool_name,
-                        "danger_tier": tool_tier,
-                        "required_arg": "confirm=true",
-                    }
-        except ImportError as _tier_import_err:
-            # H-F3 fix: tool_danger_tiers module missing → fail closed, not open.
-            # Previously logged a warning and allowed execution — now blocks with explicit error.
-            log.error("Danger tier module unavailable for %s: %s — blocking execution", tool_name, _tier_import_err)
-            return {
-                "error": (
-                    f"Danger tier check unavailable for tool '{tool_name}' "
-                    "(tool_danger_tiers module missing). Execution blocked for safety."
-                ),
-                "tool": tool_name,
-                "hint": "Install algochains-mcp-server package fully or check import paths.",
-            }
-        except Exception as _tier_err:
-            log.error("Danger tier check failed for %s: %s — blocking execution", tool_name, _tier_err)
-            return {
-                "error": (
-                    f"Danger tier check failed for tool '{tool_name}'. "
-                    "Execution blocked for safety."
-                ),
-                "tool": tool_name,
-            }
+    # Centralized policy keeps bridge auth, caller scopes, danger tiers, and
+    # approval vocabulary in sync with stdio dynamic dispatch.
+    decision = evaluate_bridge_tool(
+        tool_name,
+        arguments,
+        is_owner=is_owner,
+        caller_scope=caller_scope,
+        public_tools=PUBLIC_TOOLS,
+        owner_tools=OWNER_TOOLS,
+    )
+    if not decision.allow:
+        payload = decision.as_error()
+        if tool_name not in PUBLIC_TOOLS and tool_name not in OWNER_TOOLS:
+            payload["available_tools"] = sorted(PUBLIC_TOOLS)
+        if decision.required_scope:
+            payload["caller_scope"] = caller_scope
+        return payload
 
     try:
         from algochains_mcp import server as _server
 
-        result = await _server.call_tool(tool_name, arguments)
+        with trace_span(
+            "mcp.tool.call",
+            {
+                "tool.name": tool_name,
+                "mcp.server": "algochains",
+                "mcp.transport": "http_bridge",
+                "algochains.danger_tier": decision.danger_tier,
+                "algochains.danger_label": decision.danger_label,
+                "algochains.tier_source": decision.tier_source,
+                "algochains.arguments_hash": redacted_argument_hash(arguments),
+                "algochains.caller_scope": caller_scope or "legacy_owner",
+            },
+        ) as span:
+            result = await _server.call_tool(tool_name, arguments)
+            if span is not None:
+                span.set_attribute("algochains.tool.success", True)
 
         if result and hasattr(result[0], "text"):
             try:
@@ -419,7 +390,7 @@ def create_fastapi_app():
           2 ORDER_EXEC   — Executes real broker orders.
           3 DESTRUCTIVE  — Irreversible bulk/high-impact actions.
         """
-        from algochains_mcp.tool_danger_tiers import get_danger_tier, get_scope_max_tier, get_tool_danger_info
+        from algochains_mcp.tool_danger_tiers import get_scope_max_tier, get_tool_danger_info
 
         key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
             x_api_key,
@@ -431,10 +402,12 @@ def create_fastapi_app():
         if subscriber is not None:
             visible_tools = sorted(SUBSCRIBER_TOOLS)
         else:
-            visible_tools = sorted(PUBLIC_TOOLS) + (sorted(OWNER_TOOLS) if is_owner else [])
-            if is_owner and caller_scope:
-                max_tier = get_scope_max_tier(caller_scope)
-                visible_tools = [tool for tool in visible_tools if get_danger_tier(tool) <= max_tier]
+            visible_tools = visible_tools_for_bridge(
+                public_tools=PUBLIC_TOOLS,
+                owner_tools=OWNER_TOOLS,
+                is_owner=is_owner,
+                caller_scope=caller_scope,
+            )
 
         if include_danger_tiers:
             tools_with_tiers = [get_tool_danger_info(t) for t in sorted(set(visible_tools))]

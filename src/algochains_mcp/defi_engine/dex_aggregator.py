@@ -14,9 +14,22 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-_DEFI_LIVE = os.getenv("ALGOCHAINS_DEFI_ENABLED", "").lower() in ("1", "true", "yes")
+# BUG-22 FIX: Previously _DEFI_LIVE=True (via ALGOCHAINS_DEFI_ENABLED=true) caused
+# execute_swap and other methods to return status="ok" with a uuid4 tx_hash — implying
+# a real on-chain transaction occurred when none did. No real Web3 execution path exists.
+# Changed: _DEFI_LIVE is always forced to False until a real Web3 backend is wired.
+# The env var ALGOCHAINS_DEFI_ENABLED is now reserved for future live implementation.
+# When set, we log a one-time warning so operators know the flag has no live effect yet.
+_DEFI_LIVE = False  # Reserved — no real Web3 execution path implemented yet
+if os.getenv("ALGOCHAINS_DEFI_ENABLED", "").lower() in ("1", "true", "yes"):
+    import logging as _dex_log
+    _dex_log.getLogger("algochains_mcp.defi_engine.dex_aggregator").warning(
+        "ALGOCHAINS_DEFI_ENABLED=true is set but no real Web3 execution backend is wired. "
+        "All DEX operations will return simulation status. "
+        "This flag is reserved for future implementation — remove it to suppress this warning."
+    )
 _SIM_BANNER = (
-    "SIMULATION — ALGOCHAINS_DEFI_ENABLED is not set. "
+    "SIMULATION — No real Web3 execution backend is wired. "
     "Results are synthetic and do not reflect real on-chain state."
 )
 

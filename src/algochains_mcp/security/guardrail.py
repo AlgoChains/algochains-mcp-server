@@ -59,11 +59,21 @@ def _gate_vix(symbol: str, vix: float | None) -> tuple[bool, str]:
     """Block if current VIX is at or above threshold."""
     if vix is None:
         try:
-            vix = float(os.environ.get("CURRENT_VIX", "0"))
+            _env_vix = os.environ.get("CURRENT_VIX", "")
+            vix = float(_env_vix) if _env_vix else 0.0
         except ValueError:
             vix = 0.0
     if vix <= 0:
-        return True, "VIX not set — gate skipped"
+        # BUG-13 FIX: Previously returned (True, "VIX not set — gate skipped") silently.
+        # VIX=0 means we have no real market data; the gate is effectively disabled.
+        # Now we log a structured warning so operators can see when VIX protection
+        # is weakened (e.g. during CBOE outage or missing CURRENT_VIX env var).
+        logger.warning(
+            "GUARDRAIL VIX gate SKIPPED — vix=0 (unknown). "
+            "Set CURRENT_VIX env var or ensure CBOE data feed is healthy. "
+            "VIX kill-switch is inactive for symbol=%s", symbol,
+        )
+        return True, "VIX unknown (0) — gate skipped [WARNING: protection weakened]"
     if vix >= _VIX_MAX:
         return False, f"VIX {vix} ≥ {_VIX_MAX} — all trades blocked"
     return True, f"VIX {vix} < {_VIX_MAX} — ok"
@@ -73,9 +83,17 @@ def _gate_daily_loss(daily_pnl: float | None) -> tuple[bool, str]:
     """Block if today's realized loss has hit the hard limit."""
     if daily_pnl is None:
         try:
-            daily_pnl = float(os.environ.get("TODAY_REALIZED_PNL", "0"))
+            _env_pnl = os.environ.get("TODAY_REALIZED_PNL", "")
+            daily_pnl = float(_env_pnl) if _env_pnl else 0.0
         except ValueError:
             daily_pnl = 0.0
+    if daily_pnl == 0.0 and not os.environ.get("TODAY_REALIZED_PNL"):
+        # BUG-13 FIX: $0 P&L with no env source means we have no real data —
+        # log a warning so operators can see when the daily-loss gate is unverified.
+        logger.warning(
+            "GUARDRAIL daily-loss gate running with daily_pnl=0 (unknown source). "
+            "Ensure broker P&L is passed or TODAY_REALIZED_PNL env var is set."
+        )
     loss = -daily_pnl  # positive = loss
     if loss >= _DAILY_LOSS_MAX:
         return False, f"Daily loss ${loss:.2f} ≥ hard limit ${_DAILY_LOSS_MAX} — trading halted"
@@ -181,13 +199,22 @@ def run_guardrail(
         try:
             ok, reason = gate_fn()
         except Exception as exc:
-            ok, reason = True, f"Gate error (skipped): {exc}"
+            # BUG-06 FIX: Previously any exception in a gate became ok=True ("Gate error skipped"),
+            # making every gate fail-OPEN on bugs or bad state files. Changed to fail-CLOSED:
+            # a gate that errors BLOCKS the order and surfaces the error as a structured reason.
+            ok = False
+            reason = f"Gate BLOCKED (internal error — fail-safe): {exc}"
+            logger.error(
+                "GUARDRAIL gate %s raised an exception — blocking order for safety: %s (symbol=%s)",
+                gate_name, exc, symbol, exc_info=True,
+            )
 
         gate_results.append({"gate": gate_name, "passed": ok, "reason": reason})
         if not ok:
             blocked = True
             block_reasons.append(f"[{gate_name}] {reason}")
-            logger.warning("GUARDRAIL blocked: gate=%s reason=%s symbol=%s", gate_name, reason, symbol)
+            if "internal error" not in reason:
+                logger.warning("GUARDRAIL blocked: gate=%s reason=%s symbol=%s", gate_name, reason, symbol)
 
     approved = not blocked
     if approved:

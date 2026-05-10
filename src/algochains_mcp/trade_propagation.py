@@ -34,8 +34,14 @@ logger = logging.getLogger("algochains_mcp.trade_propagation")
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
-# Roo's live Django propagation endpoint (algochains.ai backend)
-_ROO_DEFAULT_URL = "http://172.232.170.168/signals/signal/"
+# BUG-21 FIX: Previously _ROO_DEFAULT_URL used hardcoded HTTP (not HTTPS),
+# exposing the HMAC secret and trade signals on the wire in plaintext whenever
+# env vars were unset. Changed to fail-closed: when no env URL is set, the
+# function raises ConfigurationError rather than sending over plain HTTP.
+# If you need to allow the legacy HTTP endpoint during migration, set
+# ALGOCHAINS_SIGNAL_URL=http://172.232.170.168/signals/signal/ explicitly.
+_ROO_LEGACY_HTTP_URL = "http://172.232.170.168/signals/signal/"  # kept for documentation only
+
 # ⚠️  SECURITY: This is the dev-only fallback secret. It MUST be overridden via
 # ALGOCHAINS_SIGNAL_SECRET or SIGNAL_SECRET in production. Any signal sent with
 # the default secret will be rejected by a correctly-configured backend, and the
@@ -44,12 +50,25 @@ _ROO_DEFAULT_SECRET = "1234"
 
 
 def _resolve_url() -> str:
-    """Return signal endpoint URL — env override takes priority over Roo default."""
-    return (
+    """Return signal endpoint URL — env override required; fails closed if unset."""
+    url = (
         os.getenv("ALGOCHAINS_SIGNAL_URL", "").strip()
         or os.getenv("SIGNAL_URL", "").strip()
-        or _ROO_DEFAULT_URL
     )
+    if not url:
+        raise RuntimeError(
+            "trade_propagation: ALGOCHAINS_SIGNAL_URL (or SIGNAL_URL) is not set. "
+            "Refusing to propagate signal over an unverified endpoint. "
+            "Set ALGOCHAINS_SIGNAL_URL=https://... to enable signal propagation."
+        )
+    if url.startswith("http://"):
+        logger.warning(
+            "trade_propagation: ALGOCHAINS_SIGNAL_URL uses plain HTTP (%s). "
+            "HMAC secret and trade signals are transmitted in cleartext. "
+            "Use HTTPS to protect signal integrity.",
+            url,
+        )
+    return url
 
 
 def _resolve_secret() -> bytes:

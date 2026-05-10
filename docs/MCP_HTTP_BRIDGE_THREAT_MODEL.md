@@ -25,15 +25,23 @@
 | Actor | Auth mechanism | Tool surface | Can call danger tiers? |
 |-------|---------------|-------------|------------------------|
 | Anonymous / no key | None | `PUBLIC_TOOLS` only (13 tools) | No |
-| Owner | `ALGOCHAINS_BRIDGE_API_KEY` + `user_email == OWNER_EMAIL` | `PUBLIC_TOOLS` + `OWNER_TOOLS` (30 tools total) | Yes — with `confirm=true` |
+| Owner | `ALGOCHAINS_BRIDGE_API_KEY` + `user_email == OWNER_EMAIL` | `PUBLIC_TOOLS` + `OWNER_TOOLS` (40 tools total) | Yes — with `confirm=true` |
 | Subscriber | `sub_live_*` key resolved against Supabase | `SUBSCRIBER_TOOLS` (7 tools, scoped) | No |
 | Dev mode (localhost only) | `ALGOCHAINS_BRIDGE_DEV_MODE=true` | Public tools without key | No |
+
+Current implementation note: HTTP bridge dispatch now delegates danger tier,
+caller scope, and confirmation checks to `src/algochains_mcp/tool_policy.py`.
+`confirm=true` is the canonical approval argument; `confirmed=true` is a legacy
+alias for older tool schemas.
 
 ### Public Tools (13)
 Read-only: market data, strategy discovery, Onyx search, macro signals, VIX term structure, latency profile.
 
-### Owner Tools (17)
-`place_order`, `cancel_order`, `close_position`, `get_account`, `get_positions`, `get_orders`, `portfolio_summary`, `get_live_bot_metrics`, `get_all_bot_metrics`, `get_circuit_breaker_status`, `get_protection_config`, `get_system_heartbeat`, `submit_to_marketplace`, `run_marketplace_autopilot`, `run_onyx_ingest`, `get_onyx_status`, `get_onboarding_status`
+### Owner Tools (27)
+Authoritative list lives in `src/algochains_mcp/http_bridge.py::OWNER_TOOLS`.
+The owner surface includes live account reads, owner bot metrics, controlled
+marketplace operations, Onyx ingest/status, and explicitly confirmed order
+execution tools.
 
 ### Subscriber Tools (7)
 `get_signal_stream`, `ack_signal`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `report_fill`, `heartbeat`

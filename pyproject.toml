@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "algochains-mcp-server"
 version = "22.4.0"
-description = "AlgoChains MCP Server — The Ultimate Algo Quant Stack. 477 tools (full mode) / 150 smart-mode tools: live trading (Tradovate/Alpaca/OANDA/Binance), AlphaLoop self-improving strategies, order flow intelligence, Massive.com/Polygon/Databento data, Onyx RAG, volatility surfaces, factor models, HMM regime detection, autonomous marketplace pipeline, MCP 2025-11-25 spec, control-tower validation framework, Kalshi prediction markets, subscriber auth/tools, real data only."
+description = "AlgoChains MCP Server — The Ultimate Algo Quant Stack. 478 tools (full mode) / 148 smart-mode tools: live trading (Tradovate/Alpaca/OANDA/Binance), AlphaLoop self-improving strategies, order flow intelligence, Massive.com/Polygon/Databento data, Onyx RAG, volatility surfaces, factor models, HMM regime detection, autonomous marketplace pipeline, MCP 2025-11-25 spec, control-tower validation framework, Kalshi prediction markets, subscriber auth/tools, real data only."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -64,6 +64,11 @@ datasets = ["pandas>=2.0.0", "pyarrow>=14.0.0"]
 backtrader = ["backtrader>=1.9.78"]
 supabase = ["supabase>=2.0.0"]
 http = ["fastapi>=0.111.0", "uvicorn[standard]>=0.30.0"]
+otel = [
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp-proto-http",
+]
 optimize = ["optuna>=3.0.0"]
 dashboard = ["fastapi>=0.115.0", "uvicorn>=0.30.0"]
 quant = ["hmmlearn>=0.3.0", "numpy>=1.26.0", "scipy>=1.12.0"]

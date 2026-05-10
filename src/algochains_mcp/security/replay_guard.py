@@ -6,8 +6,14 @@ must include X-Timestamp + X-Nonce headers. This middleware rejects:
   - Requests with timestamp older than MAX_AGE_SECONDS (default 300s = 5 min)
   - Requests whose nonce was already seen within the TTL window
 
-Storage: in-memory dict with periodic cleanup (suitable for single-process MCP server).
-For multi-process: replace with Redis SETNX or SQLite with WAL.
+Storage: Redis SETNX (preferred, set REPLAY_GUARD_REDIS_URL) or in-memory dict
+         as fallback. In-memory nonces are lost on process restart, allowing replay
+         attacks within the MAX_AGE window after a restart. Redis eliminates this.
+
+BUG-20 FIX: Added Redis-backed nonce persistence. When REPLAY_GUARD_REDIS_URL is
+set (e.g. redis://localhost:6380/1), nonces survive server restarts and are safe
+across multiple processes. Falls back to in-memory on Redis unavailability with
+a startup warning so operators know replay protection is weakened.
 """
 from __future__ import annotations
 
@@ -24,9 +30,41 @@ logger = logging.getLogger("algochains_mcp.security.replay_guard")
 MAX_AGE_SECONDS = int(os.environ.get("REPLAY_GUARD_MAX_AGE", "300"))
 NONCE_TTL_SECONDS = MAX_AGE_SECONDS + 60  # Keep nonces slightly longer than max age
 
+# Redis connection (lazily initialised)
+_REDIS_CLIENT = None
+_REDIS_INIT_ATTEMPTED = False
+_REDIS_NONCE_PREFIX = "rg_nonce:"
+
+def _get_redis():
+    """Return a Redis client if configured, else None."""
+    global _REDIS_CLIENT, _REDIS_INIT_ATTEMPTED
+    if _REDIS_INIT_ATTEMPTED:
+        return _REDIS_CLIENT
+    _REDIS_INIT_ATTEMPTED = True
+    url = os.environ.get("REPLAY_GUARD_REDIS_URL") or os.environ.get("REDIS_URL", "")
+    if not url:
+        logger.warning(
+            "replay_guard: REPLAY_GUARD_REDIS_URL not set — using in-memory nonce store. "
+            "Nonces will be lost on process restart (replay window = MAX_AGE_SECONDS after restart). "
+            "Set REPLAY_GUARD_REDIS_URL=redis://localhost:6380 for persistent protection."
+        )
+        return None
+    try:
+        import redis  # type: ignore[import]
+        _REDIS_CLIENT = redis.from_url(url, socket_connect_timeout=2, socket_timeout=2, decode_responses=True)
+        _REDIS_CLIENT.ping()
+        logger.info("replay_guard: Redis nonce store connected at %s", url)
+    except Exception as exc:
+        logger.warning("replay_guard: Redis connection failed (%s) — falling back to in-memory nonce store", exc)
+        _REDIS_CLIENT = None
+    return _REDIS_CLIENT
+
 
 class ReplayGuard:
     """Thread-safe nonce + timestamp replay protection.
+
+    Prefers Redis nonce storage (restart-safe, multi-process) when
+    REPLAY_GUARD_REDIS_URL is set; falls back to in-memory dict.
 
     Usage:
         guard = ReplayGuard()
@@ -43,7 +81,7 @@ class ReplayGuard:
     def __init__(self, max_age_seconds: int = MAX_AGE_SECONDS, nonce_ttl: int = NONCE_TTL_SECONDS):
         self._max_age = max_age_seconds
         self._nonce_ttl = nonce_ttl
-        self._seen_nonces: dict[str, float] = {}  # nonce -> seen_at_unix
+        self._seen_nonces: dict[str, float] = {}  # in-memory fallback
         self._lock = Lock()
 
     def generate_headers(self) -> tuple[str, str]:
@@ -51,6 +89,19 @@ class ReplayGuard:
         ts = str(int(time.time()))
         nonce = secrets.token_hex(16)
         return ts, nonce
+
+    def _redis_setnx_nonce(self, nonce: str) -> bool:
+        """Attempt Redis SETNX for nonce. Returns True if nonce is new (allowed)."""
+        r = _get_redis()
+        if r is None:
+            return False  # signal caller to use in-memory path
+        try:
+            key = f"{_REDIS_NONCE_PREFIX}{nonce}"
+            added = r.set(key, "1", nx=True, ex=self._nonce_ttl)
+            return added is True  # None if key already exists
+        except Exception as exc:
+            logger.warning("replay_guard Redis SETNX failed: %s — falling back to in-memory check", exc)
+            return False
 
     def validate(self, timestamp_str: str, nonce: str) -> dict:
         """Validate a request's timestamp and nonce.
@@ -75,14 +126,26 @@ class ReplayGuard:
         if ts > now + 30:
             return {"valid": False, "reason": f"request_from_future: skew={ts-now:.0f}s"}
 
-        # Nonce uniqueness check
+        # Try Redis-backed SETNX first (restart-safe)
+        r = _get_redis()
+        if r is not None:
+            try:
+                key = f"{_REDIS_NONCE_PREFIX}{nonce}"
+                added = r.set(key, "1", nx=True, ex=self._nonce_ttl)
+                if added is None:  # key already existed
+                    return {"valid": False, "reason": "replay_detected: nonce_already_seen (redis)"}
+                return {"valid": True, "age_seconds": round(age, 2), "nonce_store": "redis"}
+            except Exception as exc:
+                logger.warning("replay_guard Redis validation failed: %s — falling back to in-memory", exc)
+
+        # In-memory fallback
         with self._lock:
             self._cleanup_expired()
             if nonce in self._seen_nonces:
-                return {"valid": False, "reason": "replay_detected: nonce_already_seen"}
+                return {"valid": False, "reason": "replay_detected: nonce_already_seen (in-memory)"}
             self._seen_nonces[nonce] = now
 
-        return {"valid": True, "age_seconds": round(age, 2)}
+        return {"valid": True, "age_seconds": round(age, 2), "nonce_store": "memory"}
 
     def _cleanup_expired(self) -> None:
         """Remove nonces older than TTL (called under lock)."""
@@ -151,6 +214,9 @@ def verify_hmac_signature(
 # Singleton for module-level use
 _GLOBAL_GUARD = ReplayGuard()
 
-# Alias for backward-compat with algoclaw/cli.py security posture check.
-# The actual nonce store lives inside _GLOBAL_GUARD._seen_nonces.
-_NONCE_STORE = _GLOBAL_GUARD._seen_nonces
+# BUG-20 FIX: Previously _NONCE_STORE was a module-level alias that exposed
+# the live internal dict, allowing any importer to mutate it (inject or clear
+# nonces) at runtime. Removed the mutable alias. Code that previously checked
+# `len(replay_guard._NONCE_STORE)` for diagnostics should use:
+#   replay_guard._GLOBAL_GUARD.nonce_count
+# or add a read-only diagnostic endpoint instead of importing internal state.

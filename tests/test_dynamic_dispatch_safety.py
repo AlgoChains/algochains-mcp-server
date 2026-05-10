@@ -104,6 +104,12 @@ def test_get_tool_details_unknown_tool():
     "numerai_upload_predictions",
     "place_kalshi_order",
     "propagate_trade_signal",
+    # BUG-07 FIX: These Kalshi execution tools were mis-tiered as WRITE_LOCAL via
+    # the `run_` prefix rule, allowing autonomous agents to place real orders.
+    # Now explicitly ORDER_EXEC — verify gating is enforced.
+    "run_safe_compounder",
+    "run_kalshi_full_pipeline",
+    "run_kalshi_strategy_order",
 ])
 def test_execute_dynamic_tool_blocks_order_exec_without_token(tool_name, monkeypatch):
     """execute_dynamic_tool must block ORDER_EXEC/DESTRUCTIVE tools without owner_token.
@@ -166,6 +172,26 @@ def test_execute_dynamic_tool_blocks_with_wrong_token(monkeypatch):
         assert data.get("blocked") is True, f"Expected blocked=True, got: {data}"
     except json.JSONDecodeError:
         assert "blocked" in text.lower() or "authorization" in text.lower()
+
+
+def test_execute_dynamic_tool_requires_confirm_with_correct_token(monkeypatch):
+    """Owner token alone is not enough for dynamic ORDER_EXEC dispatch."""
+    secret = "correct-secret-value"
+    monkeypatch.setenv("OWNER_API_TOKEN", secret)
+    import algochains_mcp.server as srv
+
+    async def _call():
+        return await srv.call_tool(
+            "execute_dynamic_tool",
+            {"tool_name": "place_order", "arguments": {"owner_token": secret}},
+        )
+
+    result = asyncio.run(_call())
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    import json
+    data = json.loads(text)
+    assert data.get("blocked") is True
+    assert data.get("required_arg") == "confirm=true"
 
 
 def test_execute_dynamic_tool_allows_with_correct_token(monkeypatch):

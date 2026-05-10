@@ -1,4 +1,9 @@
-"""Multi-agent orchestration — spawn, manage, and coordinate trading agents."""
+"""Non-production multi-agent orchestration scaffolding.
+
+These helpers intentionally do not control live trading agents. They are
+record-only scaffolds until a future project wires them through shared MCP tool
+policy, durable state, and owner-gated execution paths.
+"""
 from __future__ import annotations
 
 import uuid
@@ -7,7 +12,7 @@ from typing import Any
 
 
 class AgentOrchestrator:
-    """Spawn, manage, and coordinate trading agents."""
+    """Spawn and inspect non-production agent records."""
 
     def __init__(self) -> None:
         self._agents: dict[str, dict] = {}
@@ -21,7 +26,10 @@ class AgentOrchestrator:
                 "role": role,
                 "strategy": strategy,
                 "capital_allocation": capital_allocation,
-                "status": "running",
+                "status": "record_only",
+                "production_enabled": False,
+                "authority_level": "agent_memory",
+                "warning": "agent_swarm is non-production and cannot execute trades",
                 "tasks_completed": 0,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }

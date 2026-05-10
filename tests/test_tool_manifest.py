@@ -20,14 +20,35 @@ def test_manifest_shape():
     names = {t["name"]: t for t in m["tools"]}
     assert names["place_order"]["implementation_status"] == "full"
     assert names["place_order"]["tier1"] is True
+    assert names["place_order"]["danger_label"] == "ORDER_EXEC"
+    assert names["place_order"]["approval"]["canonical_arg"] == "confirm=true"
+    assert names["place_order"]["transports"]["stdio_direct"] is True
     assert names["massive_call_api"]["implementation_status"] == "full"
+    assert names["massive_call_api"]["danger_label"] == "READ_ONLY"
     assert names["unknown_v99_tool"]["implementation_status"] == "stub"
+    assert names["unknown_v99_tool"]["tier_source"] == "default"
 
 
 def test_skip_flag_reported(monkeypatch):
     monkeypatch.setenv("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", "1")
     m = build_manifest(tool_names=["x"], tier1_names=set(), tool_mode="full")
     assert m["marketplace_key_check"] == "skipped"
+
+
+def test_live_manifest_has_policy_contract_fields():
+    import algochains_mcp.server as srv
+
+    m = build_manifest(
+        tool_names=[t.name for t in srv.TOOLS],
+        tier1_names=set(srv.TIER1_TOOL_NAMES),
+        tool_mode="smart",
+    )
+    missing = []
+    for tool in m["tools"]:
+        for key in ("danger_tier", "danger_label", "tier_source", "approval", "transports", "visibility"):
+            if key not in tool:
+                missing.append((tool["name"], key))
+    assert not missing
 
 
 if __name__ == "__main__":

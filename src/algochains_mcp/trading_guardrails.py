@@ -109,6 +109,7 @@ class GuardrailReason(Enum):
     AI_LOOP_DETECTED = "ai_loop_detected"
     TOOL_RATE_LIMIT = "tool_rate_limit"
     MANUAL_TRIP = "manual_trip"
+    STATE_FILE_CORRUPT = "state_file_corrupt"
 
 
 class GuardrailTripped(Exception):
@@ -306,7 +307,20 @@ class TradingGuardrails:
                     self._cb[broker] = status
                 logger.info("Guardrail state restored from %s", _STATE_PATH)
         except Exception as exc:
-            logger.warning("Could not restore guardrail state: %s", exc)
+            logger.error(
+                "Guardrail circuit-breaker state COULD NOT be restored from %s: %s — "
+                "all broker circuit breakers reset to CLOSED. "
+                "If a broker CB was OPEN before restart, trading may resume before cooldown expires. "
+                "Verify broker state and re-trip manually if needed.",
+                _STATE_PATH, exc,
+            )
+            trip_message = (
+                f"STATE_FILE_CORRUPT: circuit breaker state could not be restored from "
+                f"{_STATE_PATH} ({exc}). Operator must manually clear this breaker via "
+                f"reset_circuit_breaker() after verifying broker state."
+            )
+            for _broker in ["tradovate", "alpaca", "oanda", "rithmic"]:
+                self._trip(_broker, GuardrailReason.STATE_FILE_CORRUPT, trip_message)
 
     def _save_state(self) -> None:
         try:

@@ -148,6 +148,14 @@ _TOOL_TIERS: dict[str, int] = {
     "list_polymarket_markets": TIER_READ_ONLY,
     "get_kalshi_settlements": TIER_READ_ONLY,
     "place_kalshi_order": TIER_ORDER_EXEC,
+    # BUG-07 FIX: run_safe_compounder and run_kalshi_full_pipeline call
+    # kalshi_signed_post (live Kalshi orders) when execute=true + confirmed=true.
+    # The `run_` prefix rule mis-tiered them as WRITE_LOCAL, allowing autonomous
+    # agents (capped at WRITE_LOCAL) to trigger real money orders without
+    # owner_token authorization. Explicit ORDER_EXEC overrides the prefix rule.
+    "run_safe_compounder": TIER_ORDER_EXEC,
+    "run_kalshi_full_pipeline": TIER_ORDER_EXEC,
+    "run_kalshi_strategy_order": TIER_ORDER_EXEC,
     # V22.9 — PAI Integration
     "get_algochains_telos": TIER_READ_ONLY,
     "update_algochains_telos": TIER_WRITE_LOCAL,

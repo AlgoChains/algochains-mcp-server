@@ -1,15 +1,15 @@
 """
-AlgoChains MCP Server v20.0 — institutional-grade trading platform.
+AlgoChains MCP Server v22.4 — institutional-grade trading platform.
 
-227 tools across 14 domains (V8–V20), with smart tiered exposure:
+478 tools across the full owner surface, with smart tiered exposure:
 
   SMART MODE (default, ALGOCHAINS_TOOL_MODE=smart):
-    38 Tier 1 tools exposed directly — trading, data, strategy, intent, meta-tools.
-    189 Tier 2 tools discoverable via discover_tools → execute_dynamic_tool.
+    148 curated tools exposed directly — trading, data, strategy, intent, meta-tools.
+    Remaining tools discoverable via discover_tools → execute_dynamic_tool.
     ~4K tokens vs ~40K+. Works within Cursor (80-tool limit) and Windsurf.
 
   FULL MODE (ALGOCHAINS_TOOL_MODE=full):
-    All 227 tools exposed. For clients with their own lazy loading (Claude Code).
+    All 478 tools exposed. For clients with their own lazy loading (Claude Code).
 
 V20.0 additions: Account Protection (13 pre-trade guards), Builder SDK (3.09B+ row
 data warehouse, 7-gate MCPT validation pipeline), memory-safe architecture (OOM
@@ -24,7 +24,7 @@ V17.1 additions (MCP 2025-06-18 spec compliance):
 Research basis:
   - arXiv:2603.20313 — 99.6% token reduction with semantic tool discovery
   - Claude Code MCP Tool Search — 95% context savings via lazy loading
-  - Cursor hard limit: 80 tools. This server exposes 21 in smart mode.
+  - Cursor hard limit varies by client; smart mode keeps the direct surface bounded.
 
 Start with:  algochains-mcp  (or python -m algochains_mcp.server)
 """
@@ -215,11 +215,15 @@ except ImportError:
         "trading_guardrails not available — hard-coded circuit breakers are INACTIVE. "
         "Deploy trading_guardrails.py to activate V22 safety limits."
     )
+    if os.getenv("ALGOCHAINS_FAIL_CLOSED_NO_GUARDRAILS", "0") == "1":
+        raise
 
 # ─── V20 Memory Safety — import first so we can monitor from startup ─────────
 # Memory safety is lightweight and has no heavy sub-deps.
 from .memory_safety import get_memory_monitor, MemoryMonitor
 from .tool_manifest import build_manifest
+from .tool_policy import evaluate_dynamic_tool, evaluate_stdio_direct_tool
+from .otel_tracing import redacted_argument_hash, trace_span
 
 # ─── V20 Account Protection — lightweight, no ML deps ───────────────────────
 from .account_protection.engine import AccountProtectionEngine, ProtectionConfig
@@ -2891,8 +2895,8 @@ TOOLS = [
     Tool(name="get_tool_details", description="Get full details for a specific tool including its input schema, parameter types, and usage examples. Call after discover_tools to get the full spec before execution.",
          inputSchema={"type": "object", "properties": {"tool_name": {"type": "string", "description": "Exact tool name from discover_tools results"}}, "required": ["tool_name"]},
          annotations=ANNOT_READ_ONLY),
-    Tool(name="execute_dynamic_tool", description="Execute any discovered tool by name with arguments. Use discover_tools first, then get_tool_details for the schema, then call this to execute.",
-         inputSchema={"type": "object", "properties": {"tool_name": {"type": "string", "description": "Tool name to execute"}, "arguments": {"type": "object", "description": "Arguments matching the tool's inputSchema"}}, "required": ["tool_name", "arguments"]},
+    Tool(name="execute_dynamic_tool", description="Execute any discovered tool by name with arguments. Use discover_tools first, then get_tool_details for the schema, then call this to execute. ORDER_EXEC and DESTRUCTIVE tools require owner_token and confirm=true inside arguments.",
+         inputSchema={"type": "object", "properties": {"tool_name": {"type": "string", "description": "Tool name to execute"}, "arguments": {"type": "object", "description": "Arguments matching the tool's inputSchema. For ORDER_EXEC+ tools include owner_token and confirm=true."}}, "required": ["tool_name", "arguments"]},
          annotations=ANNOT_TRADE_EXEC),
     Tool(name="mcp_tool_manifest", description="Return JSON manifest of all registered MCP tools with implementation_status (full|partial|stub), required env vars, and Tier-1 flags. Use for CI, Onyx indexing, and honest agent planning — call before relying on V8-V20 tools.",
          inputSchema={"type": "object", "properties": {"include_tool_details": {"type": "boolean", "default": True, "description": "If false, return summary counts only (smaller payload)"}}, "required": []},
@@ -4417,10 +4421,9 @@ TIER1_TOOL_NAMES = {
     "massive_call_api",
     "massive_query_data",
     "massive_run_pipeline",
-    # Core trading
-    "place_order",
-    "cancel_order",
-    "close_position",
+    # Core trading diagnostics only. Direct order tools are intentionally not
+    # listed in smart mode; use full mode or execute_dynamic_tool with owner
+    # authorization and confirmation.
     "get_account",
     "get_positions",
     "get_orders",
@@ -4460,7 +4463,6 @@ TIER1_TOOL_NAMES = {
     "get_kalshi_settlements",
     "record_prediction_market_bot_metric",
     "get_prediction_market_bot_metrics",
-    "propagate_trade_signal",
     "check_propagation_health",
     "test_signal_propagation",
     "run_guardrail",
@@ -4481,6 +4483,8 @@ TIER1_TOOL_NAMES = {
     "onyx_ask",
     "onyx_search",
     "get_bot_dashboard",
+    "get_bot_health",
+    "get_quant_regime_state",
     "subscribe_bot_metrics",
     "get_funding_rate",
     "get_staking_yields",
@@ -4593,7 +4597,20 @@ TIER1_TOOL_NAMES = {
 def _annotate_tools(tools: list[Tool]) -> list[Tool]:
     """Apply MCP 2025-06-18 Tool Behavior Annotations to all tools."""
     annotated = []
+    try:
+        from .tool_danger_tiers import get_tool_tier as _tier_for_annotation, TIER_ORDER_EXEC as _annot_order_exec
+    except Exception:
+        _tier_for_annotation = None
+        _annot_order_exec = 2
     for t in tools:
+        if _tier_for_annotation is not None and _tier_for_annotation(t.name) >= _annot_order_exec:
+            annotated.append(Tool(
+                name=t.name,
+                description=t.description,
+                inputSchema=t.inputSchema,
+                annotations=ANNOT_TRADE_EXEC,
+            ))
+            continue
         if t.annotations is not None:
             annotated.append(t)
         elif t.name in _TOOL_ANNOTATION_MAP:
@@ -4617,10 +4634,28 @@ TOOLS_ANNOTATED = _annotate_tools(TOOLS)
 TOOLS_TIER1 = [t for t in TOOLS_ANNOTATED if t.name in TIER1_TOOL_NAMES]
 
 
+_FULL_MODE_WARNED: bool = False  # emit once per process, not every list_tools call
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
+    global _FULL_MODE_WARNED
     cfg = _config or load_config()
     if cfg.tool_mode == "full":
+        # ARCH-RISK: ALGOCHAINS_TOOL_MODE=full is DEVELOPMENT/DEBUG ONLY.
+        # In smart mode, ORDER_EXEC+ tools are only reachable via execute_dynamic_tool
+        # which enforces owner_token + confirm=true at the envelope level.
+        # In full mode, all tools appear directly. The evaluate_stdio_direct_tool
+        # function now applies the ORDER_EXEC gate regardless (parity fix), but
+        # operators should not run production bots with full mode enabled.
+        if not _FULL_MODE_WARNED:
+            _FULL_MODE_WARNED = True
+            logger.warning(
+                "ALGOCHAINS_TOOL_MODE=full — DEVELOPMENT MODE ACTIVE. "
+                "All 338 tools are exposed for direct stdio call. "
+                "ORDER_EXEC+ tools still require owner_token + ALGOCHAINS_REQUIRE_CONFIRMATION=0. "
+                "Do NOT run live production bots with ALGOCHAINS_TOOL_MODE=full. "
+                "Set ALGOCHAINS_TOOL_MODE=smart for production (default)."
+            )
         return TOOLS_ANNOTATED
     # Smart mode: expose only Tier 1 (21 tools ≈ 4K tokens vs 40K+ for all)
     return TOOLS_TIER1
@@ -4644,6 +4679,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 tlog.log_call(name, arguments, error=str(_gt), duration_ms=0)
                 return _text({
                     "error_type": "GuardrailTripped",
+                    "blocked": True,
                     "reason": _gt.reason.value,
                     "message": str(_gt),
                     "cooldown_sec": _gt.cooldown_sec,
@@ -4652,6 +4688,29 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         # ── 1. Sanitize inputs ───────────────────────────────────
         arguments = validate_arguments(name, arguments)
+
+        # Smart mode is now an execution boundary for direct tool calls, not
+        # just a list_tools token-saving filter. Hidden tools remain reachable
+        # through execute_dynamic_tool, where danger-tier gating is centralized.
+        cfg = _config or load_config()
+        # ARCH-RISK FIX: Pass owner_token + require_confirmation so that
+        # evaluate_stdio_direct_tool can enforce ORDER_EXEC gating in full mode
+        # (stdio/full parity). Previously full mode had no such gate.
+        _stdio_owner_token = arguments.get("owner_token") if isinstance(arguments, dict) else None
+        _stdio_require_confirm = os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1"
+        direct_decision = evaluate_stdio_direct_tool(
+            name,
+            tool_mode=cfg.tool_mode,
+            tier1_names=set(TIER1_TOOL_NAMES),
+            owner_token=_stdio_owner_token,
+            require_confirmation=_stdio_require_confirm,
+        )
+        if not direct_decision.allow:
+            payload = direct_decision.as_error()
+            payload["error_type"] = "SmartModeToolUnavailable"
+            payload["tool_mode"] = cfg.tool_mode
+            payload["message"] = direct_decision.reason
+            return _text(payload)
 
         # ── 1b. Replay guard for signed destructive requests ─────
         # When a caller includes X-Timestamp + X-Nonce headers (passed as
@@ -4726,7 +4785,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 )
 
         # ── 5. Execute with timeout ──────────────────────────────
-        result = await _guarded_dispatch()
+        with trace_span(
+            "mcp.tool.call",
+            {
+                "tool.name": name,
+                "mcp.server": "algochains",
+                "mcp.transport": "stdio",
+                "algochains.danger_tier": direct_decision.danger_tier,
+                "algochains.danger_label": direct_decision.danger_label,
+                "algochains.tier_source": direct_decision.tier_source,
+                "algochains.arguments_hash": redacted_argument_hash(arguments),
+            },
+        ) as span:
+            result = await _guarded_dispatch()
+            if span is not None:
+                span.set_attribute("algochains.tool.success", True)
 
         # ── 6. Response size guard ───────────────────────────────
         for content in result:
@@ -4824,7 +4897,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Elicitation (interactive popup) is not supported by this MCP client.
             # ALGOCHAINS_REQUIRE_CONFIRMATION=1 blocks execution in this case (recommended for production).
             # Default: fall through and rely on V22 Guardrails as the safety layer.
-            if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0") == "1":
+            if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1":
                 logger.warning("place_order BLOCKED — elicitation unavailable and ALGOCHAINS_REQUIRE_CONFIRMATION=1")
                 return _text({
                     "status": "blocked",
@@ -4854,7 +4927,64 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 # Fetch live account data for financial limit checks
                 _daily_pnl = 0.0
                 _drawdown_pct = 0.0
+                # BUG-05 FIX: Previously _consecutive_losses was hardcoded to 0,
+                # permanently disabling the loss-streak halt gate in check_all().
+                # Authoritative source: fills API (real-time, from broker).
+                # Reconciliation fallback: signal_health.json (written by bot, may have
+                #   1-bar latency but survives fills API outages).
+                # If both fail: warn and assume 0 (gate weakened, logged explicitly).
                 _consecutive_losses = 0
+                _fills_source_ok = False
+                _fills_api_err_str: str = ""  # persist outside except block (Python 3 deletes except-vars)
+                try:
+                    _fills = await conn.get_fills()
+                    if _fills:
+                        # Scan last 20 fills newest-first for trailing loss streak
+                        for _f in reversed(_fills[-20:]):
+                            _f_pnl = getattr(_f, "realized_pnl", None) or getattr(_f, "pnl", None)
+                            if _f_pnl is None:
+                                break  # fill has no P&L — can't continue streak
+                            if float(_f_pnl) < 0:
+                                _consecutive_losses += 1
+                            else:
+                                break  # winner stops streak
+                        _fills_source_ok = True
+                except Exception as _fills_err:
+                    _fills_api_err_str = str(_fills_err)  # capture before Python 3 deletes the var
+                    logger.warning(
+                        "place_order guardrail: fills API unavailable for consecutive_losses (%s) — "
+                        "trying signal_health.json reconciliation fallback",
+                        _fills_api_err_str,
+                    )
+
+                # Reconciliation: if fills API returned empty or failed, try signal_health.json
+                # (written by bot every candle). This is 1-bar behind at most, but better than 0.
+                if not _fills_source_ok or _consecutive_losses == 0:
+                    try:
+                        import json as _cljson
+                        from pathlib import Path as _clPath
+                        _sh_path = _clPath(__file__).parents[4] / "state" / "signal_health.json"
+                        if _sh_path.exists():
+                            _sh = _cljson.loads(_sh_path.read_text())
+                            # signal_health.json stores per-bot consecutive_losses if available
+                            for _bot_data in _sh.values():
+                                if isinstance(_bot_data, dict):
+                                    _sh_streak = _bot_data.get("consecutive_losses", 0)
+                                    if isinstance(_sh_streak, int) and _sh_streak > _consecutive_losses:
+                                        _consecutive_losses = _sh_streak
+                                        if not _fills_source_ok:
+                                            logger.info(
+                                                "place_order guardrail: consecutive_losses=%d from signal_health.json reconciliation",
+                                                _consecutive_losses,
+                                            )
+                    except Exception as _sh_err:
+                        if not _fills_source_ok:
+                            logger.warning(
+                                "place_order guardrail: both fills API and signal_health.json failed — "
+                                "consecutive_losses assumed 0, loss-streak halt gate WEAKENED. "
+                                "Errors: fills=%s, state=%s",
+                                _fills_api_err_str, _sh_err,
+                            )
 
                 # ── Live VIX fetch — VIX > 35 gate REQUIRES a real value ──────
                 # Previously hardcoded to 0.0 which silently disabled the VIX gate.
@@ -4872,8 +5002,23 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 except Exception as _vix_err:
                     # If VIX fetch fails, fall back to env override so the gate
                     # can still trip when manually set (e.g. CURRENT_VIX=40).
-                    _vix = float(os.getenv("CURRENT_VIX", "0"))
-                    logger.debug("VIX fetch failed (%s), using env fallback: %.2f", _vix_err, _vix)
+                    _env_vix_str = os.getenv("CURRENT_VIX", "")
+                    _vix = float(_env_vix_str) if _env_vix_str else 0.0
+                    # BUG (P1-E) FIX: Log WARNING (not debug) when VIX is unknown;
+                    # a silent debug message meant operators couldn't see when the
+                    # VIX kill-switch was weakened during a CBOE outage.
+                    if _vix == 0.0:
+                        logger.warning(
+                            "place_order VIX fetch failed AND CURRENT_VIX env not set — "
+                            "VIX gate will be SKIPPED for this order. "
+                            "Set CURRENT_VIX or ensure CBOE feed is healthy. Error: %s",
+                            _vix_err,
+                        )
+                    else:
+                        logger.warning(
+                            "place_order VIX fetch failed, using CURRENT_VIX=%s from env. Error: %s",
+                            _vix, _vix_err,
+                        )
 
                 # ── Live notional — NotionalValueGuard REQUIRES a real value ──
                 # Previously hardcoded to 0.0, disabling notional size checks.
@@ -4956,9 +5101,42 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(result_dict)
 
     elif name == "cancel_order":
-        conn = _require_broker(registry, arguments["broker"])
-        ok = await conn.cancel_order(arguments["order_id"])
-        result_dict = {"cancelled": ok, "order_id": arguments["order_id"]}
+        # BUG-02 FIX: cancel_order previously had zero confirmation machinery despite
+        # being Tier-2. Cancelling a working bracket leg mid-trade is how orphan
+        # positions happen. Now mirrors place_order's elicitation + env gate pattern.
+        order_id = arguments["order_id"]
+        _cancel_broker = arguments["broker"]
+        try:
+            ctx = app.request_context
+            confirm = await ctx.session.elicit_form(
+                message=f"Confirm: Cancel order {order_id} on {_cancel_broker}?",
+                requestedSchema={
+                    "type": "object",
+                    "properties": {
+                        "confirmed": {"type": "boolean", "title": "Cancel this order?", "default": True},
+                    },
+                },
+            )
+            if confirm.action != "accept" or not (confirm.content or {}).get("confirmed", True):
+                return _text({"status": "cancelled", "reason": "User declined cancel confirmation", "order_id": order_id})
+        except (LookupError, AttributeError, NotImplementedError) as _elicit_err:
+            if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1":
+                logger.warning("cancel_order BLOCKED — elicitation unavailable and ALGOCHAINS_REQUIRE_CONFIRMATION=1")
+                return _text({
+                    "status": "blocked",
+                    "reason": "Order cancel confirmation required but client does not support interactive prompts. "
+                              "Set ALGOCHAINS_REQUIRE_CONFIRMATION=0 to allow unconfirmed cancels, "
+                              "or use a client that supports MCP elicitation.",
+                    "order_id": order_id,
+                })
+            logger.warning(
+                "cancel_order executing WITHOUT interactive confirmation (client lacks elicitation support): "
+                "order_id=%s on %s — set ALGOCHAINS_REQUIRE_CONFIRMATION=1 to block this",
+                order_id, _cancel_broker,
+            )
+        conn = _require_broker(registry, _cancel_broker)
+        ok = await conn.cancel_order(order_id)
+        result_dict = {"cancelled": ok, "order_id": order_id}
         _ctid = arguments.get("client_trace_id")
         if _ctid:
             result_dict["client_trace_id"] = _ctid
@@ -4982,7 +5160,23 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             if confirm.action != "accept" or not (confirm.content or {}).get("confirmed", True):
                 return _text({"status": "cancelled", "reason": "User declined close confirmation"})
         except (LookupError, AttributeError, NotImplementedError) as _elicit_err:
-            logger.debug("Elicitation not available, closing position directly: %s", _elicit_err)
+            # BUG-01 FIX: Previously this fell through to conn.close_position() with
+            # only a debug log — no env gate. Unlike place_order, there was no
+            # ALGOCHAINS_REQUIRE_CONFIRMATION check. Now mirrors place_order pattern.
+            if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1":
+                logger.warning("close_position BLOCKED — elicitation unavailable and ALGOCHAINS_REQUIRE_CONFIRMATION=1")
+                return _text({
+                    "status": "blocked",
+                    "reason": "Position close confirmation required but client does not support interactive prompts. "
+                              "Set ALGOCHAINS_REQUIRE_CONFIRMATION=0 to allow unconfirmed closes, "
+                              "or use a client that supports MCP elicitation.",
+                    "position": {"symbol": symbol, "broker": broker},
+                })
+            logger.warning(
+                "close_position executing WITHOUT interactive confirmation (client lacks elicitation support): "
+                "%s on %s — set ALGOCHAINS_REQUIRE_CONFIRMATION=1 to block this",
+                symbol, broker,
+            )
 
         conn = _require_broker(registry, arguments["broker"])
         order = await conn.close_position(arguments["symbol"])
@@ -4993,7 +5187,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(result_dict)
 
     elif name == "close_all_positions":
-        if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0") == "1":
+        if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1":
             logger.warning(
                 "close_all_positions BLOCKED — ALGOCHAINS_REQUIRE_CONFIRMATION=1 "
                 "and this client does not support interactive prompts"
@@ -5964,7 +6158,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(await eng.get_audit_trail(limit=arguments.get("limit", 50), action_filter=arguments.get("action_filter")))
 
     elif name == "activate_kill_switch":
-        if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0") == "1":
+        if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1":
             logger.warning("activate_kill_switch BLOCKED — ALGOCHAINS_REQUIRE_CONFIRMATION=1")
             return _text({
                 "status": "blocked",
@@ -6133,6 +6327,43 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(await eng.validate_order(order=arguments["order"], account_id=arguments.get("account_id")))
 
     elif name == "submit_institutional_order":
+        # BUG (P1-G) FIX: submit_institutional_order previously skipped TradingGuardrails
+        # entirely — any compliance_override=True call could bypass all financial safety
+        # gates (VIX, daily-loss, drawdown, velocity). Now wires the same guardrail
+        # pre-flight as place_order for VIX, daily-loss, and drawdown checks.
+        if _GUARDRAILS_AVAILABLE and not arguments.get("compliance_override", False):
+            try:
+                _g_inst = get_guardrails()
+                _inst_order = arguments.get("order", {})
+                _inst_symbol = _inst_order.get("symbol", "UNKNOWN")
+                # Extract broker name safely: account_id may be "broker:account_id",
+                # a plain account ID, or None. Only accept known broker names.
+                _KNOWN_BROKERS = {"tradovate", "alpaca", "oanda", "rithmic"}
+                _raw_account = arguments.get("account_id") or ""
+                _extracted = _raw_account.split(":")[0].lower() if ":" in _raw_account else _raw_account.lower()
+                _inst_broker = _extracted if _extracted in _KNOWN_BROKERS else "tradovate"
+                _inst_qty = float(_inst_order.get("qty", _inst_order.get("quantity", 1)))
+                _inst_vix = float(os.getenv("CURRENT_VIX", "0") or "0")
+                _inst_pnl = 0.0
+                _g_inst.check_all(
+                    broker=_inst_broker,
+                    symbol=_inst_symbol,
+                    qty_contracts=_inst_qty,
+                    current_daily_pnl=_inst_pnl,
+                    current_drawdown_pct=0.0,
+                    consecutive_losses=0,
+                    vix=_inst_vix,
+                    total_open_notional=0.0,
+                )
+            except GuardrailTripped as _gt_inst:
+                logger.warning("submit_institutional_order BLOCKED by guardrail: %s", _gt_inst)
+                return _text({
+                    "error_type": "GuardrailTripped",
+                    "reason": _gt_inst.reason.value if hasattr(_gt_inst, "reason") else str(_gt_inst),
+                    "blocked_by": "submit_institutional_order guardrail pre-flight",
+                })
+            except Exception as _g_inst_err:
+                logger.warning("submit_institutional_order guardrail check failed: %s", _g_inst_err)
         eng = _get_inst_order_mgr()
         return _text(await eng.submit_order(order=arguments["order"], account_id=arguments.get("account_id"), compliance_override=arguments.get("compliance_override", False)))
 
@@ -6614,27 +6845,23 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "execute_dynamic_tool":
         inner_name = arguments["tool_name"]
         inner_args = arguments.get("arguments", {})
-        # V2-BUG-21 / AUDIT-V2 FIX: gate ALL ORDER_EXEC and DESTRUCTIVE tier tools,
-        # not just a hardcoded denylist.  The denylist was incomplete — it missed
-        # place_order, cancel_order, close_position, close_all_positions, and others
-        # classified as TIER_ORDER_EXEC by tool_danger_tiers.
+        # Gate ALL ORDER_EXEC and DESTRUCTIVE tier tools through the shared policy,
+        # not a hardcoded denylist or transport-specific approval vocabulary.
         try:
-            from .tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
-            _inner_tier = get_tool_tier(inner_name)
+            decision = evaluate_dynamic_tool(
+                inner_name,
+                inner_args,
+                expected_owner_token=os.environ.get("OWNER_API_TOKEN", ""),
+            )
         except ImportError:
-            _inner_tier = 0  # tier module absent — fall through to dispatch
+            return _text({
+                "error": "execute_dynamic_tool: danger-tier module unavailable; execution blocked for safety.",
+                "blocked": True,
+                "tool": inner_name,
+            })
 
-        if _inner_tier >= TIER_ORDER_EXEC:
-            _expected_owner = os.environ.get("OWNER_API_TOKEN", "")
-            _provided_token = inner_args.get("owner_token", "")
-            if not _expected_owner or _provided_token != _expected_owner:
-                return _text({
-                    "error": f"execute_dynamic_tool: '{inner_name}' requires ORDER_EXEC authorization. "
-                             "Pass a matching owner_token inside the 'arguments' payload.",
-                    "blocked": True,
-                    "tier": "ORDER_EXEC",
-                    "tool": inner_name,
-                })
+        if not decision.allow:
+            return _text(decision.as_error())
         return await _dispatch_tool(inner_name, inner_args, registry)
 
     # ── V18: Intent-Based Trading ─────────────────────────────
@@ -8469,7 +8696,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "flatten_bot_position":
-        if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0") == "1":
+        if os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1":
             logger.warning("flatten_bot_position BLOCKED — ALGOCHAINS_REQUIRE_CONFIRMATION=1")
             return _text({
                 "status": "blocked",
@@ -9052,24 +9279,38 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_quant_regime_state":
         import json as _json
         from pathlib import Path as _Path
+        from datetime import datetime as _dt, timezone as _tz
         bot_filter = args.get("bot_id")
-        ct_root = _Path(os.getenv(
-            "ALGOCHAINS_CONTROL_TOWER",
-            str(_Path(__file__).resolve().parents[3] / "algochains-control-tower"),
-        ))
+        ct_root = _Path(_default_control_tower())
         snapshot_path = ct_root / "state" / "quant_shadow_snapshot.json"
         snapshot = {}
         snapshot_error = None
+        snapshot_status = "missing"
         try:
             if snapshot_path.exists():
                 snapshot = _json.loads(snapshot_path.read_text())
+                snapshot_status = "ok"
+                generated_at = snapshot.get("generated_at") if isinstance(snapshot, dict) else None
+                stale_after = float(snapshot.get("stale_after_sec", 360)) if isinstance(snapshot, dict) else 360.0
+                try:
+                    gen_ts = _dt.fromisoformat(str(generated_at).replace("Z", "+00:00"))
+                    if gen_ts.tzinfo is None:
+                        gen_ts = gen_ts.replace(tzinfo=_tz.utc)
+                    if (_dt.now(_tz.utc) - gen_ts).total_seconds() > stale_after:
+                        snapshot_status = "stale"
+                except Exception:
+                    snapshot_status = "stale"
             else:
                 snapshot_error = "state/quant_shadow_snapshot.json not found"
         except Exception as exc:
             snapshot_error = str(exc)
+            snapshot_status = "unreadable"
 
         metrics = {}
         summary = []
+        metrics_status = "unavailable"
+        summary_status = "unavailable"
+        summary_error = None
         try:
             from .marketplace.supabase_tools import _get_sb_client as _sb_client
             sb = _sb_client()
@@ -9084,23 +9325,50 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 res = q.execute()
                 for row in (res.data or []):
                     metrics[row.get("bot_id")] = row
+                metrics_status = "ok"
+            else:
+                metrics_status = "unavailable"
+            sb_service = _sb_client(use_service_role=True)
+            if sb_service is not None:
                 try:
-                    view_res = sb.table("v_quant_model_shadow_summary").select("*").execute()
+                    view_res = sb_service.table("v_quant_model_shadow_summary").select("*").execute()
                     summary = view_res.data or []
-                except Exception:
+                    summary_status = "ok"
+                except Exception as exc:
+                    msg = str(exc)
+                    summary_error = msg
+                    if "permission" in msg.lower() or "permission denied" in msg.lower() or "42501" in msg:
+                        summary_status = "permission_denied"
+                    elif "does not exist" in msg.lower() or "schema" in msg.lower() or "column" in msg.lower():
+                        summary_status = "schema_missing"
+                    else:
+                        summary_status = "error"
                     summary = []
+            else:
+                summary_status = "unavailable"
         except Exception as exc:
             metrics = {"error": str(exc)}
+            msg = str(exc)
+            if "does not exist" in msg.lower() or "schema" in msg.lower() or "column" in msg.lower():
+                metrics_status = "schema_missing"
+            elif "permission" in msg.lower() or "permission denied" in msg.lower() or "42501" in msg:
+                metrics_status = "permission_denied"
+            else:
+                metrics_status = "error"
 
         bots = snapshot.get("bots", {}) if isinstance(snapshot, dict) else {}
         if bot_filter and isinstance(bots, dict):
-            bots = {bot_filter: bots.get(bot_filter)}
+            bots = {bot_filter: bots[bot_filter]} if bot_filter in bots else {}
         return _text({
             "source": "snapshot_plus_supabase_metrics",
             "snapshot_generated_at": snapshot.get("generated_at") if isinstance(snapshot, dict) else None,
+            "snapshot_status": snapshot_status,
             "snapshot_error": snapshot_error,
             "bots": bots,
+            "bot_metrics_live_status": metrics_status,
             "bot_metrics_live": metrics,
+            "agreement_summary_7d_status": summary_status,
+            "agreement_summary_7d_error": summary_error,
             "agreement_summary_7d": summary,
             "computes_models": False,
         })

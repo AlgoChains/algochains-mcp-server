@@ -1,18 +1,22 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-477%20full%20%7C%20150%20smart-green?style=flat-square)](#tool-categories)
+[![Tools](https://img.shields.io/badge/tools-478%20full%20%7C%20148%20smart-green?style=flat-square)](#tool-categories)
 [![Skills](https://img.shields.io/badge/skills-472-orange?style=flat-square)](#skills-bridge)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/version-22.2.0-blueviolet?style=flat-square)](#changelog)
+[![Version](https://img.shields.io/badge/version-22.4.0-blueviolet?style=flat-square)](#changelog)
 [![Docs](https://img.shields.io/badge/gotchas-docs%2FGOTCHAS__AND__BUGS.md-red?style=flat-square)](docs/GOTCHAS_AND_BUGS.md)
 [![Data](https://img.shields.io/badge/data-Databento%20%7C%20Massive%20S3%20%7C%20Polygon-yellow?style=flat-square)](#data-backends)
 [![Kalshi](https://img.shields.io/badge/markets-Kalshi%20prediction-teal?style=flat-square)](#kalshi-integration)
 
 ---
 
-> **Tool count audit (2026-05-03):** 477 total tools across the full owner surface. Smart mode (default) exposes 150 curated tools directly; the remaining tools are discoverable via `discover_tools` → `execute_dynamic_tool`.
+> **Tool count audit (2026-05-09):** 478 total tools across the full owner surface. Smart mode (default) exposes 148 curated tools directly; the remaining tools are discoverable via `discover_tools` → `execute_dynamic_tool`.
+>
+> **Policy contract:** auth, danger tiers, caller scopes, and `confirm=true`
+> approval checks are centralized in `src/algochains_mcp/tool_policy.py`.
+> See `docs/MCP_AUTH_AND_POLICY_MATRIX.md`.
 
 ## What Is This? (Plain English)
 

@@ -11,7 +11,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
-SCHEMA_VERSION = 1
+from .tool_danger_tiers import get_danger_tier, get_danger_tier_source, get_tier_label
+from .tool_policy import TRANSPORT_STDIO, approval_shape
+
+SCHEMA_VERSION = 2
 
 # Prefix → default status for tools not listed explicitly (first match wins)
 _PREFIX_RULES: list[tuple[str, str, list[str]]] = [
@@ -130,10 +133,16 @@ def build_manifest(
     tool_names: list[str],
     tier1_names: set[str],
     tool_mode: str,
+    http_public_tools: set[str] | None = None,
+    http_owner_tools: set[str] | None = None,
+    subscriber_tools: set[str] | None = None,
 ) -> dict[str, Any]:
     """Build the full manifest dict for JSON serialization."""
     tools_out: list[dict[str, Any]] = []
     summary = {"full": 0, "partial": 0, "stub": 0, "unknown": 0}
+    public = http_public_tools or set()
+    owner = http_owner_tools or set()
+    subscriber = subscriber_tools or set()
 
     for name in sorted(tool_names):
         entry: dict[str, Any]
@@ -161,6 +170,29 @@ def build_manifest(
                 "tier1": name in tier1_names,
                 "notes": "Default classification by prefix or stub.",
             }
+
+        tier = get_danger_tier(name)
+        entry.update(
+            {
+                "danger_tier": tier,
+                "danger_label": get_tier_label(tier),
+                "tier_source": get_danger_tier_source(name),
+                "approval": approval_shape(name, transport=TRANSPORT_STDIO),
+                "transports": {
+                    "stdio_direct": tool_mode == "full" or name in tier1_names,
+                    "stdio_dynamic": True,
+                    "http_bridge_public": name in public,
+                    "http_bridge_owner": name in owner,
+                    "subscriber": name in subscriber,
+                },
+                "visibility": {
+                    "tier1": name in tier1_names,
+                    "public_http": name in public,
+                    "owner_http": name in owner,
+                    "subscriber": name in subscriber,
+                },
+            }
+        )
 
         st = entry["implementation_status"]
         if st in summary:

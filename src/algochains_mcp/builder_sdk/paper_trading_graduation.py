@@ -384,14 +384,23 @@ class DecayWatchdog:
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            logger.warning("Could not fetch decay metrics for listing %s: %s", listing_id, exc)
+            # BUG-17 FIX: Previously returned a synthetic "healthy" decay profile
+            # (sharpe_30d=1.0, drawdown=0, signals=10) on any fetch failure.
+            # This meant a strategy with real decay would pass promotion checks
+            # whenever the decay API was unavailable. Changed to fail-closed:
+            # return a clearly degraded profile that triggers pause/block.
+            logger.warning(
+                "Could not fetch decay metrics for listing %s: %s — "
+                "returning FAIL-CLOSED decay profile to prevent promotion during data outage",
+                listing_id, exc,
+            )
             return DecayStatus(
                 strategy_name=strategy_name,
                 listing_id=listing_id,
-                sharpe_30d=1.0,  # Assume OK on error
-                max_drawdown_30d_pct=0.0,
-                consecutive_losses=0,
-                signals_14d=10,
+                sharpe_30d=-1.0,       # fail-closed: clearly below promotion threshold
+                max_drawdown_30d_pct=50.0,  # fail-closed: clearly above limit
+                consecutive_losses=999,
+                signals_14d=0,
             )
 
         status = DecayStatus(

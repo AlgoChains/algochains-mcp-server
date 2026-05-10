@@ -274,8 +274,20 @@ class CopyTradingEngine:
             try:
                 if sub.follower_broker == "alpaca":
                     await self._place_alpaca_order(symbol, side, qty)
-                sub.total_trades_copied += 1
-                logger.info("Copied trade: %s %s %.2f shares for sub %s", side, symbol, qty, sub.subscription_id[:8])
+                    # BUG-18 FIX: Previously sub.total_trades_copied incremented
+                    # regardless of whether _place_alpaca_order was called. For
+                    # non-Alpaca follower brokers (or if the broker was unrecognised),
+                    # the counter incremented and logged "Copied trade" even though
+                    # no order was placed. Now only increment after a real placement.
+                    sub.total_trades_copied += 1
+                    logger.info("Copied trade: %s %s %.2f shares for sub %s", side, symbol, qty, sub.subscription_id[:8])
+                else:
+                    logger.warning(
+                        "copy_engine: follower_broker=%r is not supported for execution — "
+                        "order NOT placed for %s %s %.2f (sub %s). "
+                        "Only 'alpaca' broker is currently wired for follower execution.",
+                        sub.follower_broker, side, symbol, qty, sub.subscription_id[:8],
+                    )
             except Exception as exc:
                 logger.error("Failed to execute copied trade %s %s %.2f: %s", side, symbol, qty, exc)
 
