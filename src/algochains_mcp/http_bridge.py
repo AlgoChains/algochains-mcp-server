@@ -25,6 +25,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path as _PathGlobal
 from typing import Any
 
 # FastAPI imports at module level so inner functions can resolve Request type
@@ -644,6 +645,339 @@ def create_fastapi_app():
         if not key_valid or subscriber is not None or not is_owner:
             raise HTTPException(status_code=401, detail="Owner API key required")
         return await handle_mcp_request("get_circuit_breaker_status", {}, is_owner=True, caller_scope=caller_scope)
+
+    # ── /v1/agent/* — multi-agent status API (owner + subscriber access) ───────
+    # These endpoints are purpose-built for external OpenClaw skill agents that
+    # need live AlgoChains system state. They read state files directly (no MCP
+    # tool call overhead) so latency is <150ms from disk.
+    # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
+    # Subscribers receive a sanitised view — no raw P&L, no account numbers.
+
+    _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
+    if not _CT:
+        # resolve relative to this file's location
+        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+
+    def _ct_path(*parts: str) -> _PathGlobal:
+        return _PathGlobal(_CT, *parts)
+
+    def _read_json_state(rel_path: str) -> dict:
+        """Read a JSON state file; return {} on any failure."""
+        try:
+            p = _ct_path(rel_path)
+            if p.exists():
+                return json.loads(p.read_text())
+        except Exception:
+            pass
+        return {}
+
+    def _tail_log(rel_path: str, lines: int = 80) -> list[str]:
+        """Return last N non-empty lines from a log file."""
+        try:
+            p = _ct_path(rel_path)
+            if not p.exists():
+                return []
+            with p.open() as fh:
+                all_lines = fh.readlines()
+            return [l.rstrip() for l in all_lines[-lines:] if l.strip()]
+        except Exception:
+            return []
+
+    def _bot_process_alive(pattern: str) -> bool:
+        """Check if a bot process matching the pattern is running (pgrep)."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", pattern],
+                capture_output=True,
+                timeout=3,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _build_status_snapshot(include_sensitive: bool) -> dict:
+        """Assemble the /v1/agent/status payload from state files."""
+        sig = _read_json_state("state/signal_health.json")
+        sentinel = _read_json_state("state/e2e_execution_sentinel.json")
+        guardian = _read_json_state("state/bracket_guardian_state.json")
+        session = _read_json_state("state/session_summary.json")
+        mnq_stats = _read_json_state("state/mnq_session_stats.json")
+        incident_dedup = _read_json_state("state/incident_dedup.json")
+
+        # Recent incidents — last 5 fingerprints with timestamps
+        recent_incidents = sorted(
+            [{"fingerprint": k, "last_ts": v} for k, v in incident_dedup.items()],
+            key=lambda x: x["last_ts"],
+            reverse=True,
+        )[:5]
+
+        bot_procs = {
+            "mnq": _bot_process_alive("FUTURES_SCALPER_UPGRADED"),
+            "cl": _bot_process_alive("CL_FUTURES_SCALPER"),
+            "mes": _bot_process_alive("mes_swing_live"),
+            "nq": _bot_process_alive("nq_swing_live"),
+        }
+
+        # E2E sentinel summary
+        sentinel_class = sentinel.get("classification") or {}
+        sentinel_summary = {
+            "outcome": sentinel_class.get("outcome"),
+            "severity": sentinel_class.get("severity"),
+            "reason": sentinel_class.get("reason"),
+            "description": sentinel_class.get("description"),
+            "ts": sentinel.get("last_check"),
+        }
+
+        # Signal health summary per bot
+        signal_summaries: dict = {}
+        for bot_key, bot_data in (sig.items() if isinstance(sig, dict) else {}.items()):
+            if not isinstance(bot_data, dict):
+                continue
+            signal_summaries[bot_key] = {
+                "last_signal_ts": bot_data.get("last_signal_time"),
+                "last_outcome": bot_data.get("last_trade_result"),
+                "confidence": bot_data.get("last_confidence"),
+                "regime": bot_data.get("last_regime"),
+            }
+
+        # Guardian summary
+        guardian_summary = {
+            "positions_count": guardian.get("positions_count", 0),
+            "working_orders_count": guardian.get("working_orders_count", 0),
+            "unknown_flat_orders": len(guardian.get("unknown_flat_orders") or []),
+            "last_check": guardian.get("last_check"),
+        }
+
+        payload: dict = {
+            "server": f"AlgoChains v{_SERVER_VERSION}",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "bots_alive": bot_procs,
+            "all_bots_running": all(bot_procs.values()),
+            "sentinel": sentinel_summary,
+            "guardian": guardian_summary,
+            "signal_health": signal_summaries,
+            "recent_incidents": recent_incidents,
+        }
+
+        if include_sensitive:
+            payload["session"] = {
+                "total_trades": session.get("total_trades"),
+                "wins": session.get("wins"),
+                "losses": session.get("losses"),
+                "session_pnl": session.get("session_pnl"),
+            }
+            payload["mnq_advisory"] = {
+                "advisory_total": mnq_stats.get("advisory_total_count"),
+                "advisory_fallback": mnq_stats.get("advisory_fallback_count"),
+                "advisory_timeout": mnq_stats.get("advisory_timeout_count"),
+            }
+
+        return payload
+
+    @app_http.get("/v1/agent/status")
+    async def agent_status(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ):
+        """
+        Live AlgoChains system status snapshot for external OpenClaw skill agents.
+
+        Returns: bot process state, E2E sentinel, bracket guardian, signal health
+        per bot, and recent incident fingerprints.
+
+        Auth: owner BRIDGE_API_KEY (full view) or subscriber key (sanitised view).
+        Latency: <150ms — reads from state files on disk.
+        """
+        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        if not key_valid:
+            raise HTTPException(status_code=401, detail="Valid API key required (owner or subscriber)")
+        snapshot = await asyncio.to_thread(_build_status_snapshot, is_owner)
+        snapshot["access_level"] = "owner" if is_owner else "subscriber"
+        return snapshot
+
+    @app_http.get("/v1/agent/signals")
+    async def agent_signals(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        limit: int = 20,
+    ):
+        """
+        Recent signal health entries across all bots.
+
+        Auth: owner BRIDGE_API_KEY or subscriber key.
+        """
+        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        if not key_valid:
+            raise HTTPException(status_code=401, detail="Valid API key required")
+        limit = max(1, min(int(limit), 100))
+
+        def _get_signals():
+            sig = _read_json_state("state/signal_health.json")
+            entries = []
+            for bot_key, bot_data in (sig.items() if isinstance(sig, dict) else {}.items()):
+                if not isinstance(bot_data, dict):
+                    continue
+                entry = {
+                    "bot": bot_key,
+                    "last_signal_ts": bot_data.get("last_signal_time"),
+                    "last_outcome": bot_data.get("last_trade_result"),
+                    "confidence": bot_data.get("last_confidence"),
+                    "regime": bot_data.get("last_regime"),
+                    "advisory_path": bot_data.get("advisory_path"),
+                }
+                if is_owner:
+                    entry["kronos_shadow"] = bot_data.get("kronos_shadow")
+                    entry["validator_summary"] = bot_data.get("validator_summary")
+                entries.append(entry)
+            return {
+                "signals": entries[:limit],
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+
+        return await asyncio.to_thread(_get_signals)
+
+    @app_http.get("/v1/agent/incidents")
+    async def agent_incidents(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        hours: int = 24,
+    ):
+        """
+        Recent incident fingerprints from the cross-component dedup store.
+        Useful for agents to understand system health trends and avoid double-triaging.
+
+        Auth: owner BRIDGE_API_KEY or subscriber key.
+        """
+        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        if not key_valid:
+            raise HTTPException(status_code=401, detail="Valid API key required")
+        hours = max(1, min(int(hours), 168))
+
+        def _get_incidents():
+            dedup = _read_json_state("state/incident_dedup.json")
+            cutoff = datetime.now(timezone.utc).timestamp() - hours * 3600
+            incidents = [
+                {"fingerprint": k, "last_fired_ts": v, "age_sec": int(datetime.now(timezone.utc).timestamp() - float(v))}
+                for k, v in dedup.items()
+                if float(v) >= cutoff
+            ]
+            incidents.sort(key=lambda x: x["last_fired_ts"], reverse=True)
+            return {
+                "incidents": incidents,
+                "count": len(incidents),
+                "window_hours": hours,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+
+        return await asyncio.to_thread(_get_incidents)
+
+    @app_http.get("/v1/agent/stream")
+    async def agent_stream(
+        request: Request,
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        poll_interval: float = 2.0,
+    ):
+        """
+        Server-Sent Events stream of live AlgoChains system events.
+
+        Emits events:
+          status_snapshot  — full /v1/agent/status payload every poll_interval seconds
+          log_line         — classified log lines from all 4 bots (entry/fill/exit/error)
+          heartbeat        — keep-alive every poll_interval seconds
+
+        Auth: owner BRIDGE_API_KEY or subscriber key.
+        Reconnect: standard SSE retry — client reconnects automatically on disconnect.
+        """
+        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        if not key_valid:
+            raise HTTPException(status_code=401, detail="Valid API key required")
+        interval = max(1.0, min(float(poll_interval), 30.0))
+
+        LOG_PATHS = [
+            ("mnq", "logs/futures_bot_live.log"),
+            ("cl", "logs/cl_futures_live.log"),
+            ("mes", "logs/mes_swing_live.log"),
+            ("nq", "logs/nq_swing_live.log"),
+        ]
+        LOG_KEYWORDS = ("SIGNAL", "FILL", "EXIT", "ERROR", "Exception", "Traceback",
+                        "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2")
+
+        def _classify_line(line: str) -> str | None:
+            l = line.lower()
+            if any(k in line for k in ("FILL", "filled")):
+                return "fill"
+            if any(k in line for k in ("SIGNAL", "signal_fired", "confidence")):
+                return "signal"
+            if any(k in line for k in ("EXIT", "exit_reason", "closed")):
+                return "exit"
+            if any(k in line for k in ("ERROR", "Exception", "Traceback", "BRACKET FAILED")):
+                return "error"
+            if any(k in line for k in ("BRACKET", "stop_order", "target_order")):
+                return "bracket"
+            return None
+
+        # Track last-seen file offset per log
+        _last_pos: dict[str, int] = {}
+
+        async def event_gen():
+            yield f"event: ready\ndata: {json.dumps({'access_level': 'owner' if is_owner else 'subscriber', 'ts': datetime.now(timezone.utc).isoformat()})}\n\n"
+
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                # Emit log lines that appeared since last poll
+                def _poll_logs():
+                    new_events = []
+                    for bot, rel_path in LOG_PATHS:
+                        p = _ct_path(rel_path)
+                        if not p.exists():
+                            continue
+                        try:
+                            size = p.stat().st_size
+                            last = _last_pos.get(rel_path, size)
+                            if size > last:
+                                with p.open() as fh:
+                                    fh.seek(last)
+                                    new_text = fh.read(min(size - last, 32768))
+                                _last_pos[rel_path] = last + len(new_text.encode())
+                                for raw_line in new_text.splitlines():
+                                    line = raw_line.strip()
+                                    if not line:
+                                        continue
+                                    if not any(kw in line for kw in LOG_KEYWORDS):
+                                        continue
+                                    event_type = _classify_line(line)
+                                    if event_type:
+                                        new_events.append({"bot": bot, "type": event_type, "line": line[-400:]})
+                            else:
+                                _last_pos[rel_path] = size
+                        except Exception:
+                            pass
+                    return new_events
+
+                new_log_events = await asyncio.to_thread(_poll_logs)
+                for ev in new_log_events[:20]:
+                    yield f"event: log_line\ndata: {json.dumps(ev, default=str)}\n\n"
+
+                # Emit a status snapshot every cycle
+                snapshot = await asyncio.to_thread(_build_status_snapshot, is_owner)
+                yield f"event: status_snapshot\ndata: {json.dumps(snapshot, default=str)}\n\n"
+
+                yield f"event: heartbeat\ndata: {datetime.now(timezone.utc).isoformat()}\n\n"
+                await asyncio.sleep(interval)
+
+        return StreamingResponse(
+            event_gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
 
     return app_http
 
