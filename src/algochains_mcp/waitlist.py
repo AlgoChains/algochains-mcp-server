@@ -12,6 +12,7 @@ On invite, generates a unique invite code and sends it via email.
 Required env vars:
   SUPABASE_URL           — Supabase project URL
   SUPABASE_SERVICE_ROLE_KEY   — Service role key
+  SUPABASE_SERVICE_KEY        — Legacy alias accepted for existing deployments
   RESEND_API_KEY         — Resend API key for transactional email
   WAITLIST_FROM_EMAIL    — From address (default: waitlist@algochains.ai)
 
@@ -34,7 +35,10 @@ import httpx
 logger = logging.getLogger("algochains_mcp.waitlist")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv(
+    "SUPABASE_SERVICE_ROLE_KEY",
+    os.getenv("SUPABASE_SERVICE_KEY", ""),
+)
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 WAITLIST_FROM_EMAIL = os.getenv("WAITLIST_FROM_EMAIL", "waitlist@algochains.ai")
 _TABLE = "algochains_waitlist"

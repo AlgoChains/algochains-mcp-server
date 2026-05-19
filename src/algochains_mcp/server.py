@@ -4517,6 +4517,9 @@ TIER1_TOOL_NAMES = {
     # V26.1 — Bracket integrity (always Tier 1 — safety critical)
     "check_unprotected_positions",
     "get_bracket_guardian_status",
+    # V22.4 — Desktop tower ML visibility
+    "get_tower_health",
+    "get_tower_job_status",
     # V22.1 — Guardrails status (always Tier 1 — safety awareness)
     "get_circuit_breaker_status",
     "get_agent_loop_status",
@@ -5434,14 +5437,22 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             try:
                 import json as _json_cc
                 _cc_raw = _json_cc.loads(_cc_state_path.read_text())
+                _issues = _cc_raw.get("issues")
+                if not isinstance(_issues, list):
+                    _alert_key = _cc_raw.get("last_alerted_issues_key")
+                    _issues = [_alert_key] if _alert_key else []
                 cc_health = {
-                    "status": _cc_raw.get("status"),
-                    "issues": _cc_raw.get("issues", []),
+                    "status": _cc_raw.get("status") or _cc_raw.get("last_status"),
+                    "issues": _issues,
                     "cc_log_age_minutes": _cc_raw.get("cc_log_age_minutes"),
                     "consecutive_failures": _cc_raw.get("consecutive_failures"),
                     "cc_restarts": _cc_raw.get("cc_restarts"),
                     "circuit_breakers_open": _cc_raw.get("circuit_breakers_open"),
                     "last_check_utc": _cc_raw.get("last_check_utc"),
+                    "last_status": _cc_raw.get("last_status"),
+                    "last_alerted_issues_key": _cc_raw.get("last_alerted_issues_key"),
+                    "last_unhandled_error": _cc_raw.get("last_unhandled_error"),
+                    "state_age_sec": max(0, int(time.time() - _cc_state_path.stat().st_mtime)),
                 }
             except Exception as _cc_err:
                 cc_health = {"error": f"cc_health_state.json parse failure: {_cc_err}"}
@@ -8285,7 +8296,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name in ("dispatch_tower_job", "get_tower_job_status", "get_tower_health", "list_tower_jobs"):
         import os as _os_tower
         import sys as _sys
-        _ct_path = _os_tower.path.expanduser("~/CascadeProjects/algochains-control-tower")
+        _ct_path = _default_control_tower()
         if _ct_path not in _sys.path:
             _sys.path.insert(0, _ct_path)
         try:
