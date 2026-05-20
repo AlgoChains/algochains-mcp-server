@@ -172,6 +172,28 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         mode = "active"
     elif anthropic_error or cerebras_error:
         mode = "degraded"
+    else:
+        # No error/shadow/approval pattern found — distinguish healthy-idle from truly unknown
+        # by checking log recency and process liveness.
+        try:
+            log_age_s = time.time() - log_path.stat().st_mtime
+            ps = subprocess.run(["pgrep", "-f", cfg["grep"]], capture_output=True, timeout=3)
+            bot_running = ps.returncode == 0
+            if bot_running and log_age_s < 300:
+                mode = "healthy_idle"  # process up, log fresh — no signals in recent window
+            elif bot_running:
+                mode = "running_stale_log"  # process up but log > 5 min stale
+        except Exception:
+            pass  # leave as "unknown" if process check fails
+
+    note_map = {
+        "active": "Pipeline healthy — ensemble voting active",
+        "healthy_idle": "Pipeline healthy — no trade signals in recent log window (market quiet or off-hours)",
+        "running_stale_log": "Process running but log not updated in >5 min — check bot for hangs",
+        "shadow_timeout": "Pipeline in shadow/timeout mode — all trades use primary confidence gate only",
+        "degraded": "Anthropic credits zero — top up console.anthropic.com to restore 7-AI voting" if anthropic_error else "Cerebras model error",
+        "unknown": "Could not determine pipeline mode from recent logs",
+    }
 
     return {
         "bot": bot_id,
@@ -186,12 +208,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         "last_ensemble_rejected": ensemble_reject,
         "pipeline_timeout_config_s": float(os.getenv("PIPELINE_TIMEOUT_SECONDS", "8")),
         "cerebras_model": "llama3.1-8b",
-        "note": (
-            "Anthropic credits zero — top up console.anthropic.com to restore 7-AI voting"
-            if anthropic_error else
-            "Pipeline healthy" if mode == "active" else
-            "Pipeline in shadow/timeout mode — all trades use primary confidence gate only"
-        ),
+        "note": note_map.get(mode, ""),
     }
 
 
