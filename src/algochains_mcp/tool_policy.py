@@ -315,10 +315,21 @@ def evaluate_stdio_direct_tool(
     # for tier >= ORDER_EXEC, regardless of tool_mode.
     if tier >= TIER_ORDER_EXEC:
         _env_owner_token = os.environ.get("OWNER_API_TOKEN", "")
-        if _env_owner_token and owner_token != _env_owner_token:
+        if not _env_owner_token:
             return ToolPolicyDecision(
                 False,
                 **base,
+                required_secret="OWNER_API_TOKEN",
+                reason=(
+                    f"[{label}] tool '{tool_name}' requires OWNER_API_TOKEN to be configured "
+                    "before direct stdio execution can be authorized."
+                ),
+            )
+        if owner_token != _env_owner_token:
+            return ToolPolicyDecision(
+                False,
+                **base,
+                required_secret="OWNER_API_TOKEN",
                 reason=(
                     f"[{label}] tool '{tool_name}' requires owner_token authorization "
                     "even in full mode (stdio/full-mode parity enforcement). "

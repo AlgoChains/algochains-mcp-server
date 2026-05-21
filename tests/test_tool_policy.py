@@ -3,6 +3,7 @@ from __future__ import annotations
 from algochains_mcp.tool_policy import (
     evaluate_bridge_tool,
     evaluate_dynamic_tool,
+    evaluate_stdio_direct_tool,
     explain_decision,
     visible_tools_for_bridge,
 )
@@ -99,3 +100,18 @@ def test_explain_decision_redacts_arguments_and_keeps_hash_only():
     assert "argument_hash" in payload
     assert "'secret'" not in rendered
     assert "owner_token" not in rendered
+
+
+def test_stdio_full_mode_order_exec_fails_closed_without_owner_secret(monkeypatch):
+    monkeypatch.delenv("OWNER_API_TOKEN", raising=False)
+
+    decision = evaluate_stdio_direct_tool(
+        "place_order",
+        tool_mode="full",
+        tier1_names=set(),
+        owner_token=None,
+        require_confirmation=False,
+    )
+
+    assert decision.allow is False
+    assert decision.required_secret == "OWNER_API_TOKEN"
