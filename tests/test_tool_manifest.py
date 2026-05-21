@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from algochains_mcp.tool_manifest import build_manifest, SCHEMA_VERSION
+from algochains_mcp.cli_contract import filter_manifest_tools, command_contract_summary
 
 
 def test_manifest_shape():
@@ -33,6 +34,23 @@ def test_skip_flag_reported(monkeypatch):
     monkeypatch.setenv("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", "1")
     m = build_manifest(tool_names=["x"], tier1_names=set(), tool_mode="full")
     assert m["marketplace_key_check"] == "skipped"
+
+
+def test_cli_contract_filters_tools_and_preserves_stub_status():
+    m = build_manifest(
+        tool_names=["get_positions", "deploy_strategy", "place_order"],
+        tier1_names={"get_positions"},
+        tool_mode="smart",
+    )
+    read_only = filter_manifest_tools(m, max_danger_tier=0)
+    names = {tool["name"] for tool in read_only}
+    summary = command_contract_summary(m)
+
+    assert "get_positions" in names
+    assert "place_order" not in names
+    assert any(tool["name"] == "deploy_strategy" and tool["implementation_status"] == "stub" for tool in m["tools"])
+    assert summary["schema_version"] == SCHEMA_VERSION
+    assert summary["total_tools"] == 3
 
 
 def test_live_manifest_has_policy_contract_fields():
