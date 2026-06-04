@@ -47,6 +47,16 @@ from .subscriber_tools import (
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
 )
+from .developer_auth import (
+    ResolvedDeveloper,
+    is_developer_key,
+    resolve_developer_key,
+)
+from .developer_tools import (
+    DEVELOPER_TOOLS,
+    DEVELOPER_TOOL_SCOPES,
+    check_developer_tool_access,
+)
 from .tool_policy import (
     evaluate_bridge_tool,
     visible_tools_for_bridge,
@@ -140,6 +150,7 @@ async def handle_mcp_request(
     *,
     is_owner: bool = False,
     subscriber: ResolvedSubscriber | None = None,
+    developer: ResolvedDeveloper | None = None,
     caller_scope: str | None = None,
 ) -> dict:
     """
@@ -147,8 +158,9 @@ async def handle_mcp_request(
 
     Resolution order:
       1. Subscriber-scoped tools (when `subscriber` is provided).
-      2. Owner tools (require `is_owner`).
-      3. Public tools.
+      2. Developer-scoped tools (when `developer` is provided).
+      3. Owner tools (require `is_owner`).
+      4. Public tools.
 
     Returns a dict that will be serialised to JSON.
     """
@@ -169,7 +181,45 @@ async def handle_mcp_request(
             }
         return call_subscriber_tool(tool_name, subscriber.subscriber_id, arguments)
 
-    # ── 2/3. Owner / public surfaces ─────────────────────────────────────
+    # ── 2. Developer surface ──────────────────────────────────────────────
+    if developer is not None:
+        allowed, denial_reason = check_developer_tool_access(tool_name, developer.scopes)
+        if not allowed:
+            return {
+                "error": "Tool not available for developer tier",
+                "tool": tool_name,
+                "reason": denial_reason,
+                "available_tools": sorted(DEVELOPER_TOOLS),
+            }
+        # Developer keys execute via the standard server.call_tool path — the
+        # tool allowlist already guarantees tier 0/1 only. Tracing is preserved.
+        try:
+            from algochains_mcp import server as _server
+            with trace_span(
+                "mcp.tool.call",
+                {
+                    "tool.name": tool_name,
+                    "mcp.server": "algochains",
+                    "mcp.transport": "http_bridge",
+                    "algochains.auth_type": "developer",
+                    "algochains.developer_env": developer.env,
+                    "algochains.arguments_hash": redacted_argument_hash(arguments),
+                },
+            ) as span:
+                result = await _server.call_tool(tool_name, arguments)
+                if span is not None:
+                    span.set_attribute("algochains.tool.success", True)
+            if result and hasattr(result[0], "text"):
+                try:
+                    return json.loads(result[0].text)
+                except json.JSONDecodeError:
+                    return {"result": result[0].text}
+            return {"result": str(result)}
+        except Exception as e:
+            log.error("MCP bridge (developer) tool call failed: %s — %s", tool_name, e)
+            return {"error": str(e), "tool": tool_name}
+
+    # ── 3/4. Owner / public surfaces ─────────────────────────────────────
     # Centralized policy keeps bridge auth, caller scopes, danger tiers, and
     # approval vocabulary in sync with stdio dynamic dispatch.
     decision = evaluate_bridge_tool(
@@ -303,48 +353,50 @@ def create_fastapi_app():
         authorization: str | None,
         user_email: str | None = None,
         caller_scope: str | None = None,
-    ) -> tuple[bool, bool, ResolvedSubscriber | None, str | None]:
+    ) -> tuple[bool, bool, ResolvedSubscriber | None, ResolvedDeveloper | None, str | None]:
         """
-        Returns (key_valid, is_owner, subscriber, caller_scope).
+        Returns (key_valid, is_owner, subscriber, developer, caller_scope).
 
-        Legitimate outcomes:
-          • Owner key matches BRIDGE_API_KEY → (True, True, None)
-          • Subscriber key (sub_live_…) resolves in Supabase
-                → (True, False, ResolvedSubscriber)
-          • No BRIDGE_API_KEY AND dev mode active
-                → (True, False, None) — public tools only, no owner privilege ever
+        Resolution order (first match wins):
+          1. Subscriber key (sub_live_… / sub_test_…) → subscriber-scoped surface
+          2. Developer key (ac_live_… / ac_test_…)   → developer-scoped surface
+          3. Owner key (BRIDGE_API_KEY match)         → full owner surface
+          4. No key + dev mode                        → public tools only
+          5. No key + production                      → 401
 
-        K-8 fix: when BRIDGE_API_KEY is empty and dev mode is off, all requests
-        return (False, False, None) — the endpoint raises 401.
-
-        NOTE: is_owner is now derived exclusively from the API key match, NOT from
-        the user_email body field. user_email is accepted only for audit-log
-        attribution and never confers owner privilege.
+        NOTE: is_owner is derived exclusively from the API key match, NOT from
+        the user_email body field. user_email is audit-only attribution.
         """
         provided_key = x_api_key or (authorization.replace("Bearer ", "") if authorization else "")
 
-        # Subscriber path takes precedence so a subscriber key is never treated
-        # as an invalid owner key.
+        # 1. Subscriber path — resolves before owner check so a sub key is never
+        #    treated as an invalid owner key.
         if is_subscriber_key(provided_key):
             sub = resolve_subscriber_key(provided_key)
             if sub:
-                return True, False, sub, caller_scope
-            return False, False, None, caller_scope
+                return True, False, sub, None, caller_scope
+            return False, False, None, None, caller_scope
 
+        # 2. Developer path — ac_live_* / ac_test_* keys.
+        if is_developer_key(provided_key):
+            dev = resolve_developer_key(provided_key)
+            if dev:
+                return True, False, None, dev, caller_scope
+            # Key looks like a developer key but didn't resolve → fail closed.
+            return False, False, None, None, caller_scope
+
+        # 3. Owner path.
         if BRIDGE_API_KEY:
             key_valid = provided_key == BRIDGE_API_KEY
-            # Owner privilege is derived from key match only — user_email is
-            # accepted for audit attribution but NEVER grants owner access.
             is_owner = key_valid
-            return key_valid, is_owner, None, caller_scope
+            return key_valid, is_owner, None, None, caller_scope
 
-        # No bridge key configured.
+        # 4. No bridge key configured.
         if _DEV_MODE:
-            # Dev: accept anything for public tools, owner is never True.
-            return True, False, None, caller_scope
+            return True, False, None, None, caller_scope
 
-        # K-8 fix: production with no key — fail closed.
-        return False, False, None, caller_scope
+        # 5. Production with no key → fail closed.
+        return False, False, None, None, caller_scope
 
     class McpRequest(BaseModel):
         tool: str
@@ -393,38 +445,53 @@ def create_fastapi_app():
         """
         from algochains_mcp.tool_danger_tiers import get_scope_max_tier, get_tool_danger_info
 
-        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             caller_scope=x_algochains_caller_scope,
         )
 
-        # Subscribers see ONLY the subscriber tool surface — never owner / public marketplace.
+        tier_legend = {
+            "0": "READ_ONLY — no side effects, safe for any agent",
+            "1": "WRITE_LOCAL — internal state writes only, no broker",
+            "2": "ORDER_EXEC — executes real broker orders",
+            "3": "DESTRUCTIVE — irreversible bulk actions",
+        }
+
+        # Subscribers see ONLY the subscriber tool surface.
         if subscriber is not None:
             visible_tools = sorted(SUBSCRIBER_TOOLS)
-        else:
-            visible_tools = visible_tools_for_bridge(
-                public_tools=PUBLIC_TOOLS,
-                owner_tools=OWNER_TOOLS,
-                is_owner=is_owner,
-                caller_scope=caller_scope,
-            )
-
-        if include_danger_tiers:
-            tools_with_tiers = [get_tool_danger_info(t) for t in sorted(set(visible_tools))]
-            tier_legend = {
-                "0": "READ_ONLY — no side effects, safe for any agent",
-                "1": "WRITE_LOCAL — internal state writes only, no broker",
-                "2": "ORDER_EXEC — executes real broker orders",
-                "3": "DESTRUCTIVE — irreversible bulk actions",
-            }
-            if subscriber is not None:
+            if include_danger_tiers:
                 return {
-                    "tools": tools_with_tiers,
+                    "tools": [get_tool_danger_info(t) for t in visible_tools],
                     "subscriber_tool_count": len(SUBSCRIBER_TOOLS),
                     "scopes": list(subscriber.scopes),
                     "tier_legend": tier_legend,
                 }
+            return {"subscriber_tools": visible_tools, "scopes": list(subscriber.scopes)}
+
+        # Developers see ONLY the developer-tier tool surface.
+        if developer is not None:
+            visible_tools = sorted(DEVELOPER_TOOLS)
+            if include_danger_tiers:
+                return {
+                    "tools": [get_tool_danger_info(t) for t in visible_tools],
+                    "developer_tool_count": len(DEVELOPER_TOOLS),
+                    "scopes": list(developer.scopes),
+                    "env": developer.env,
+                    "tier_legend": tier_legend,
+                }
+            return {"developer_tools": visible_tools, "scopes": list(developer.scopes), "env": developer.env}
+
+        # Owner / public surfaces.
+        visible_tools = visible_tools_for_bridge(
+            public_tools=PUBLIC_TOOLS,
+            owner_tools=OWNER_TOOLS,
+            is_owner=is_owner,
+            caller_scope=caller_scope,
+        )
+        if include_danger_tiers:
+            tools_with_tiers = [get_tool_danger_info(t) for t in sorted(set(visible_tools))]
             if is_owner:
                 return {
                     "tools": tools_with_tiers,
@@ -440,8 +507,6 @@ def create_fastapi_app():
                 "tier_legend": tier_legend,
             }
 
-        if subscriber is not None:
-            return {"subscriber_tools": sorted(SUBSCRIBER_TOOLS), "scopes": list(subscriber.scopes)}
         if is_owner:
             return {"public_tools": sorted(PUBLIC_TOOLS), "owner_tools": sorted(OWNER_TOOLS)}
         return {"public_tools": sorted(PUBLIC_TOOLS)}
@@ -453,16 +518,46 @@ def create_fastapi_app():
         authorization: str | None = Header(default=None),
         x_algochains_caller_scope: str | None = Header(default=None),
     ):
+        from .developer_rate_limiter import (
+            MAX_BODY_BYTES,
+            check_rate_limit,
+        )
+
+        # ── Body size guard (H-F7: prevent flooding with large payloads) ──
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_BODY_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Request body exceeds {MAX_BODY_BYTES // 1024} KB limit",
+            )
+
         try:
-            body = await request.json()
+            raw_body = await request.body()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Could not read request body")
+
+        if len(raw_body) > MAX_BODY_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Request body exceeds {MAX_BODY_BYTES // 1024} KB limit",
+            )
+
+        try:
+            import json as _json
+            body = _json.loads(raw_body)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid JSON body")
+
         tool = body.get("tool")
         arguments = body.get("arguments", {})
         user_email = body.get("user_email")
         if not tool:
             raise HTTPException(status_code=400, detail="Missing 'tool' field")
-        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+
+        provided_key = x_api_key or (
+            (authorization or "").replace("Bearer ", "") or None
+        )
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             user_email,
@@ -470,11 +565,29 @@ def create_fastapi_app():
         )
         if not key_valid:
             raise HTTPException(status_code=401, detail="Invalid API key")
+
+        # ── Per-key rate limiting (developer and subscriber keys) ──────────
+        if developer is not None and provided_key:
+            from .developer_auth import hash_developer_key
+            rate_result = check_rate_limit(hash_developer_key(provided_key))
+            if not rate_result.allowed:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=429,
+                    content=rate_result.as_error_dict(),
+                    headers={
+                        "Retry-After": str(max(1, rate_result.retry_after_ms // 1000)),
+                        "X-RateLimit-Remaining-RPM": str(rate_result.remaining_rpm),
+                        "X-RateLimit-Remaining-RPH": str(rate_result.remaining_rph),
+                    },
+                )
+
         result = await handle_mcp_request(
             tool,
             arguments,
             is_owner=is_owner,
             subscriber=subscriber,
+            developer=developer,
             caller_scope=caller_scope,
         )
         return result
@@ -500,7 +613,7 @@ def create_fastapi_app():
 
         Auth: subscriber API key only.
         """
-        key_valid, _is_owner, subscriber, _caller_scope = _resolve_auth(x_api_key, authorization)
+        key_valid, _is_owner, subscriber, _developer, _caller_scope = _resolve_auth(x_api_key, authorization)
         if not key_valid or subscriber is None:
             raise HTTPException(status_code=401, detail="Subscriber API key required")
         bot_filter = [b.strip().upper() for b in bots.split(",")] if bots else None
@@ -543,7 +656,7 @@ def create_fastapi_app():
         x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Convenience endpoint: get all 4 bot metrics. Owner key required."""
-        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             user_email,
@@ -564,7 +677,7 @@ def create_fastapi_app():
         """Convenience endpoint: get metrics for a specific bot. Owner key required."""
         if bot_id not in {"mnq", "cl", "mes", "nq"}:
             raise HTTPException(status_code=400, detail="bot_id must be mnq | cl | mes | nq")
-        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             user_email,
@@ -621,7 +734,7 @@ def create_fastapi_app():
         x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Get system heartbeat. Requires owner API key — reveals infrastructure topology."""
-        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             caller_scope=x_algochains_caller_scope,
@@ -637,7 +750,7 @@ def create_fastapi_app():
         x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Get circuit breaker and guardrail status. Requires owner API key."""
-        key_valid, is_owner, subscriber, caller_scope = _resolve_auth(
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             caller_scope=x_algochains_caller_scope,
