@@ -1,0 +1,7 @@
+# Enforce LF for shell scripts + hooks: CRLF breaks bash ("fi\r" -> unexpected EOF)
+# Root cause: core.autocrlf=true smudging .sh to CRLF on Windows checkouts.
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+hooks/** text eol=lf
+.husky/** text eol=lf
