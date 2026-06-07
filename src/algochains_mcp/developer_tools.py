@@ -66,7 +66,9 @@ DEVELOPER_TOOLS: frozenset[str] = frozenset({
 
     # Regime and ML signal reads (READ_ONLY — no live bot context)
     "run_hmm_regime_detection",
-    "get_signal_health_summary",
+    # get_signal_health_summary was never implemented in server.py — replaced by
+    # get_signal_trade_correlation (real, read-only signal->trade traceability audit).
+    "get_signal_trade_correlation",
 })
 
 # ─── Scope requirements per tool ─────────────────────────────────────────────
@@ -85,7 +87,7 @@ DEVELOPER_TOOL_SCOPES: dict[str, str] = {
     "get_volatility_surface": "read:market_data",
     "get_factor_model": "read:market_data",
     "run_hmm_regime_detection": "read:signals",
-    "get_signal_health_summary": "read:signals",
+    "get_signal_trade_correlation": "read:signals",
 }
 
 # ─── Hard-blocked tools (never allowed for developer tier) ───────────────────

@@ -108,7 +108,7 @@ Example response:
     "get_macro_signals",
     "get_marketplace_listings",
     "get_monte_carlo_result",
-    "get_signal_health_summary",
+    "get_signal_trade_correlation",
     "get_strategy_academic_citations",
     "get_tick_data_summary",
     "get_validation_gates",

@@ -4126,6 +4126,15 @@ TOOLS = [
          }, "required": []},
          annotations=ANNOT_READ_SAFE),
 
+    Tool(name="get_signal_trade_correlation",
+         description="Read-only signal->trade traceability audit. Joins signals_trace to trade_log and returns NULL-rate KPIs (fill_id_coverage, placed_price_coverage, bracket intent nulls, P&L gap, per-column null rates). Thin wrapper over the control-tower correlation-audit script (runs --json --no-slack) — does not post to Slack. Defaults to filled-only rows so unfilled signal-only rows do not inflate fill-stage NULL rates.",
+         inputSchema={"type": "object", "properties": {
+             "limit": {"type": "integer", "description": "Number of recent signals_trace rows to scan (default 50).", "default": 50},
+             "action": {"type": "string", "enum": ["submitted", "all", "blocked"], "description": "signals_trace action filter (default submitted).", "default": "submitted"},
+             "filled_only": {"type": "boolean", "description": "Restrict KPIs to rows with fill evidence (default true, matches the daily launchd run).", "default": True},
+         }, "required": []},
+         annotations=ANNOT_READ_SAFE),
+
     # ── Rithmic R|API+ live prop account tools ────────────────────────────────
     Tool(name="get_rithmic_live_accounts",
          description="List all prop firm accounts currently connected via the Rithmic R|API+ bridge. Returns account_id, fcm_id (clearing firm), and ib_id for each live account. Requires rithmic_bridge binary compiled and RITHMIC_* env vars set.",
@@ -4542,6 +4551,7 @@ TIER1_TOOL_NAMES = {
     "list_ingested_data",
     # Kronos + Rithmic live tools (always Tier 1 — bot operators need these)
     "get_kronos_shadow_stats",
+    "get_signal_trade_correlation",
     "get_rithmic_live_accounts",
     "get_rithmic_live_pnl",
     "get_rithmic_live_positions",
@@ -5392,6 +5402,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     if isinstance(_hist, list):
                         _out["history"] = _hist[-10:]
                     return _out
+                def _kronos_summary(_entry: dict) -> dict | None:
+                    # mcp-bot-health-kronos-slice: surface the bounded Kronos shadow
+                    # summary (ensemble-gated agreement + decoupled realized accuracy)
+                    # so get_bot_health is one-stop for the same metrics the EOD/daily
+                    # briefing report. Canonical source — get_kronos_shadow_stats returns
+                    # the full kronos_shadow blob; this is the compact health view.
+                    _shadow = _entry.get("kronos_shadow")
+                    _realized = _entry.get("kronos_shadow_realized")
+                    if not isinstance(_shadow, dict) and not isinstance(_realized, dict):
+                        return None
+                    _out: dict = {}
+                    if isinstance(_shadow, dict):
+                        _out["agreement_rate"] = _shadow.get("agreement_rate")
+                        _out["nonfat_count"] = _shadow.get("nonfat_count")
+                        _out["total_logged"] = _shadow.get("total_logged")
+                    if isinstance(_realized, dict):
+                        _out["realized_rate"] = _realized.get("realized_rate")
+                        _out["realized_count"] = _realized.get("realized_count")
+                    return _out
+
                 for _k, _sh_key in _bot_key_map.items():
                     if bot_filter not in ("all", _k):
                         continue
@@ -5405,6 +5435,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                         "trading_mode": _sh_data.get("ws_health", {}).get("status"),
                         "validation_slice": _entry.get("validation_slice"),
                         "flow_feature_versions": _entry.get("flow_feature_versions"),
+                        "advisory_timeout_rate": _entry.get("advisory_timeout_rate"),
+                        "advisory_fallback_rate": _entry.get("advisory_fallback_rate"),
+                        "kronos": _kronos_summary(_entry),
                         "validator_shadow": {
                             "parallel_shadow": _bounded_slice(_entry, "parallel_shadow"),
                             "moltbook_shadow": _bounded_slice(_entry, "moltbook_shadow"),
@@ -9836,6 +9869,47 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 if not shadow:
                     return _text({"error": f"No Kronos shadow data for bot '{bot_key}'", "available_keys": list(data.keys())})
                 return _text({"bot_key": bot_key, "kronos_shadow": shadow})
+        except Exception as exc:
+            return _text({"error": str(exc), "error_type": type(exc).__name__})
+
+    elif name == "get_signal_trade_correlation":
+        # mcp-correlation-tool: thin READ-ONLY wrapper over the control-tower script
+        # scripts/signal_trade_correlation_audit.py. Does NOT reimplement the audit —
+        # runs it with --json --no-slack and returns the report dict so agents can read
+        # signal->trade NULL-rate / coverage KPIs without re-deriving the logic.
+        try:
+            import json as _json
+            import subprocess as _subp
+            from pathlib import Path as _Path
+
+            _ct = _Path(_default_control_tower())
+            _script = _ct / "scripts" / "signal_trade_correlation_audit.py"
+            if not _script.exists():
+                return _text({"error": f"correlation audit script not found at {_script}"})
+            _limit = int(args.get("limit", 50) or 50)
+            _action = str(args.get("action", "submitted") or "submitted")
+            if _action not in ("submitted", "all", "blocked"):
+                _action = "submitted"
+            _cmd = [
+                "python3", "-B", str(_script),
+                "--json", "--no-slack",
+                "--limit", str(_limit),
+                "--action", _action,
+            ]
+            # Default to filled-only (matches the launchd plist) unless explicitly disabled.
+            if args.get("filled_only", True):
+                _cmd.append("--filled-only")
+            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+            if _proc.returncode != 0:
+                return _text({
+                    "error": "correlation audit failed",
+                    "returncode": _proc.returncode,
+                    "stderr": (_proc.stderr or "")[:500],
+                })
+            try:
+                return _text(_json.loads(_proc.stdout))
+            except Exception:
+                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
