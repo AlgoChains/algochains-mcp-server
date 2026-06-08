@@ -6,6 +6,43 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [22.4.0] — 2026-04-06
+
+### Added
+
+#### UX & Team Onboarding
+- `scripts/quickstart.py` — interactive setup wizard and health-check path for demo/paper/live setup.
+- `SAFETY_MODEL.md` — plain-language safety guide for guardrails, confirmations, circuit breakers, and team access.
+- `get_onboarding_status` and `generate_ide_config` MCP tools — expose setup progress and generate IDE MCP config for Cursor, Windsurf, Claude, or VS Code.
+
+#### Desktop Tower and Bot Health Visibility
+- `get_tower_health` and `get_tower_job_status` are part of the smart tool set so operators can inspect desktop tower reachability and dispatched job status without full-mode exposure.
+- `get_bot_health` includes `e2e_sentinel`, `desktop_inference_slo`, and `decision_latency_slo` slices for MNQ signal -> order -> bracket -> fill traceability.
+
+### Changed
+
+- `tool_danger_tiers.py` is the documented machine-readable danger classification layer for the 478-tool full surface and bridge `/tools` metadata.
+- README setup and docs navigation were reorganized around demo/paper/live setup paths and operational safety references.
+
+---
+
+## [22.3.0] — 2026-04-06
+
+### Added
+
+#### Proprietary Data Ingestion
+- `ingest_csv_data` — validates real OHLCV CSV files, normalizes symbol/timeframe path components, and writes clean rows under `state/custom_data/`.
+- `ingest_json_signals` — ingests pre-computed entry/exit signals, ML features, labels, or regime tags from JSON.
+- `connect_onyx_docs` — indexes local research documents into Onyx for `onyx_ask()` and `onyx_search()`.
+- `register_strategy` — validates and registers custom strategy specs for later backtesting.
+- `list_ingested_data` — audits imported custom datasets, signal files, Onyx documents, and registered strategies.
+
+### Security / Hardening
+
+- Data ingestion validates file existence, expected suffixes, required columns/types, symbol/timeframe safety, and destination jail boundaries. It does not synthesize missing data.
+
+---
+
 ## [22.2.0] — 2026-04-21
 
 ### Added

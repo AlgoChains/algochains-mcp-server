@@ -35,6 +35,9 @@ Keys use the prefix `ac_live_` (production) or `ac_test_` (sandbox).
 ## 3. Configure your MCP client (bridge-first — recommended)
 
 Developer keys connect to the **hosted bridge**. You do not need broker credentials.
+The bridge accepts developer keys via `X-Api-Key` or `Authorization: Bearer`.
+Use `X-Api-Key` in examples and MCP client configs unless your proxy rewrites
+headers.
 
 ### Cursor / Claude / Windsurf IDE config
 
@@ -47,7 +50,7 @@ Add to your MCP server config (`~/.cursor/mcp.json` or equivalent):
       "transport": "http",
       "url": "https://api.algochains.ai/api/mcp",
       "headers": {
-        "X-Developer-Key": "ac_live_YOUR_KEY_HERE"
+        "X-Api-Key": "ac_live_YOUR_KEY_HERE"
       }
     }
   }
@@ -89,7 +92,7 @@ No broker order execution access.
 
 ```
 GET https://api.algochains.ai/tools
-X-Developer-Key: ac_live_...
+X-Api-Key: ac_live_...
 ```
 
 Example response:
@@ -101,10 +104,12 @@ Example response:
     "detect_market_regime",
     "discover_tools",
     "get_backtest_results",
+    "get_bot_card_data",
     "get_earnings_catalyst",
     "get_factor_model",
     "get_historical_bars",
     "get_latency_profile",
+    "get_tool_details",
     "get_macro_signals",
     "get_marketplace_listings",
     "get_monte_carlo_result",
@@ -114,6 +119,7 @@ Example response:
     "get_validation_gates",
     "get_vix_term_structure",
     "get_volatility_surface",
+    "list_bot_research_attachments",
     "mcp_tool_manifest",
     "onyx_ask",
     "onyx_search",
@@ -126,6 +132,12 @@ Example response:
   "scopes": ["read:market_data", "read:signals"]
 }
 ```
+
+Source of truth:
+
+- `src/algochains_mcp/http_bridge.py` resolves developer keys before owner keys.
+- `src/algochains_mcp/developer_tools.py` owns the allowlist, blocked tools,
+  and per-tool scope requirements.
 
 ---
 
@@ -163,7 +175,7 @@ For development or air-gapped environments, you can run the MCP server locally.
 
 ```bash
 export AC_DEV_KEY="ac_live_..."
-export ALGOCHAINS_TOOL_MODE=smart     # smart (default) = ~54 safe Tier-1 tools
+export ALGOCHAINS_TOOL_MODE=smart     # smart (default) = documented safe Tier-1 set
 algochains-mcp                        # starts local stdio MCP server
 ```
 
@@ -201,6 +213,17 @@ Additional scopes (`write:backtest`, `publish:listing`, `read:data_warehouse`) m
 be requested via support. Scope requirements per tool are returned in the `/tools`
 endpoint response.
 
+Scope-gated tools:
+
+| Scope | Tools |
+|-------|-------|
+| `read:market_data` | `get_historical_bars`, `get_tick_data_summary`, `get_volatility_surface`, `get_factor_model` |
+| `read:signals` | `run_hmm_regime_detection`, `get_signal_trade_correlation` |
+| `read:backtest` | `get_backtest_results`, `get_monte_carlo_result` |
+| `write:backtest` | `run_builder_backtest` |
+| `publish:listing` | `submit_to_marketplace` |
+| `read:data_warehouse` | `query_data_warehouse` |
+
 ---
 
 ## 9. What developer keys cannot access
@@ -210,3 +233,5 @@ endpoint response.
 - Marketplace autopilot or bulk operations
 - Copy-trade subscriber signals (requires a separate subscriber key)
 - Owner-scoped system tools (`get_system_heartbeat`, `run_onyx_ingest`, etc.)
+- Dynamic escalation through `execute_dynamic_tool`
+- Numerai tournament upload or dry-run submit tools

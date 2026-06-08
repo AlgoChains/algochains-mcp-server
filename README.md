@@ -217,8 +217,15 @@ OWNER_API_TOKEN=your-owner-token-here
 - Complete README rewrite (plain English, team access)
 - `scripts/quickstart.py` — interactive setup wizard with health checks
 - `SAFETY_MODEL.md` — answers "is this safe?" for every failure mode
-- `tool_danger_tiers.py` — machine-readable danger classification (0–3) for all 350+ tools
+- `tool_danger_tiers.py` — machine-readable danger classification (0–3) for the documented 478-tool surface
 - HTTP bridge `/tools` endpoint now returns `danger_tier`, `safe_in_demo_mode`, etc.
+- `get_bot_health` includes `e2e_sentinel`, desktop inference SLO, and decision latency SLO slices for signal-to-fill traceability
+
+### v22.3 (2026-04-06) — Proprietary Data Ingestion
+- `ingest_csv_data` — validate and ingest real OHLCV CSV files into `state/custom_data/`
+- `ingest_json_signals` — import pre-computed signals, ML features, labels, and regime tags
+- `connect_onyx_docs` — index local research docs into Onyx for `onyx_ask()` / `onyx_search()`
+- `register_strategy` and `list_ingested_data` — register custom strategy specs and audit imported data
 
 ### v22.2 (2026-04-21) — Kalshi Pipeline + Model Integrity
 - **Kalshi prediction markets** — AI ensemble → Kelly sizing → order execution
@@ -236,7 +243,7 @@ OWNER_API_TOKEN=your-owner-token-here
 - Trading guardrails with circuit breakers
 - AlphaLoop evolution daemon
 
-> See the full [CHANGELOG.md](CHANGELOG.md) for v23.x, v24.x, v25.x, and v26.x entries.
+> See the full [CHANGELOG.md](CHANGELOG.md) for v21.x, v22.x, and legacy v26 audit entries.
 
 ---
 
@@ -409,6 +416,8 @@ AlgoChains MCP Server
 | [SAFETY_MODEL.md](SAFETY_MODEL.md) | Is this safe? Failure modes, guardrails, team access |
 | [CHANGELOG.md](CHANGELOG.md) | Full version history |
 | [docs/GOTCHAS_AND_BUGS.md](docs/GOTCHAS_AND_BUGS.md) | Confirmed bugs, gotchas, operational surprises |
+| [docs/DEVELOPER_TIER_ONBOARDING.md](docs/DEVELOPER_TIER_ONBOARDING.md) | Developer key setup, scopes, and bridge auth constraints |
+| [docs/NUMERAI_TOURNAMENT.md](docs/NUMERAI_TOURNAMENT.md) | Numerai tournament tool sequence, upload gates, and troubleshooting |
 | [docs/TRADOVATE_PARITY.md](docs/TRADOVATE_PARITY.md) | Tradovate endpoint mapping vs community server |
 | [docs/CLI_GAP_ANALYSIS.md](docs/CLI_GAP_ANALYSIS.md) | `ac` CLI current commands + 10 missing subcommands roadmap |
 | [LATENCY_GUIDE.md](LATENCY_GUIDE.md) | Measured tool call latencies (Mac M3 Max, real calls) |
