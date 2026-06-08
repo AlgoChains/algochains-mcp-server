@@ -79,6 +79,14 @@ def test_health_includes_version():
     assert body["version"] == _SERVER_VERSION
 
 
+def test_bridge_starts_without_control_tower_env(monkeypatch):
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER", raising=False)
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER_PATH", raising=False)
+    client = _make_client()
+    resp = client.get("/health")
+    assert resp.status_code == 200
+
+
 # ── Anonymous access ─────────────────────────────────────────────────────────
 
 
@@ -145,6 +153,30 @@ def test_owner_can_call_public_tool():
         result = _call_tool(client, "get_vix_term_structure", {}, **OWNER_HEADERS)
     # Should not be a 401 or 403
     assert result["status_code"] not in (401, 403), f"Owner should access public tools: {result}"
+
+
+def test_owner_can_read_agent_status():
+    client = _make_client()
+    resp = client.get("/v1/agent/status", headers=OWNER_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["access_level"] == "owner"
+    assert "bots_alive" in body
+
+
+def test_invalid_agent_status_key_gets_401():
+    client = _make_client()
+    resp = client.get("/v1/agent/status", headers={"X-Api-Key": "bad-key-xyz"})
+    assert resp.status_code == 401
+
+
+def test_bot_card_public_route_does_not_crash():
+    client = _make_client()
+    with patch("algochains_mcp.http_bridge.handle_mcp_request", new_callable=AsyncMock) as mock_handle:
+        mock_handle.return_value = {"bot_id": "mnq"}
+        resp = client.get("/api/bots/mnq/card")
+    assert resp.status_code == 200
+    assert resp.json()["bot_id"] == "mnq"
 
 
 # ── Subscriber access ─────────────────────────────────────────────────────────

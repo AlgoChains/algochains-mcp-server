@@ -291,10 +291,10 @@ async def _dispatch_jsonrpc(mcp_server: Any, body: dict, session_id: str) -> dic
                 ]
             }
         elif method == "tools/call":
-            from algochains_mcp.server import _dispatch_tool
+            from algochains_mcp.server import call_tool
             tool_name = params.get("name", "")
             tool_args = params.get("arguments", {})
-            content = await _dispatch_tool(tool_name, tool_args)
+            content = await call_tool(tool_name, tool_args)
             result = {
                 "content": [
                     c.model_dump() if hasattr(c, "model_dump") else vars(c)

@@ -231,6 +231,56 @@ def test_execute_dynamic_tool_allows_with_correct_token(monkeypatch):
         assert "blocked" not in text.lower()
 
 
+def test_execute_dynamic_tool_applies_inner_per_tool_rate_limit(monkeypatch):
+    """Approved dynamic ORDER_EXEC calls must still hit the inner tool limiter."""
+    secret = "correct-owner-secret-xyz"
+    monkeypatch.setenv("OWNER_API_TOKEN", secret)
+    import algochains_mcp.server as srv
+    from algochains_mcp.security.per_tool_rate_limiter import reset_rate_limit
+    from mcp.types import TextContent
+    import json
+
+    monkeypatch.setattr(srv, "_GUARDRAILS_AVAILABLE", False)
+    reset_rate_limit("place_order")
+    original_dispatch = srv._dispatch_tool
+
+    async def _dispatch_without_broker(name, arguments, registry):
+        if name == "place_order":
+            return [TextContent(type="text", text=json.dumps({"ok": True, "tool": name}))]
+        return await original_dispatch(name, arguments, registry)
+
+    monkeypatch.setattr(srv, "_dispatch_tool", _dispatch_without_broker)
+
+    async def _call_six():
+        payloads = []
+        for _ in range(6):
+            result = await srv.call_tool(
+                "execute_dynamic_tool",
+                {
+                    "tool_name": "place_order",
+                    "arguments": {
+                        "broker": "alpaca",
+                        "symbol": "AAPL",
+                        "side": "buy",
+                        "qty": 1,
+                        "owner_token": secret,
+                        "confirm": True,
+                    },
+                },
+            )
+            payloads.append(json.loads(result[0].text))
+        return payloads
+
+    try:
+        payloads = asyncio.run(_call_six())
+    finally:
+        reset_rate_limit("place_order")
+
+    assert [p.get("ok") for p in payloads[:5]] == [True] * 5
+    assert payloads[5].get("error_type") == "RateLimitError"
+    assert payloads[5].get("tool") == "place_order"
+
+
 # ── tier coverage audit ───────────────────────────────────────────────────────
 
 def test_all_order_exec_tools_blocked_without_token(monkeypatch):
