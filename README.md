@@ -26,24 +26,36 @@ You ask Claude:                    Claude calls:                    Server calls
 
 ## Quick Install
 
+**Option 1 — pipx (recommended, works on macOS Homebrew Python)**
 ```bash
-# 1. Clone (private repo — requires GitHub access)
-git clone https://github.com/AlgoChains/algochains-mcp-server.git
-cd algochains-mcp-server
-
-# 2. Install
-pip install -e ".[http,supabase,auth]"
-
-# 3. Connect to your IDE (no credentials needed to start)
+pipx install algochains-mcp-server
 python scripts/quickstart.py --generate-config cursor
-
-# 4. Verify
 python scripts/quickstart.py --mode demo
 ```
 
-That's it. Your AI now has 148 tools (smart mode) available immediately. Add broker credentials for live trading access. See [Option C](#option-c-full-live-setup) for live credentials.
+**Option 2 — pip in a virtual environment**
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install algochains-mcp-server
+```
 
-> **Note:** `pip install algochains-mcp-server` from PyPI will be available after the first tagged release is published via CI.
+**Option 3 — editable install from source (for development / contributors)**
+```bash
+git clone https://github.com/AlgoChains/algochains-mcp-server.git
+cd algochains-mcp-server
+pip install -e ".[http,supabase,auth]"
+python scripts/quickstart.py --mode demo
+```
+
+**Option 4 — Homebrew (macOS)**
+```bash
+brew tap algochains/algochains
+brew install algochains
+```
+
+> **Homebrew Python (macOS):** If you get a PEP 668 "externally-managed-environment" error, use `pipx install algochains-mcp-server` — pipx manages its own venv automatically. Do NOT use `--break-system-packages`.
+
+That's it. Your AI now has 148 tools (smart mode) available immediately. Add broker credentials for live trading access. See [Option C](#option-c-full-live-setup) for live credentials.
 
 ---
 

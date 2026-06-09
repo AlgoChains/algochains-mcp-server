@@ -71,6 +71,8 @@ jobs:
 
       - name: Verify tool count
         id: toolcount
+        env:
+          ALGOCHAINS_TOOL_MODE: full
         run: |
           TOOLS=$(npx mcporter list algochains --json | jq '.tools | length')
           echo "count=${TOOLS}" >> $GITHUB_OUTPUT
