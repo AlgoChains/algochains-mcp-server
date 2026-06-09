@@ -116,22 +116,10 @@ async def propagate_signal(
             ),
         }
 
-    # FAIL CLOSED when using the public default secret.
-    # The docs claim "fail closed if unset" — this was previously only a warning
-    # which allowed signals to be signed with "1234" and sent to the backend.
-    # A correctly-hardened backend rejects "1234", but we must not rely on that.
-    if secret == _ROO_DEFAULT_SECRET.encode():
-        logger.error(
-            "propagate_signal BLOCKED — using public default secret '1234'. "
-            "Set ALGOCHAINS_SIGNAL_SECRET in .env. Signal NOT sent."
-        )
-        return {
-            "success": False,
-            "error": (
-                "ALGOCHAINS_SIGNAL_SECRET is unset — propagation blocked. "
-                "Configure the real secret in .env before sending signals."
-            ),
-        }
+    # NOTE: _resolve_secret() already raises RuntimeError when the secret is
+    # unset or empty — we never reach this point with an invalid secret.
+    # The previous _ROO_DEFAULT_SECRET check was removed when the dev fallback
+    # was removed from the module (2026-06-08 public exposure incident).
 
     if not strategy_name or not symbol or not side or qty <= 0:
         return {
@@ -200,9 +188,11 @@ async def check_propagation_health() -> dict[str, Any]:
     """
     url = _resolve_url()
     secret = _resolve_secret()
-    using_defaults = (
-        url == _ROO_DEFAULT_URL and secret == _ROO_DEFAULT_SECRET.encode()
-    )
+    # _ROO_DEFAULT_URL / _ROO_DEFAULT_SECRET constants were removed after the
+    # dev fallback was retired (2026-06-08). _resolve_url() / _resolve_secret()
+    # already raise RuntimeError when unset, so using_defaults is always False
+    # when execution reaches this point.
+    using_defaults = False
 
     base_url = url.rsplit("/signal", 1)[0] if "/signal" in url else url
     try:
