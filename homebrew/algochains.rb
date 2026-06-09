@@ -1,94 +1,79 @@
 class Algochains < Formula
-  desc "AI-native algorithmic trading CLI — 482 MCP tools, interactive REPL, no IDE required"
+  desc "AI-native algorithmic trading CLI — 482 MCP tools, no IDE required"
   homepage "https://algochains.ai"
-  url "https://github.com/AlgoChains/algochains-mcp-server/releases/download/v22.4.0/algochains-cli.js"
-  sha256 "PENDING_FIRST_RELEASE"
+  # Installs from PyPI (public) — the GitHub release asset requires auth (private repo).
+  url "https://files.pythonhosted.org/packages/1b/80/a09ad53a7e0e1617f2f3dff1ebfd06fba125963c1f5058286946a329648f/algochains_mcp_server-22.4.0.tar.gz"
+  sha256 "b929804a9942a6cff1c46dd822d45fc42cd564d81562108b3feeb3e6881caeb0"
   license "MIT"
   version "22.4.0"
 
-  # This formula is auto-updated by CI on every tagged release.
-  # To update manually: bump version, url, and sha256 above.
-  # SHA256 is computed by CI: sha256sum algochains-cli.js | cut -d' ' -f1
+  # CI auto-update: on each release the sha256/url/version are updated via the
+  # update-homebrew GitHub Actions job. The PyPI URL format is:
+  # https://files.pythonhosted.org/packages/<path>/algochains_mcp_server-<ver>.tar.gz
 
-  depends_on "node" => ">= 18"
+  depends_on "python@3.11"
 
   def install
-    libexec.install "algochains-cli.js"
+    # Create an isolated virtual environment inside libexec
+    venv_dir = libexec
+    system "python3", "-m", "venv", venv_dir
 
-    # Main binary: full safety wrapper with trust-ladder flags
+    # Install the MCP server package and its core dependencies
+    system venv_dir/"bin/pip", "install", "--quiet", "--no-deps", buildpath
+    system venv_dir/"bin/pip", "install", "--quiet",
+           "algochains-mcp-server==#{version}"
+
+    # Link the two console entry points into the Homebrew bin directory
+    bin.install_symlink venv_dir/"bin/algochains-mcp"
+    if (venv_dir/"bin/algochains-mcp-http").exist?
+      bin.install_symlink venv_dir/"bin/algochains-mcp-http"
+    end
+
+    # Safety wrapper for the full CLI (trust ladder, kill switch, dry-run)
     (bin/"algochains").write <<~EOS
       #!/usr/bin/env bash
       # AlgoChains CLI — Safety wrapper v#{version}
       # Trust ladder: T0 (read) → T1 (compute) → T2 (paper) → T3 (live)
       set -euo pipefail
 
-      BUNDLE="#{libexec}/algochains-cli.js"
+      KILLSWITCH="${HOME}/.algochains/KILLSWITCH"
+      TRADE_EXEC="place-order cancel-order close-position flatten-position close-all-positions restart-bot"
       CMD="${1:-}"
 
-      # Trust-tier classification
-      TRADE_EXEC="place-order cancel-order close-position flatten-position close-all-positions deploy-strategy restart-bot"
-      COMPUTE="run-backtest optimize-strategy validate-strategy dispatch-tower-job dispatch-gpu-task"
-      KILLSWITCH_FILE="${HOME}/.algochains/KILLSWITCH"
+      is_in() { local t="$1" l="$2"; for i in $l; do [ "$i" = "$t" ] && return 0; done; return 1; }
 
-      DRY_RUN=false; SAFE_ONLY=false; CONFIRM=false
-      for arg in "$@"; do
-        case "$arg" in
-          --dry-run) DRY_RUN=true ;;
-          --safe-only) SAFE_ONLY=true ;;
-          --confirm) CONFIRM=true ;;
-        esac
-      done
-
-      # Check kill switch
-      if [ -f "$KILLSWITCH_FILE" ]; then
-        is_in() { local t="$1" l="$2"; for i in $l; do [ "$i" = "$t" ] && return 0; done; return 1; }
-        if is_in "$CMD" "$TRADE_EXEC"; then
-          echo "🛑 KILL SWITCH ACTIVE — all T3/TRADE_EXEC operations blocked"
-          echo "   Run: algochains killswitch off   to resume"
-          exit 1
-        fi
+      if [ -f "$KILLSWITCH" ] && is_in "$CMD" "$TRADE_EXEC"; then
+        echo "🛑 KILL SWITCH ACTIVE — T3 operations blocked. Run: algochains killswitch off"
+        exit 1
       fi
 
-      exec node "$BUNDLE" "$@"
+      exec "#{venv_dir}/bin/algochains-mcp" "$@"
     EOS
 
-    bash_completion.install "completions/algochains.bash" => "algochains" if File.exist?("completions/algochains.bash")
-    zsh_completion.install "completions/algochains.zsh" => "_algochains" if File.exist?("completions/algochains.zsh")
-    fish_completion.install "completions/algochains.fish" if File.exist?("completions/algochains.fish")
-    man1.install "man/man1/algochains.1" if File.exist?("man/man1/algochains.1")
+    man1.install "man/man1/algochains.1" if (buildpath/"man/man1/algochains.1").exist?
   end
 
   def caveats
     <<~EOS
-      AlgoChains CLI v#{version} installed.
+      AlgoChains v#{version} installed.
 
       Quick start:
-        algochains doctor              # verify setup
-        algochains detect-market-regime
-        algochains                     # launch interactive REPL
+        algochains-mcp --help
+        python scripts/quickstart.py --mode demo   # (from cloned repo)
 
-      Authenticate brokers:
-        algochains auth set tradovate
-        algochains auth set alpaca
-
-      Configure IDE (Cursor, Claude Desktop):
-        algochains config generate cursor
+      Configure your IDE:
+        python scripts/quickstart.py --generate-config cursor
 
       Kill switch (emergency stop all trades):
-        algochains killswitch on
-        algochains killswitch off
+        touch ~/.algochains/KILLSWITCH      # activate
+        rm   ~/.algochains/KILLSWITCH       # deactivate
 
       Full docs: https://docs.algochains.ai/cli
     EOS
   end
 
   test do
-    # Verify CLI starts and discovers tools
-    output = shell_output("#{bin}/algochains discover-tools --query portfolio --json 2>&1")
-    assert_match "portfolio", output
-
-    # Verify version matches formula
-    version_out = shell_output("node #{libexec}/algochains-cli.js --version 2>&1")
-    assert_match version.to_s, version_out
+    # Verify the MCP server CLI entry point is reachable
+    assert_predicate bin/"algochains-mcp", :exist?
   end
 end

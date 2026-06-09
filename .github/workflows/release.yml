@@ -298,19 +298,29 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Update formula version + SHA256
+      - name: Update formula version + SHA256 from PyPI
         run: |
           TAG="${{ github.ref_name }}"
           VER="${TAG#v}"
-          SHA="${{ needs.build-cli.outputs.cli_sha256 }}"
+          PKG="algochains_mcp_server-${VER}"
           FORMULA="homebrew-tap/Formula/algochains.rb"
 
-          # Replace version, url and sha256 in the formula
-          sed -i "s|version \"[^\"]*\"|version \"${VER}\"|g" "$FORMULA"
-          sed -i "s|releases/download/v[^/]*/algochains-cli.js|releases/download/${TAG}/algochains-cli.js|g" "$FORMULA"
-          sed -i "s|sha256 \"[^\"]*\"|sha256 \"${SHA}\"|g" "$FORMULA"
+          # Fetch SHA256 and URL of the PyPI sdist (public, no auth required)
+          PYPI_JSON=$(curl -sfL "https://pypi.org/pypi/algochains-mcp-server/${VER}/json")
+          PYPI_URL=$(echo "$PYPI_JSON" | jq -r '.urls[] | select(.packagetype=="sdist") | .url')
+          PYPI_SHA=$(echo "$PYPI_JSON" | jq -r '.urls[] | select(.packagetype=="sdist") | .digests.sha256')
 
-          echo "✅ Formula updated:"
+          if [ -z "$PYPI_URL" ] || [ -z "$PYPI_SHA" ]; then
+            echo "⚠️  PyPI metadata not yet available — skipping formula update"
+            exit 0
+          fi
+
+          # Update version, PyPI url, and sha256 in the formula
+          sed -i "s|version \"[^\"]*\"|version \"${VER}\"|g" "$FORMULA"
+          sed -i "s|url \"https://files.pythonhosted.org/[^\"]*\"|url \"${PYPI_URL}\"|g" "$FORMULA"
+          sed -i "s|sha256 \"[^\"]*\"|sha256 \"${PYPI_SHA}\"|g" "$FORMULA"
+
+          echo "✅ Formula updated for ${VER}:"
           grep -E "version|url|sha256" "$FORMULA"
 
       - name: Commit and push formula update
