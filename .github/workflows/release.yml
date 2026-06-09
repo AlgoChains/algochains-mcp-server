@@ -187,7 +187,9 @@ jobs:
 
       - name: Build standalone binary (${{ matrix.target.name }})
         run: |
-          npm install -g @vercel/pkg
+          # @vercel/pkg was unpublished from npm (404) — @yao-pkg/pkg is the
+          # maintained fork with the same `pkg` CLI and node18 targets
+          npm install -g @yao-pkg/pkg
           pkg algochains-cli.js \
             --target ${{ matrix.target.pkg_target }} \
             --output ${{ matrix.target.output }} \
@@ -262,6 +264,28 @@ jobs:
         run: |
           pip install -e ".[dev]"
           npm install -g mcporter
+
+      # mcporter resolves named servers from config/mcporter.json (cwd) or
+      # ~/.mcporter/config.json (global) — without this, emit-ts fails with
+      # "Unknown MCP server 'algochains'". Write both: the explicit regenerate
+      # step runs from the repo root, but npm publish re-triggers regenerate
+      # via prepublishOnly from packages/sdk, which needs the global config.
+      - name: Configure MCPorter
+        run: |
+          mkdir -p config ~/.mcporter
+          cat > config/mcporter.json << 'EOF'
+          {
+            "mcpServers": {
+              "algochains": {
+                "command": "algochains-mcp",
+                "env": {
+                  "ALGOCHAINS_TOOL_MODE": "full"
+                }
+              }
+            }
+          }
+          EOF
+          cp config/mcporter.json ~/.mcporter/config.json
 
       - name: Regenerate SDK types from live server schema
         run: |
