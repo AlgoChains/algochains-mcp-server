@@ -12,3 +12,10 @@ build/
 .ruff_cache/
 .pytest_cache/
 secrets/
+
+# Runtime state — never commit (a committed guardrails_state.json with stale
+# OPEN breakers + monotonic timestamps poisoned fresh checkouts; see 22.4.2)
+state/guardrails_state.json
+state/guardrails_state.json.bak*
+state/onboarding_state.json
+.env.bak*

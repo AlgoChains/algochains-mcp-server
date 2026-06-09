@@ -112,6 +112,13 @@ class GuardrailReason(Enum):
     STATE_FILE_CORRUPT = "state_file_corrupt"
 
 
+AUTO_EXPIRE_ON_RESTART_REASONS: frozenset[GuardrailReason] = frozenset({
+    GuardrailReason.AI_LOOP_DETECTED,
+    GuardrailReason.TOOL_RATE_LIMIT,
+    GuardrailReason.ORDER_VELOCITY,
+})
+
+
 class GuardrailTripped(Exception):
     """Raised when a hard-coded limit is breached. Order is rejected."""
 
@@ -125,6 +132,8 @@ class GuardrailTripped(Exception):
 class CBStatus:
     state: CBState = CBState.CLOSED
     tripped_at: float = 0.0
+    tripped_at_epoch: float = 0.0
+    expires_at_epoch: float = 0.0
     trip_reason: Optional[GuardrailReason] = None
     trip_message: str = ""
     cooldown_sec: int = CB_OPEN_COOLDOWN_SEC
@@ -295,16 +304,56 @@ class TradingGuardrails:
         try:
             if _STATE_PATH.exists():
                 raw = json.loads(_STATE_PATH.read_text())
+                changed = False
+                now_epoch = time.time()
                 for broker, data in raw.items():
+                    reason = GuardrailReason(data["trip_reason"]) if data.get("trip_reason") else None
+                    state = CBState(data.get("state", "CLOSED"))
+                    expires_at_epoch = float(data.get("expires_at_epoch") or 0.0)
+                    legacy_monotonic_only = (
+                        state == CBState.OPEN
+                        and reason in AUTO_EXPIRE_ON_RESTART_REASONS
+                        and not data.get("tripped_at_epoch")
+                        and not expires_at_epoch
+                    )
+                    expired_restart_safe = (
+                        state == CBState.OPEN
+                        and reason in AUTO_EXPIRE_ON_RESTART_REASONS
+                        and expires_at_epoch > 0
+                        and now_epoch >= expires_at_epoch
+                    )
+                    if legacy_monotonic_only or expired_restart_safe:
+                        changed = True
+                        logger.warning(
+                            "Auto-clearing restart-safe guardrail breaker broker=%s reason=%s "
+                            "legacy_monotonic_only=%s expired=%s",
+                            broker,
+                            reason.value if reason else None,
+                            legacy_monotonic_only,
+                            expired_restart_safe,
+                        )
+                        continue
+
                     status = CBStatus(
-                        state=CBState(data.get("state", "CLOSED")),
-                        tripped_at=data.get("tripped_at", 0.0),
-                        trip_reason=GuardrailReason(data["trip_reason"]) if data.get("trip_reason") else None,
+                        state=state,
+                        tripped_at=float(data.get("tripped_at", 0.0) or 0.0),
+                        tripped_at_epoch=float(data.get("tripped_at_epoch", 0.0) or 0.0),
+                        expires_at_epoch=expires_at_epoch,
+                        trip_reason=reason,
                         trip_message=data.get("trip_message", ""),
                         cooldown_sec=data.get("cooldown_sec", CB_OPEN_COOLDOWN_SEC),
+                        # HALF_OPEN means the cooldown already elapsed and the breaker
+                        # owes one test call. Restoring False here would deadlock the
+                        # breaker after a restart: _check_cb_state raises before any
+                        # order can run, so record_order_success() can never fire.
+                        half_open_test_allowed=bool(
+                            data.get("half_open_test_allowed", state == CBState.HALF_OPEN)
+                        ),
                         trip_count_today=data.get("trip_count_today", 0),
                     )
                     self._cb[broker] = status
+                if changed:
+                    self._save_state()
                 logger.info("Guardrail state restored from %s", _STATE_PATH)
         except Exception as exc:
             logger.error(
@@ -330,9 +379,12 @@ class TradingGuardrails:
                 payload[broker] = {
                     "state": status.state.value,
                     "tripped_at": status.tripped_at,
+                    "tripped_at_epoch": status.tripped_at_epoch,
+                    "expires_at_epoch": status.expires_at_epoch,
                     "trip_reason": status.trip_reason.value if status.trip_reason else None,
                     "trip_message": status.trip_message,
                     "cooldown_sec": status.cooldown_sec,
+                    "half_open_test_allowed": status.half_open_test_allowed,
                     "trip_count_today": status.trip_count_today,
                 }
             _STATE_PATH.write_text(json.dumps(payload, indent=2))
@@ -353,6 +405,8 @@ class TradingGuardrails:
             cb = self._get_cb(broker)
             cb.state = CBState.OPEN
             cb.tripped_at = time.monotonic()
+            cb.tripped_at_epoch = time.time()
+            cb.expires_at_epoch = cb.tripped_at_epoch + cooldown_sec
             cb.trip_reason = reason
             cb.trip_message = message
             cb.cooldown_sec = cooldown_sec
@@ -370,8 +424,12 @@ class TradingGuardrails:
         if cb.state == CBState.CLOSED:
             return
 
-        now = time.monotonic()
-        elapsed = now - cb.tripped_at
+        now_monotonic = time.monotonic()
+        now_epoch = time.time()
+        if cb.expires_at_epoch > 0:
+            elapsed = max(0.0, cb.cooldown_sec - max(0.0, cb.expires_at_epoch - now_epoch))
+        else:
+            elapsed = now_monotonic - cb.tripped_at
 
         if cb.state == CBState.OPEN:
             if elapsed >= cb.cooldown_sec:
@@ -404,6 +462,9 @@ class TradingGuardrails:
             with self._state_lock:
                 cb.state = CBState.CLOSED
                 cb.half_open_test_allowed = False
+                cb.tripped_at = 0.0
+                cb.tripped_at_epoch = 0.0
+                cb.expires_at_epoch = 0.0
                 cb.trip_reason = None
                 cb.trip_message = ""
             self._save_state()
@@ -595,16 +656,26 @@ class TradingGuardrails:
     def get_status(self) -> dict:
         """Return current guardrail state. Read-only. Safe to expose as a tool."""
         now = time.monotonic()
+        now_epoch = time.time()
         broker_statuses = {}
         with self._state_lock:
             for broker, cb in self._cb.items():
-                elapsed = now - cb.tripped_at if cb.tripped_at > 0 else 0
-                remaining = max(0, cb.cooldown_sec - elapsed) if cb.state == CBState.OPEN else 0
+                if cb.expires_at_epoch > 0:
+                    elapsed = max(0.0, cb.cooldown_sec - max(0.0, cb.expires_at_epoch - now_epoch))
+                    remaining = max(0, cb.expires_at_epoch - now_epoch) if cb.state == CBState.OPEN else 0
+                    persistence_basis = "wall_clock_epoch"
+                else:
+                    elapsed = now - cb.tripped_at if cb.tripped_at > 0 else 0
+                    remaining = max(0, cb.cooldown_sec - elapsed) if cb.state == CBState.OPEN else 0
+                    persistence_basis = "legacy_monotonic"
                 broker_statuses[broker] = {
                     "state": cb.state.value,
                     "trip_reason": cb.trip_reason.value if cb.trip_reason else None,
                     "trip_message": cb.trip_message,
                     "cooldown_remaining_sec": int(remaining),
+                    "tripped_at_epoch": cb.tripped_at_epoch,
+                    "expires_at_epoch": cb.expires_at_epoch,
+                    "persistence_basis": persistence_basis,
                     "trip_count_today": cb.trip_count_today,
                 }
 

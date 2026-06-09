@@ -6,6 +6,30 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **Circuit breakers now survive restarts correctly** (`trading_guardrails.py`).
+  `tripped_at` was persisted as `time.monotonic()`, which is meaningless across
+  processes — a stale state file could pin breakers OPEN for days of fresh uptime
+  (observed: all 3 brokers stuck OPEN with `trip_count_today: 137`). Breakers now
+  persist wall-clock `tripped_at_epoch`/`expires_at_epoch`; transient trips
+  (`ai_loop_detected`, `tool_rate_limit`, `order_velocity`) auto-clear on load when
+  expired or when only legacy monotonic timestamps exist. Hard safety trips
+  (`daily_loss`, `drawdown`, `consecutive_losses`, `manual_trip`, `state_file_corrupt`)
+  never auto-clear on restart. `get_status()` reports `persistence_basis`.
+- **HALF_OPEN restart deadlock**: `half_open_test_allowed` is now persisted (legacy
+  rows restore as test-allowed) — previously a breaker restored in HALF_OPEN could
+  never accept its one recovery test call, blocking orders until manual reset.
+- Runtime state files (`state/guardrails_state.json`, `state/onboarding_state.json`)
+  are no longer git-tracked — a committed copy with stale OPEN breakers was the
+  poisoning vector for fresh checkouts.
+- CI: release workflow repaired — `publish-sdk` mcporter config, `@vercel/pkg` (gone
+  from npm) → `@yao-pkg/pkg` (see run 27230812921).
+
+---
+
 ## [22.4.1] — 2026-06-09
 
 ### Fixed
