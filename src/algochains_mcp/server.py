@@ -11266,8 +11266,103 @@ async def _run():
         await app.run(read_stream, write_stream, app.create_initialization_options())
 
 
+def _print_ide_config(target: str) -> None:
+    """Write and print MCP config for the specified IDE target."""
+    import json
+    import os
+    import platform
+    import sys
+
+    is_windows = platform.system() == "Windows"
+    home = os.path.expanduser("~")
+    appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+
+    # Base config block — same for every IDE
+    config_block = {
+        "mcpServers": {
+            "algochains": {
+                "command": "algochains-mcp",
+                "env": {
+                    "ALGOCHAINS_TOOL_MODE": "smart",
+                },
+            }
+        }
+    }
+    config_json = json.dumps(config_block, indent=2)
+
+    # Per-IDE file paths
+    paths = {
+        "cursor": os.path.join(home, ".cursor", "mcp.json"),
+        "claude-desktop": (
+            os.path.join(appdata, "Claude", "claude_desktop_config.json")
+            if is_windows
+            else os.path.join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json")
+            if platform.system() == "Darwin"
+            else os.path.join(home, ".config", "claude", "claude_desktop_config.json")
+        ),
+        "windsurf": os.path.join(home, ".codeium", "windsurf", "mcp_config.json"),
+    }
+
+    targets = list(paths.keys()) if target == "all" else [target]
+
+    for t in targets:
+        if t == "claude-code":
+            print(f"\n  Claude Code CLI — run in your terminal:")
+            print(f"    claude mcp add algochains algochains-mcp")
+            print(f"\n  Or add manually to ~/.claude.json under mcpServers:")
+            print(config_json)
+            continue
+
+        path = paths.get(t)
+        if not path:
+            print(f"  Unknown target '{t}'. Supported: cursor, claude-desktop, windsurf, claude-code, all", file=sys.stderr)
+            continue
+
+        # Read existing config and merge
+        existing: dict = {}
+        if os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    existing = json.load(f)
+            except Exception:
+                pass
+
+        if "mcpServers" not in existing:
+            existing["mcpServers"] = {}
+        existing["mcpServers"]["algochains"] = config_block["mcpServers"]["algochains"]
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2)
+            f.write("\n")
+
+        print(f"\n  ✓  Config written to: {path}")
+        print(f"     Restart {t.title().replace('-', ' ')} to connect AlgoChains (482 tools, smart mode).")
+
+    print(f"\n  Config block added:")
+    print(config_json)
+    print()
+    print("  Next: ask your AI: 'Discover tools for backtesting' or 'What is my MNQ bot health?'")
+
+
 def main():
-    logger.info("Starting AlgoChains MCP Server v20.0.0")
+    import sys
+
+    args = sys.argv[1:]
+
+    # --version / -V  →  print version and exit
+    if args and args[0] in ("--version", "-V"):
+        print(f"algochains-mcp-server {_server_version}")
+        return
+
+    # --generate-config [target]  →  write IDE config and exit
+    if args and args[0] == "--generate-config":
+        target = args[1] if len(args) > 1 else "cursor"
+        _print_ide_config(target)
+        return
+
+    # Default: start the MCP stdio server
+    logger.info("Starting AlgoChains MCP Server v%s", _server_version)
     asyncio.run(_run())
 
 
