@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "algochains-mcp-server"
 version = "22.4.0"
-description = "AlgoChains MCP Server — The Ultimate Algo Quant Stack. ~482 tools (full mode) / 150 smart-mode tools: live trading (Tradovate/Alpaca/OANDA/Binance), AlphaLoop self-improving strategies, order flow intelligence, Massive.com/Polygon/Databento data, Onyx RAG, Graphiti temporal knowledge graph (advisory/agent_memory), volatility surfaces, factor models, HMM regime detection, autonomous marketplace pipeline, MCP 2025-11-25 spec, control-tower validation framework, Kalshi prediction markets, subscriber auth/tools, real data only."
+description = "AlgoChains MCP Server — 482 tools for live algo trading: Tradovate/Alpaca/OANDA, Databento/Polygon data, Onyx RAG, Graphiti KG, AlphaLoop, HMM regimes, autonomous marketplace pipeline, Kalshi, real data only."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
