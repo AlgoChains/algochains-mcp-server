@@ -37,12 +37,6 @@ import { createMcpClient, extractText } from "./mcp_client.js";
 import { checkTrustGate, getTier, isKillSwitchActive } from "./trust.js";
 import { ReplApp } from "./repl/App.js";
 
-// ── Internal daemon start (called by daemon.start spawned subprocess) ──────────
-if (process.env.ALGOCHAINS_DAEMON_INTERNAL === "1") {
-  startDaemonServer().catch(e => { console.error(e); process.exit(1); });
-  process.exit(0); // never reached — server runs forever
-}
-
 const VERSION = "22.4.0";
 
 // ── Root program ────────────────────────────────────────────────────────────────

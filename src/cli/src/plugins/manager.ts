@@ -19,7 +19,7 @@
  * All plugins run in isolated subprocess with filtered env.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { join } from "path";
+import { isAbsolute, join, relative, resolve } from "path";
 import { createHash } from "crypto";
 import { PLUGINS_DIR } from "../config.js";
 
@@ -45,6 +45,26 @@ const OFFICIAL_PLUGINS: Record<string, string> = {
   "@algochains/plugin-polymarket": "https://registry.algochains.ai/plugins/polymarket/latest.tar.gz",
 };
 
+const PLUGIN_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function normalizePluginName(name: string): string {
+  const pluginName = name.replace("@algochains/plugin-", "");
+  if (!PLUGIN_NAME_RE.test(pluginName)) {
+    throw new Error(`Invalid plugin name: ${name}`);
+  }
+  return pluginName;
+}
+
+export function resolvePluginDir(name: string): string {
+  const root = resolve(PLUGINS_DIR);
+  const pluginDir = resolve(root, normalizePluginName(name));
+  const rel = relative(root, pluginDir);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error(`Invalid plugin path: ${name}`);
+  }
+  return pluginDir;
+}
+
 // ── Install ───────────────────────────────────────────────────────────────────
 export async function installPlugin(nameOrRef: string, allowCommunity = false): Promise<void> {
   const isGitHub = nameOrRef.startsWith("github:");
@@ -65,16 +85,16 @@ export async function installPlugin(nameOrRef: string, allowCommunity = false): 
     const url = OFFICIAL_PLUGINS[nameOrRef];
     if (!url) throw new Error(`Unknown official plugin: ${nameOrRef}\nAvailable: ${Object.keys(OFFICIAL_PLUGINS).join(", ")}`);
     downloadUrl = url;
-    pluginName = nameOrRef.replace("@algochains/plugin-", "");
+    pluginName = normalizePluginName(nameOrRef);
   } else if (isGitHub) {
     const ref = nameOrRef.replace("github:", "");
     downloadUrl = `https://github.com/${ref}/archive/refs/heads/main.tar.gz`;
-    pluginName = ref.split("/").pop() ?? ref;
+    pluginName = normalizePluginName(ref.split("/").pop() ?? ref);
   } else {
     throw new Error(`Invalid plugin reference: ${nameOrRef}`);
   }
 
-  const pluginDir = join(PLUGINS_DIR, pluginName);
+  const pluginDir = resolvePluginDir(pluginName);
   mkdirSync(pluginDir, { recursive: true });
 
   console.log(`  Downloading ${nameOrRef}...`);
@@ -139,8 +159,7 @@ export function listPlugins(): PluginManifest[] {
 
 // ── Remove ────────────────────────────────────────────────────────────────────
 export function removePlugin(name: string): void {
-  const pluginName = name.replace("@algochains/plugin-", "");
-  const pluginDir = join(PLUGINS_DIR, pluginName);
+  const pluginDir = resolvePluginDir(name);
   if (!existsSync(pluginDir)) {
     throw new Error(`Plugin not installed: ${name}`);
   }
