@@ -11266,6 +11266,62 @@ async def _run():
         await app.run(read_stream, write_stream, app.create_initialization_options())
 
 
+def _request_access(email: str) -> None:
+    """POST a subscription request to Command Center → Slack approval channel."""
+    import json, urllib.request, os
+    bridge = os.getenv("ALGOCHAINS_BRIDGE_URL", "https://cc.algochains.io")
+    internal_key = os.getenv("CC_INTERNAL_KEY", "")
+    payload = json.dumps({"listing_id": 87, "email": email}).encode()
+    req = urllib.request.Request(
+        f"{bridge}/api/subscribe", data=payload, method="POST",
+        headers={"Content-Type": "application/json", "x-internal-key": internal_key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            result = json.loads(r.read())
+        print(f"\nAccess request submitted for {email}.")
+        print(f"Tyler will see an approval request in #tradovate-futures-bot-changelog.")
+        print(f"Once approved, your credentials will be DM'd on Slack or emailed.\n")
+        print(f"Note: Paper trading requires no broker account — fills appear automatically.")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        print(f"\nRequest failed (HTTP {e.code}): {body}")
+        print(f"Contact tyler@algochains.ai directly to request MNQ paper access.\n")
+    except Exception as e:
+        print(f"\nRequest failed: {e}")
+        print(f"Contact tyler@algochains.ai directly.\n")
+
+
+def _run_demo_signal() -> None:
+    """Inject a test MNQ signal and verify paper fills appear within 5 seconds."""
+    import subprocess, os, sys
+    from pathlib import Path
+
+    # Find the control-tower repo relative to the mcp-server repo
+    control_tower = os.getenv(
+        "ALGOCHAINS_CONTROL_TOWER",
+        str(Path(__file__).resolve().parents[4] / "algochains-control-tower"),
+    )
+    dryrun_script = Path(control_tower) / "scripts" / "copy_trade_dryrun.py"
+    if not dryrun_script.exists():
+        print(f"Demo signal script not found at {dryrun_script}")
+        print("Ensure ALGOCHAINS_CONTROL_TOWER points to the control-tower repo.")
+        return
+
+    print("Injecting test MNQ signal (15-second TTL)…")
+    print("Paper fills should appear in subscriber_fills within ~3 seconds.\n")
+    result = subprocess.run(
+        [sys.executable, str(dryrun_script), "--create-signal", "--bot", "MNQ",
+         "--subscriber-email", ""],
+        cwd=control_tower, capture_output=False, timeout=30,
+    )
+    if result.returncode == 0:
+        print("\nDemo signal complete. Check subscriber_fills in Supabase or ask Claude:")
+        print("  'What are my copy-trade signals?'")
+    else:
+        print(f"\nDemo signal exited with code {result.returncode}. Check output above.")
+
+
 def _print_ide_config(target: str) -> None:
     """Write and print MCP config for the specified IDE target."""
     import json
@@ -11359,6 +11415,20 @@ def main():
     if args and args[0] == "--generate-config":
         target = args[1] if len(args) > 1 else "cursor"
         _print_ide_config(target)
+        return
+
+    # --request-access <email>  →  post subscription request to #tradovate-bot-changelog
+    if args and args[0] == "--request-access":
+        email = args[1] if len(args) > 1 else None
+        if not email or "@" not in email:
+            print("Usage: algochains-mcp --request-access your@email.io")
+            return
+        _request_access(email)
+        return
+
+    # --demo-signal  →  inject a test MNQ signal and watch paper fills appear
+    if args and args[0] == "--demo-signal":
+        _run_demo_signal()
         return
 
     # Default: start the MCP stdio server
