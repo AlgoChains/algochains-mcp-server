@@ -88,7 +88,7 @@ def _read_project_version() -> str:
         return _pkg_version("algochains-mcp-server")
     except Exception:
         pass
-    return "22.2.0"  # fallback
+    return "22.4.1"  # fallback (only used when pyproject + installed metadata are both unreadable)
 
 _SERVER_VERSION = _read_project_version()
 

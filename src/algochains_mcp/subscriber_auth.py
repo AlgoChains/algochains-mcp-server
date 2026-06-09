@@ -132,7 +132,7 @@ def resolve_subscriber_key(raw_key: str | None) -> ResolvedSubscriber | None:
     # Guard explicitly: treat None/falsy subscriber_id as an auth failure.
     _raw_sid = row.get("subscriber_id")
     if not _raw_sid:
-        logger.warning("subscriber_auth: row has null/empty subscriber_id — treating as unauthenticated")
+        log.warning("subscriber_auth: row has null/empty subscriber_id — treating as unauthenticated")
         with _CACHE_LOCK:
             _CACHE[key_hash] = (now, ResolvedSubscriber(subscriber_id="", scopes=()))
         return None

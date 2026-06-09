@@ -18,7 +18,7 @@ export interface McpClient {
 export function createMcpClient(bridgeUrl: string, timeoutMs = 30_000): McpClient {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "User-Agent": "algochains-cli/22.4.0",
+    "User-Agent": "algochains-cli/22.4.1",
   };
 
   // Attach developer key if configured

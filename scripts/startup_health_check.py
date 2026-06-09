@@ -396,7 +396,12 @@ class HealthChecker:
             return True
 
     async def run(self) -> bool:
-        print(f"\n{BOLD}AlgoChains MCP Server v20.0 — Startup Health Check{RESET}")
+        try:
+            from importlib.metadata import version as _pkg_version
+            _ver = _pkg_version("algochains-mcp-server")
+        except Exception:
+            _ver = "dev"
+        print(f"\n{BOLD}AlgoChains MCP Server v{_ver} — Startup Health Check{RESET}")
         print("=" * 60)
 
         self.check_environment()

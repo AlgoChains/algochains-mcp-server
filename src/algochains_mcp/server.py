@@ -1133,7 +1133,7 @@ def _get_dynamic_gateway():
             _dynamic_gateway.register_tools_from_list(
                 [t.model_dump() if hasattr(t, 'model_dump') else {"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in TOOLS],
                 category="core",
-                version="v20",
+                version=f"v{_server_version}",
             )
             _dynamic_gateway.build_index()
     return _dynamic_gateway

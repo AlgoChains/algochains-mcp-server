@@ -43,7 +43,7 @@ if (process.env.ALGOCHAINS_DAEMON_INTERNAL === "1") {
   process.exit(0); // never reached — server runs forever
 }
 
-const VERSION = "22.4.0";
+const VERSION = "22.4.1";
 
 // ── Root program ────────────────────────────────────────────────────────────────
 const program = new Command("algochains")

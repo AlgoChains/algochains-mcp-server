@@ -2,7 +2,7 @@
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
 [![Tools](https://img.shields.io/badge/tools-482%20full%20%7C%20150%20smart-green?style=flat-square)](#tool-domains)
-[![Version](https://img.shields.io/badge/version-22.4.0-blueviolet?style=flat-square)](#whats-new)
+[![Version](https://img.shields.io/badge/version-22.4.1-blueviolet?style=flat-square)](#whats-new)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-GOTCHAS__AND__BUGS.md-red?style=flat-square)](docs/GOTCHAS_AND_BUGS.md)
@@ -211,7 +211,7 @@ get_tower_job_status(job_id="job_abc123")
 
 From the CLI (`ac` command):
 ```bash
-# Not yet in ac — see CLI_GAP_ANALYSIS.md for ac tower subcommand roadmap
+# Not yet in ac — see docs/CLI_GAP_ANALYSIS.md for the ac tower subcommand roadmap
 python3 -c "
 from algochains_mcp.algoclaw.desktop_tower import dispatch_tower_job
 dispatch_tower_job('backtest', {'strategy': 'mnq_scalper', 'lookback_days': 90})
@@ -245,7 +245,7 @@ dispatch_tower_job('backtest', {'strategy': 'mnq_scalper', 'lookback_days': 90})
 
 The following services bind to `127.0.0.1` only and are **never exposed publicly**:
 
-- MCP server HTTP bridge (port 8765 / stdio)
+- MCP server HTTP bridge (port 8090 / stdio)
 - Command Center dev server (port 3333) — external access via Cloudflare Access tunnel only
 - Onyx RAG stack (tower port 8085) — accessible via Tailscale VPN only
 
@@ -299,7 +299,7 @@ OWNER_API_TOKEN=your-owner-token-here
 - Trading guardrails with circuit breakers
 - AlphaLoop evolution daemon
 
-> See the full [CHANGELOG.md](CHANGELOG.md) for v23.x, v24.x, v25.x, and v26.x entries.
+> See the full [CHANGELOG.md](CHANGELOG.md) for the complete version history.
 
 ---
 

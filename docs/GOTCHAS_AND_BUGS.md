@@ -69,10 +69,13 @@
 
 ---
 
-### ⚠ OPEN | P1 | Legacy | `tests/test_live_audit.py`
-**Bug:** Lines 12–17 contain hardcoded API keys: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `POLYGON_API_KEY`, `MASSIVE_API_KEY`, `FINNHUB_KEY`.  
-**Impact:** Any git clone exposes credentials.  
-**Fix needed:** Move to `.env` / environment variables. Add to `.gitignore`. Rotate all exposed keys.
+### ✅ FIXED | P1 | 2026-06-09 | `tests/test_live_audit.py`
+**Bug:** Lines 12–17 contained hardcoded API keys: `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `POLYGON_API_KEY`, `MASSIVE_API_KEY`, `FINNHUB_KEY`.  
+**Fix:** File is now env-only (`os.environ.get`) and ships its own regression test
+(`test_no_hardcoded_secrets_in_test_file()` scans for bad patterns). The live variant at
+`tests/live/test_live_audit.py` is env-only too and excluded from default pytest runs
+(`norecursedirs` in `pyproject.toml`). `scripts/secret_scan.py` guards CI.
+A full git-history audit was run 2026-06-09 ahead of making the repo public.
 
 ---
 

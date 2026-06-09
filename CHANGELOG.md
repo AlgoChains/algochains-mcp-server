@@ -6,6 +6,67 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [22.4.1] — 2026-06-09
+
+### Fixed
+
+- **`subscriber_auth.py` (BUG-19b)**: the null-`subscriber_id` guard used an undefined
+  name (`logger` instead of `log`), raising `NameError` — the HTTP bridge surfaced a 500
+  instead of a clean 401 when a key row resolved without a subscriber id. Now a clean
+  auth failure with negative caching. Regression suite added (`tests/test_subscriber_auth.py`).
+- `http_bridge.py`: metadata-fallback version string updated (was stuck at `22.2.0`)
+- `scripts/startup_health_check.py`: banner no longer hardcodes `v20.0` — reads package version
+- README: HTTP bridge port corrected (`8765` → `8090`, the actual default); removed claim
+  that CHANGELOG contains v23.x–v26.x entries; `docs/CLI_GAP_ANALYSIS.md` now exists
+
+### Docs
+
+- `CHANGELOG.md`: backfilled the missing `[22.4.0]` release entry (22.3.0 was never published)
+- `docs/CLI_GAP_ANALYSIS.md`: created — current `algochains` CLI surface + missing subcommand roadmap
+- `docs/GOTCHAS_AND_BUGS.md`: closed stale P1 on `tests/test_live_audit.py` (hardcoded keys
+  were purged; file is env-only with a regression test)
+
+---
+
+## [22.4.0] — 2026-06-09
+
+> Note: version 22.3.0 was never published — the release train went 22.2.0 → 22.4.0.
+
+### Added
+
+#### Distribution (first public release)
+- **PyPI**: `pip install algochains-mcp-server` / `pipx install algochains-mcp-server`
+  published via GitHub Actions OIDC (no stored token)
+- **Homebrew**: `brew tap algochains/algochains && brew install algochains` — formula
+  installs from the PyPI sdist (works while the GitHub repo is private)
+- **Windows**: `install.ps1` auto-installer + pipx-based install docs
+- Daily CI check for PyPI version drift
+
+#### CLI
+- `algochains-mcp --version`, `--generate-config {cursor,claude-desktop,windsurf,claude-code,all}`,
+  `--request-access <email>` (Slack approval flow), `--demo-signal` (15s-TTL test signal)
+- TypeScript CLI rebuild (React+Ink REPL, daemon, trust ladder T0–T3, kill switch,
+  OS keyring auth, doctor, shell completions, plugins, triggers)
+
+#### Developer tier
+- `developer_auth.py` — `ac_live_*` / `ac_test_*` key resolution with caching
+- Developer tool allowlist (28 tools) + per-key rate limiter (60 RPM / 1000 RPH / 15-burst)
+- Bridge `_resolve_auth` wiring + integration tests + onboarding guide
+
+#### Tools
+- `get_signal_trade_correlation`; widened `get_bot_health` Kronos slice
+
+### Fixed
+
+- HMAC hardening: removed `'1234'` default secret in `trade_propagation.py` — fails closed
+  when `ALGOCHAINS_SIGNAL_SECRET` is unset
+- Stale default-constant references causing `NameError` in propagation tools
+- Startup log no longer reports `v20.0.0`
+- PyPI description trimmed to ≤512 chars (upload 400)
+- Homebrew formula: PyPI tarball instead of private GitHub release asset (404)
+
+---
+
 ## [22.2.0] — 2026-04-21
 
 ### Added

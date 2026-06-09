@@ -88,7 +88,7 @@ export function ReplApp({ profileName }: { profileName?: string }) {
     input: "",
     cursor: 0,
     output: [{
-      text: `AlgoChains v22.4.0  |  Profile: ${profileName ?? config.default.profile}  |  Type /help for commands`,
+      text: `AlgoChains v22.4.1  |  Profile: ${profileName ?? config.default.profile}  |  Type /help for commands`,
       type: "system",
     }],
     history: loadCommandHistory(),

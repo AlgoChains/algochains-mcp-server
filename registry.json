@@ -2,7 +2,7 @@
   "name": "algochains-mcp-server",
   "display_name": "AlgoChains — Universal AI-to-Broker Trading Protocol",
   "description": "The undisputed #1 algorithmic trading MCP server. 350+ tools across trading, strategy, marketplace, order flow, institutional data, DeFi, crypto, and autonomous evolution. Enterprise features: AES-256-GCM key vault, per-agent sub-accounts, MCP 2025-11-25 spec compliance (Elicitation, Tasks, resource subscriptions), self-improving trading loop (AlphaLoop-style), footprint charts, dark pool detection, macro signal fabric, prediction market signals, Stripe Connect, per-tenant audit logs.",
-  "version": "22.4.0",
+  "version": "22.4.1",
   "license": "MIT",
   "transport": ["stdio", "http"],
   "categories": ["finance", "trading", "strategy", "crypto", "defi", "data", "marketplace", "institutional"],
