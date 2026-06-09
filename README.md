@@ -53,7 +53,22 @@ brew tap algochains/algochains
 brew install algochains
 ```
 
-> **Homebrew Python (macOS):** If you get a PEP 668 "externally-managed-environment" error, use `pipx install algochains-mcp-server` — pipx manages its own venv automatically. Do NOT use `--break-system-packages`.
+**Option 5 — Windows**
+```powershell
+# Recommended: pipx (works in PowerShell, CMD, and Windows Terminal)
+pip install pipx
+pipx install algochains-mcp-server
+
+# Or in any existing Python venv:
+pip install algochains-mcp-server
+
+# Safety wrapper (trust ladder, kill switch, dry-run):
+.\scripts\algochains.ps1 detect-market-regime
+```
+
+> **macOS Homebrew Python:** If you get a PEP 668 "externally-managed-environment" error, use `pipx install algochains-mcp-server` — pipx manages its own venv automatically. Do NOT use `--break-system-packages`.
+>
+> **Windows:** `winget install AlgoChains.algochains` is coming — manifest has been generated and is pending submission to the winget community repo. Use `pipx` in the meantime.
 
 That's it. Your AI now has 148 tools (smart mode) available immediately. Add broker credentials for live trading access. See [Option C](#option-c-full-live-setup) for live credentials.
 
