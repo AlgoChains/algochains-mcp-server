@@ -1,7 +1,7 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-482%20full%20%7C%20150%20smart-green?style=flat-square)](#tool-domains)
+[![Tools](https://img.shields.io/badge/tools-478%20full%20%7C%20148%20smart-green?style=flat-square)](#tool-domains)
 [![Version](https://img.shields.io/badge/version-22.4.0-blueviolet?style=flat-square)](#whats-new)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
@@ -10,7 +10,7 @@
 
 ---
 
-> **The only MCP server with live futures bots, real fill data, real-time ML inference, and ~482 tools across 20 domains — all backed by real APIs, zero synthetic data.**
+> **The only MCP server with live futures bots, real fill data, real-time ML inference, and 478 tools across 19 domains — all backed by real APIs, zero synthetic data.**
 
 Connect your AI assistant (Claude, Cursor, ChatGPT) to your trading infrastructure in 3 commands. Ask Claude "What's my MNQ P&L today?" — it calls Tradovate, gets the real answer, and tells you.
 
@@ -27,23 +27,17 @@ You ask Claude:                    Claude calls:                    Server calls
 ## Quick Install
 
 ```bash
-# 1. Clone (private repo — requires GitHub access)
-git clone https://github.com/AlgoChains/algochains-mcp-server.git
-cd algochains-mcp-server
+# 1. Install
+pip install algochains-mcp-server
 
-# 2. Install
-pip install -e ".[http,supabase,auth]"
-
-# 3. Connect to your IDE (no credentials needed to start)
+# 2. Connect to your IDE (no credentials needed to start)
 python scripts/quickstart.py --generate-config cursor
 
-# 4. Verify
+# 3. Verify
 python scripts/quickstart.py --mode demo
 ```
 
 That's it. Your AI now has 148 tools (smart mode) available immediately. Add broker credentials for live trading access. See [Option C](#option-c-full-live-setup) for live credentials.
-
-> **Note:** `pip install algochains-mcp-server` from PyPI will be available after the first tagged release is published via CI.
 
 ---
 
@@ -79,7 +73,7 @@ This provides 99.6% token reduction vs exposing all 478 tools (arXiv:2603.20313)
 
 ## Tool Domains
 
-All ~482 tools organized across 20 domains:
+All 478 tools organized across 19 domains:
 
 | # | Domain | Smart | Full | Key Tools |
 |---|--------|:-----:|:----:|-----------|
@@ -102,13 +96,6 @@ All ~482 tools organized across 20 domains:
 | 17 | **Performance Reporting** | 4 | 6 | `generate_bot_tearsheet`, `get_bot_metrics_full`, `run_mcpt_pipeline`, `capture_learning_signal` |
 | 18 | **Platform / SaaS** | 8 | 20 | `join_waitlist`, `create_support_ticket`, `track_platform_event`, `get_analytics_summary` |
 | 19 | **AlphaLoop / Evolution** | 12 | 22 | `run_alphaloop_cycle`, `get_alphaloop_results`, `get_algochains_telos`, `send_ntfy_notification` |
-| 20 | **Temporal Knowledge Graph (Graphiti)** | 2 | 4 | `graphiti_search`, `graphiti_temporal_query`, `graphiti_health`, `graphiti_add_episode` — advisory `agent_memory`, never broker truth; fails closed `graphiti_unavailable` |
-
-> **Domain 20 (Graphiti):** an **advisory** temporal context graph over Neo4j (getzep/graphiti),
-> isolated in `.venv-graphiti` (Python 3.13) on the control-tower side. `graphiti_search`/`graphiti_health`
-> are Tier-1 reads; `graphiti_add_episode` is `WRITE_LOCAL` (discover-only). It is `agent_memory`
-> authority — **never** broker truth, never a trading dependency. `discover_tools("graphiti")` surfaces them.
-> See control-tower `docs/GRAPHITI_INTEGRATION_MEGAPROMPT.md`.
 
 ---
 
@@ -258,9 +245,7 @@ OWNER_API_TOKEN=your-owner-token-here
 ### Option A — Demo Mode (No Credentials, 1 Minute)
 
 ```bash
-git clone https://github.com/AlgoChains/algochains-mcp-server.git
-cd algochains-mcp-server
-pip install -e ".[http,supabase,auth]"
+pip install algochains-mcp-server
 python scripts/quickstart.py --mode demo
 ```
 

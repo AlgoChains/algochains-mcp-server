@@ -63,6 +63,11 @@ _TOOL_TIERS: dict[str, int] = {
     "search_tradovate_contracts": TIER_READ_ONLY,
     "get_tradovate_risk_snapshot": TIER_READ_ONLY,
     "get_bot_health": TIER_READ_ONLY,
+    "query_codegraph": TIER_READ_ONLY,
+    "graphiti_search": TIER_READ_ONLY,
+    "graphiti_temporal_query": TIER_READ_ONLY,
+    "graphiti_health": TIER_READ_ONLY,
+    "graphiti_add_episode": TIER_WRITE_LOCAL,  # internal graph write; no broker/money
     "get_quant_regime_state": TIER_READ_ONLY,
     # Market data
     "get_quote": TIER_READ_ONLY,
@@ -283,8 +288,6 @@ _TOOL_TIERS: dict[str, int] = {
     "rollback_evolution": TIER_WRITE_LOCAL,
     "run_marketplace_autopilot": TIER_WRITE_LOCAL,
     "execute_dynamic_tool": TIER_WRITE_LOCAL,
-    "execute_intent": TIER_WRITE_LOCAL,
-    "approve_intent": TIER_WRITE_LOCAL,
     "get_intent_plan": TIER_READ_ONLY,
     "get_intent_history": TIER_READ_ONLY,
     "run_token_guardian": TIER_WRITE_LOCAL,
@@ -316,6 +319,8 @@ _TOOL_TIERS: dict[str, int] = {
     "follow_leader": TIER_ORDER_EXEC,
     "process_payment": TIER_ORDER_EXEC,
     "create_payment_session": TIER_ORDER_EXEC,
+    "execute_intent": TIER_ORDER_EXEC,
+    "approve_intent": TIER_ORDER_EXEC,
 
     # ── Tier 3: DESTRUCTIVE ───────────────────────────────────────────────────
     # Irreversible bulk actions
@@ -471,12 +476,12 @@ def safe_tools_for_mode(tool_names: list[str], mode: str) -> list[str]:
 # Public alias — tests and external code should use TOOL_TIERS (without underscore).
 TOOL_TIERS = _TOOL_TIERS
 
-# P2-7 FIX: _TOOL_TIERS is built from multiple merged dicts so Python silently
-# accepts duplicate keys (last wins). In practice validate_strategy and run_backtest
-# were intentionally listed twice; the final tiers are documented above.
-# This assertion guards against UNINTENTIONAL future duplicates that could silently
-# downgrade a tool's danger tier.
-_EXPECTED_INTENTIONAL_DUPES: set[str] = {"validate_strategy"}  # see comments above
-_all_keys: list[str] = []  # populated lazily if needed for debugging
-# Python dicts cannot have duplicate keys at runtime — assertion is a reminder for
-# maintainers when updating the dicts above.  Keep this comment in sync with reality.
+# P2-7: _TOOL_TIERS is a single annotated dict literal, so Python collapses any
+# duplicate key at COMPILE time ("last wins") and the duplicate is UNRECOVERABLE from
+# this runtime dict — a future dup could silently DOWNGRADE a tool's danger tier with
+# no error here. The real guard lives in tests/test_tool_danger_contract.py, which
+# AST-parses this source (the only place the dup survives) and asserts:
+#   1. every duplicate key is whitelisted below, and
+#   2. no duplicate lowers a tool's effective tier (no silent downgrade).
+# Keep this set in sync with that test. validate_strategy: READ_ONLY -> WRITE_LOCAL.
+_EXPECTED_INTENTIONAL_DUPES: set[str] = {"validate_strategy"}

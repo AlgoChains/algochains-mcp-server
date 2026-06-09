@@ -256,3 +256,43 @@ def test_all_public_tools_are_read_only_or_write_local():
         f"PUBLIC_TOOLS contains ORDER_EXEC+ tier tools (should be READ_ONLY or WRITE_LOCAL): "
         f"{offenders}"
     )
+
+
+# ── dual-path parity: bridge ORDER_EXEC gate must match the stdio dispatch gate ──
+
+def test_all_owner_order_exec_tools_require_confirm():
+    """Parity with stdio's test_all_order_exec_tools_blocked_without_token.
+
+    Every ORDER_EXEC+ tool reachable via the HTTP bridge OWNER_TOOLS must be blocked
+    for an owner caller that omits confirm=true. A single high-tier owner tool that
+    slips through without a confirm gate is a money path on the second execution
+    surface, even though the stdio path is already covered.
+    """
+    bridge = _bridge()
+    from algochains_mcp.tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
+
+    owner_tools = getattr(bridge, "OWNER_TOOLS", None)
+    if not owner_tools:
+        pytest.skip("bridge exposes no OWNER_TOOLS set")
+
+    high_tier = sorted(t for t in owner_tools if get_tool_tier(t) >= TIER_ORDER_EXEC)
+    assert high_tier, "No ORDER_EXEC+ owner tools found — check OWNER_TOOLS/tier defs"
+
+    not_gated: list[str] = []
+
+    async def _check():
+        for tool in high_tier:
+            result = await bridge.handle_mcp_request(tool, {}, is_owner=True)
+            blob = str(result).lower()
+            gated = (
+                "error" in result
+                and ("confirm" in blob or "danger_tier" in result or "order_exec" in blob)
+            )
+            if not gated:
+                not_gated.append(tool)
+
+    asyncio.run(_check())
+    assert not not_gated, (
+        "These ORDER_EXEC+ OWNER_TOOLS did NOT require confirm on the HTTP bridge "
+        f"(stdio path gates them, bridge does not — parity break): {not_gated}"
+    )

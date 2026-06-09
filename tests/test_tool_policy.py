@@ -115,3 +115,10 @@ def test_stdio_full_mode_order_exec_fails_closed_without_owner_secret(monkeypatc
 
     assert decision.allow is False
     assert decision.required_secret == "OWNER_API_TOKEN"
+
+
+def test_intent_execution_tools_are_order_exec_tier():
+    from algochains_mcp.tool_danger_tiers import TIER_ORDER_EXEC, get_danger_tier
+
+    assert get_danger_tier("execute_intent") >= TIER_ORDER_EXEC
+    assert get_danger_tier("approve_intent") >= TIER_ORDER_EXEC

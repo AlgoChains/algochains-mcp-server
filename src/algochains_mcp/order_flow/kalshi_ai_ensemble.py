@@ -5,12 +5,14 @@ Five frontier LLMs debate every trade via OpenRouter (single API key).
 Based on ryanfrigo/kalshi-ai-trading-bot multi-model debate pattern,
 adapted to route through AlgoChains MCP infrastructure.
 
-Model roles (from ryanfrigo validation):
-  Claude Sonnet 4.5 → Lead Analyst    (30% weight)
-  Gemini 3.1 Pro    → Forecaster      (30% weight)
-  GPT-5.4           → Risk Manager    (20% weight)
-  DeepSeek V3.2     → Bull Researcher (10% weight)
-  Grok 4.1 Fast     → Bear Researcher (10% weight)
+Model roles (OpenRouter slugs — see ENSEMBLE_MODELS for the source of truth):
+  anthropic/claude-opus-4.8 → Lead Analyst    (30% weight)
+  google/gemini-2.5-pro     → Forecaster      (30% weight)
+  openai/gpt-4o             → Risk Manager    (20% weight)
+  deepseek/deepseek-chat    → Bull Researcher (10% weight)
+  x-ai/grok-4.3             → Bear Researcher (10% weight)
+Each role has a `fallback` slug used automatically if the primary 400/404s.
+OpenRouter uses DOT notation (claude-opus-4.8), not the direct-API dash form.
 
 Consensus gating: position skipped if models diverge beyond CONFIDENCE_THRESHOLD.
 Cost control: daily spend cap enforced before every API call.
@@ -35,12 +37,18 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_REFERER  = "https://algochains.com"
 
 # ─── Ensemble config (mirroring ryanfrigo model weights) ─────────────────────
+# All slugs verified LIVE via the OpenRouter /models endpoint (2026-05-29).
+# OpenRouter uses DOT notation for the Claude 4.x gen (anthropic/claude-opus-4.8),
+# NOT the direct-API dash form (claude-opus-4-8). The previous slugs
+# (anthropic/claude-sonnet-4-5, google/gemini-pro-1.5, x-ai/grok-2-1212) were all
+# DEAD on OpenRouter and silently dropped votes → false "no consensus".
+# Each entry carries a `fallback` slug used automatically on a 400/404 model error.
 ENSEMBLE_MODELS = [
-    {"model": "anthropic/claude-sonnet-4-5",  "role": "lead_analyst",    "weight": 0.30},
-    {"model": "google/gemini-pro-1.5",         "role": "forecaster",      "weight": 0.30},
-    {"model": "openai/gpt-4o",                 "role": "risk_manager",    "weight": 0.20},
-    {"model": "deepseek/deepseek-chat",         "role": "bull_researcher", "weight": 0.10},
-    {"model": "x-ai/grok-2-1212",              "role": "bear_researcher", "weight": 0.10},
+    {"model": "anthropic/claude-opus-4.8",    "role": "lead_analyst",    "weight": 0.30, "fallback": "anthropic/claude-sonnet-4.5"},
+    {"model": "google/gemini-2.5-pro",        "role": "forecaster",      "weight": 0.30, "fallback": "google/gemini-2.0-flash-001"},
+    {"model": "openai/gpt-4o",                "role": "risk_manager",    "weight": 0.20, "fallback": "openai/gpt-4o-mini"},
+    {"model": "deepseek/deepseek-chat",       "role": "bull_researcher", "weight": 0.10, "fallback": "meta-llama/llama-3.3-70b-instruct"},
+    {"model": "x-ai/grok-4.3",                "role": "bear_researcher", "weight": 0.10, "fallback": "meta-llama/llama-3.3-70b-instruct"},
 ]
 
 MIN_CONFIDENCE_TO_TRADE  = 0.45    # Skip if ensemble confidence < 45%
@@ -130,12 +138,12 @@ def check_ai_budget() -> tuple[bool, float, float]:
 
 # ─── OpenRouter client ────────────────────────────────────────────────────────
 
-def _call_openrouter(model: str, messages: list[dict], max_tokens: int = AI_MAX_TOKENS) -> dict[str, Any]:
-    """Single OpenRouter API call. Returns parsed response dict."""
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if not api_key:
-        return {"error": "OPENROUTER_API_KEY not set"}
+_MAX_RETRIES = 2          # transient retries on 429 / 5xx
+_RETRY_BACKOFF_S = 0.75   # base backoff (doubled each retry)
 
+
+def _post_openrouter(api_key: str, model: str, messages: list[dict], max_tokens: int) -> dict[str, Any]:
+    """One OpenRouter HTTP call. Returns parsed JSON or {'error', '_status'}."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "HTTP-Referer": OPENROUTER_REFERER,
@@ -146,8 +154,10 @@ def _call_openrouter(model: str, messages: list[dict], max_tokens: int = AI_MAX_
         "messages": messages,
         "temperature": AI_TEMPERATURE,
         "max_tokens": max_tokens,
+        # Enforce machine-parseable JSON server-side instead of relying on the
+        # prompt alone (fragile json.loads after stripping code fences).
+        "response_format": {"type": "json_object"},
     }
-
     try:
         resp = httpx.post(
             f"{OPENROUTER_BASE_URL}/chat/completions",
@@ -158,9 +168,54 @@ def _call_openrouter(model: str, messages: list[dict], max_tokens: int = AI_MAX_
         resp.raise_for_status()
         return resp.json()
     except httpx.HTTPStatusError as exc:
-        return {"error": f"HTTP {exc.response.status_code}: {exc.response.text[:300]}"}
+        return {
+            "error": f"HTTP {exc.response.status_code}: {exc.response.text[:300]}",
+            "_status": exc.response.status_code,
+        }
     except Exception as exc:
-        return {"error": str(exc)[:300]}
+        return {"error": str(exc)[:300], "_status": None}
+
+
+def _call_openrouter(
+    model: str,
+    messages: list[dict],
+    max_tokens: int = AI_MAX_TOKENS,
+    fallback: Optional[str] = None,
+) -> dict[str, Any]:
+    """OpenRouter call with retry on 429/5xx and model-fallback on 400/404.
+
+    Returns parsed response dict, or {'error': ...} when all attempts fail.
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        return {"error": "OPENROUTER_API_KEY not set"}
+
+    candidates = [model] + ([fallback] if fallback and fallback != model else [])
+
+    last: dict[str, Any] = {"error": "no attempt made"}
+    for slug in candidates:
+        for attempt in range(_MAX_RETRIES + 1):
+            last = _post_openrouter(api_key, slug, messages, max_tokens)
+            if "error" not in last:
+                if slug != model:
+                    logger.warning("Model %s failed; succeeded on fallback %s", model, slug)
+                return last
+
+            status = last.get("_status")
+            # Transient → retry same slug with backoff.
+            if status == 429 or (isinstance(status, int) and 500 <= status < 600):
+                if attempt < _MAX_RETRIES:
+                    time.sleep(_RETRY_BACKOFF_S * (2 ** attempt))
+                    continue
+                break  # exhausted retries on this slug
+            # 400/404 (bad/removed model) → stop retrying, try fallback slug.
+            if status in (400, 404):
+                logger.warning("Model %s returned %s; trying fallback", slug, status)
+                break
+            # Other errors (timeout, auth) → no point retrying a different slug.
+            break
+
+    return last
 
 
 # ─── Prompt templates ─────────────────────────────────────────────────────────
@@ -321,7 +376,9 @@ def run_ensemble_debate(
             extra_context=extra_context,
         )
 
-        response = _call_openrouter(model_cfg["model"], messages)
+        response = _call_openrouter(
+            model_cfg["model"], messages, fallback=model_cfg.get("fallback")
+        )
         vote = _parse_model_response(response, model_cfg)
 
         if vote:

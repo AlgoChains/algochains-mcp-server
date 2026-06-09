@@ -34,23 +34,14 @@ logger = logging.getLogger("algochains_mcp.trade_propagation")
 _DEFAULT_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 
-# BUG-21 FIX: Previously _ROO_DEFAULT_URL used hardcoded HTTP (not HTTPS),
-# exposing the HMAC secret and trade signals on the wire in plaintext whenever
-# env vars were unset. Changed to fail-closed: when no env URL is set, the
-# function raises ConfigurationError rather than sending over plain HTTP.
-# If you need to allow the legacy HTTP endpoint during migration, set
-# ALGOCHAINS_SIGNAL_URL=http://172.232.170.168/signals/signal/ explicitly.
-_ROO_LEGACY_HTTP_URL = "http://172.232.170.168/signals/signal/"  # kept for documentation only
-
-# ⚠️  SECURITY: This is the dev-only fallback secret. It MUST be overridden via
-# ALGOCHAINS_SIGNAL_SECRET or SIGNAL_SECRET in production. Any signal sent with
-# the default secret will be rejected by a correctly-configured backend, and the
-# propagate_signal() function will log a WARNING so operators know to fix it.
-_ROO_DEFAULT_SECRET = "1234"
+# Legacy HTTP endpoint kept for documentation only — never used in production.
+# Set ALGOCHAINS_SIGNAL_URL=http://172.232.170.168/signals/signal/ explicitly
+# if you need the legacy HTTP endpoint during migration.
+_ROO_LEGACY_HTTP_URL = "http://172.232.170.168/signals/signal/"  # documentation only
 
 
 def _resolve_url() -> str:
-    """Return signal endpoint URL — env override required; fails closed if unset."""
+    """Return signal endpoint URL — fails closed when env var is unset."""
     url = (
         os.getenv("ALGOCHAINS_SIGNAL_URL", "").strip()
         or os.getenv("SIGNAL_URL", "").strip()
@@ -72,12 +63,22 @@ def _resolve_url() -> str:
 
 
 def _resolve_secret() -> bytes:
-    """Return HMAC secret bytes — env override takes priority over Roo default."""
+    """Return HMAC secret bytes — fails closed when ALGOCHAINS_SIGNAL_SECRET is unset.
+
+    The dev fallback secret was removed after the repo was briefly public (2026-06-08).
+    Set ALGOCHAINS_SIGNAL_SECRET in .env to match the Django signal ingest endpoint.
+    Contact Roo to confirm the current server-side secret has been rotated.
+    """
     raw = (
         os.getenv("ALGOCHAINS_SIGNAL_SECRET", "").strip()
         or os.getenv("SIGNAL_SECRET", "").strip()
-        or _ROO_DEFAULT_SECRET
     )
+    if not raw:
+        raise RuntimeError(
+            "trade_propagation: ALGOCHAINS_SIGNAL_SECRET (or SIGNAL_SECRET) is not set. "
+            "Set it in .env to match the Django signal ingest endpoint HMAC secret. "
+            "The previous '1234' default was removed — rotate the server-side secret too."
+        )
     return raw.encode("utf-8")
 
 

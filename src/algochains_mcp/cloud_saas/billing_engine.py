@@ -376,19 +376,146 @@ class BillingEngine:
 
         event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
 
+        # P0-1 idempotency gate: insert into webhook_events BEFORE any handler logic.
+        # ON CONFLICT DO NOTHING returns 0 rows if already processed → discard.
+        if _SUPABASE_URL and _SUPABASE_SERVICE_KEY:
+            try:
+                import httpx as _httpx
+                _idm_url = f"{_SUPABASE_URL}/rest/v1/webhook_events"
+                _idm_body = {
+                    "provider": "stripe",
+                    "provider_event_id": event.id,
+                    "event_type": event.type,
+                }
+                _idm_headers = {**_supabase_headers(), "Prefer": "return=minimal,resolution=ignore-duplicates"}
+                _resp = _httpx.post(_idm_url, json=_idm_body, headers=_idm_headers, timeout=5)
+                if _resp.status_code == 409 or (
+                    _resp.status_code in (200, 201) and _resp.content == b""
+                ):
+                    # Already processed (conflict) — discard to prevent double-activation
+                    logger.info("webhook_events: duplicate %s %s — discarded", event.type, event.id)
+                    return {"event": event.type, "processed": False, "reason": "duplicate"}
+                _resp.raise_for_status()
+            except Exception as _idm_err:
+                logger.warning("webhook_events idempotency insert failed (non-fatal): %s", _idm_err)
+
         if event.type == "checkout.session.completed":
             session = event.data.object
+            strategy_id = session.metadata.get("strategy_id", "")
+            subscriber_email = session.customer_email or ""
+            customer_id = getattr(session, "customer", "") or ""
+            subscription_id = getattr(session, "subscription", "") or ""
+            amount_usd = (session.amount_total or 0) / 100
+            user_id = session.metadata.get("user_id", "")
+
             logger.info(
-                "Payment confirmed: session=%s strategy=%s",
-                session.id, session.metadata.get("strategy_id"),
+                "Payment confirmed: session=%s strategy=%s subscriber=%s",
+                session.id, strategy_id, subscriber_email,
             )
-            return {
+
+            # HK-billing fix: Write the full entitlement chain to Supabase.
+            # Previously this handler only logged and returned — users who paid
+            # had no row in billing_accounts, stripe_subscriptions, or
+            # subscription_entitlements, making their subscription invisible to
+            # the platform's entitlement checks.
+            _write_errors: list[str] = []
+            if _SUPABASE_URL and _SUPABASE_SERVICE_KEY:
+                try:
+                    import httpx as _httpx
+                    _hdrs = _supabase_headers()
+                    _now_iso = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+
+                    # 1. billing_accounts — record the payment event
+                    _ba_payload = {
+                        "user_id": user_id or None,
+                        "stripe_customer_id": customer_id or None,
+                        "stripe_subscription_id": subscription_id or None,
+                        "subscriber_email": subscriber_email,
+                        "checkout_session_id": session.id,
+                        "amount_usd": amount_usd,
+                        "strategy_id": strategy_id or None,
+                        "status": "active",
+                        "created_at": _now_iso,
+                        "updated_at": _now_iso,
+                    }
+                    _ba_resp = _httpx.post(
+                        f"{_SUPABASE_URL}/rest/v1/billing_accounts",
+                        json=_ba_payload,
+                        headers={**_hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                        timeout=8,
+                    )
+                    if _ba_resp.status_code not in (200, 201, 409):
+                        _write_errors.append(f"billing_accounts:{_ba_resp.status_code}")
+                        logger.error("billing_accounts write failed: %s %s", _ba_resp.status_code, _ba_resp.text[:200])
+
+                    # 2. stripe_subscriptions — track the Stripe subscription object
+                    if subscription_id:
+                        _ss_payload = {
+                            "user_id": user_id or None,
+                            "stripe_subscription_id": subscription_id,
+                            "stripe_customer_id": customer_id or None,
+                            "strategy_id": strategy_id or None,
+                            "status": "active",
+                            "checkout_session_id": session.id,
+                            "created_at": _now_iso,
+                            "updated_at": _now_iso,
+                        }
+                        _ss_resp = _httpx.post(
+                            f"{_SUPABASE_URL}/rest/v1/stripe_subscriptions",
+                            json=_ss_payload,
+                            headers={**_hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                            timeout=8,
+                        )
+                        if _ss_resp.status_code not in (200, 201, 409):
+                            _write_errors.append(f"stripe_subscriptions:{_ss_resp.status_code}")
+                            logger.error("stripe_subscriptions write failed: %s", _ss_resp.status_code)
+
+                    # 3. subscription_entitlements — the gate that controls feature access
+                    if user_id and strategy_id:
+                        _se_payload = {
+                            "user_id": user_id,
+                            "strategy_id": strategy_id,
+                            "stripe_subscription_id": subscription_id or None,
+                            "checkout_session_id": session.id,
+                            "entitled": True,
+                            "granted_at": _now_iso,
+                            "expires_at": None,  # recurring — revoked on cancellation
+                        }
+                        _se_resp = _httpx.post(
+                            f"{_SUPABASE_URL}/rest/v1/subscription_entitlements",
+                            json=_se_payload,
+                            headers={**_hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                            timeout=8,
+                        )
+                        if _se_resp.status_code not in (200, 201, 409):
+                            _write_errors.append(f"subscription_entitlements:{_se_resp.status_code}")
+                            logger.error("subscription_entitlements write failed: %s", _se_resp.status_code)
+                    else:
+                        logger.warning(
+                            "checkout.session.completed: missing user_id=%r or strategy_id=%r — "
+                            "subscription_entitlements row NOT written; check metadata sent to Stripe Checkout.",
+                            user_id, strategy_id,
+                        )
+                except Exception as _be_err:
+                    _write_errors.append(f"exception:{_be_err}")
+                    logger.error("checkout.session.completed DB write exception: %s", _be_err, exc_info=True)
+            else:
+                logger.warning(
+                    "checkout.session.completed: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — "
+                    "entitlement rows NOT written. Payment confirmed in Stripe but platform cannot grant access."
+                )
+
+            result = {
                 "event": "payment_confirmed",
                 "session_id": session.id,
-                "strategy_id": session.metadata.get("strategy_id"),
-                "subscriber": session.customer_email,
-                "amount_usd": session.amount_total / 100,
+                "strategy_id": strategy_id,
+                "subscriber": subscriber_email,
+                "amount_usd": amount_usd,
+                "db_write_errors": _write_errors,
             }
+            if _write_errors:
+                result["warning"] = "One or more Supabase writes failed — manual entitlement review required"
+            return result
         elif event.type == "payout.paid":
             payout = event.data.object
             logger.info("Payout completed: %s $%.2f", payout.id, payout.amount / 100)

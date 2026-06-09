@@ -13,6 +13,7 @@ import pytest
 
 # Update these constants when intentionally changing tool count.
 # v22.2.0 ground truth (2026-05-03):  full=477, smart=150
+# v22.5.0 (2026-05-31): +4 Graphiti tools (full=481), +2 Tier-1 (smart=152)
 # DOCUMENTED_TOOL_COUNT_MIN: conservative floor; fail if we drop below this.
 # DOCUMENTED_TOOL_COUNT_MAX: safety ceiling; fail if unexpectedly high.
 # SMART_TOOL_COUNT_MIN / MAX: smart (Tier-1) mode floor/ceiling.

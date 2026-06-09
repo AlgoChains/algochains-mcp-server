@@ -73,6 +73,12 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
     "get_listing_detail": {"implementation_status": "full", "required_env": ["LISTING_API_KEY"], "notes": ""},
     "subscribe_to_bot": {"implementation_status": "full", "required_env": ["LISTING_API_KEY"], "notes": ""},
 
+    "get_learn_hub_health": {
+        "implementation_status": "full",
+        "required_env": [],
+        "notes": "Read-only HTTP smoke check for algochains.ai/learn/. No deploy capability. External HTTPS call; fails gracefully if site unreachable.",
+    },
+
     # ── Numerai tournament tools (§9 / §28.3 build order step 12) ──────────
     "numerai_status": {
         "implementation_status": "partial",

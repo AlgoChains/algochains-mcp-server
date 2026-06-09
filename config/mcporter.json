@@ -3,12 +3,26 @@
     "algochains": {
       "command": "algochains-mcp",
       "env": {
-        "ALGOCHAINS_TOOL_MODE": "full"
+        "ALGOCHAINS_TOOL_MODE": "smart",
+        "TRADOVATE_ENV": "live"
       }
     }
   },
   "defaults": {
     "outputFormat": "json",
     "timeout": 120
+  },
+  "safety": {
+    "requireConfirmForTradeExec": true,
+    "dryRunByDefault": false,
+    "blockedInCI": [
+      "place_order",
+      "cancel_order",
+      "close_position",
+      "close_all_positions",
+      "deploy_strategy",
+      "execute_intent",
+      "approve_intent"
+    ]
   }
 }

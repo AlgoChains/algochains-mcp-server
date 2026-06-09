@@ -402,12 +402,17 @@ _LAZY_SPECS = {
 
 # logger and basicConfig already configured above (before guardrails import)
 
+from algochains_mcp import __version__ as _server_version
+
 SERVER_INSTRUCTIONS = (
-    "AlgoChains MCP Server v22.2 — The Ultimate Algo Quant Stack. "
-    "338 tools across 19 domains: market data, trading, strategy building, ML/AI, execution, "
+    f"AlgoChains MCP Server v{_server_version} — The Ultimate Algo Quant Stack. "
+    "~481 tools across 20 domains: market data, trading, strategy building, ML/AI, execution, "
     "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
-    "Onyx RAG intelligence, MCP 2025-11-25 spec compliance, SaaS hardening, and "
-    "autonomous marketplace pipeline (research→backtest→validate→stage). "
+    "Onyx RAG intelligence, Graphiti temporal knowledge graph, MCP 2025-11-25 spec compliance, "
+    "SaaS hardening, and autonomous marketplace pipeline (research→backtest→validate→stage). "
+    "V22.5: Graphiti temporal knowledge-graph domain (graphiti_search / graphiti_temporal_query / "
+    "graphiti_health read-only Tier-1, graphiti_add_episode WRITE_LOCAL discover-only) — advisory "
+    "agent_memory authority over Neo4j, NEVER broker truth, fails closed graphiti_unavailable. "
     "Real data only — all tools connect to live brokers, real tick feeds, and real APIs. "
     "In smart mode (default), ~54 Tier-1 tools exposed. "
     "Use 'discover_tools' to find 280+ additional tools on demand. "
@@ -429,7 +434,7 @@ SERVER_INSTRUCTIONS = (
     "encrypted key vault, desktop tower dispatcher (dispatch_tower_job). "
     "LIVE: 4 futures bots (MNQ/CL/MES/NQ, owner-only), Alpaca paper trader (equities+crypto, subscribable). "
     "Command Center: algochains-command-center (Next.js, port 3333). "
-    "Set ALGOCHAINS_TOOL_MODE=full to expose all 338 tools."
+    "Set ALGOCHAINS_TOOL_MODE=full to expose all ~481 tools."
 )
 
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
@@ -1559,6 +1564,111 @@ TOOLS = [
                     "default": "all",
                 }
             },
+        },
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
+    Tool(
+        name="query_codegraph",
+        description=(
+            "Read-only STRUCTURAL code intelligence (AST symbols, call graph, impact radius) "
+            "over the control-tower repo, via the local CodeGraph index. Complements — does not "
+            "replace — semantic recall (rag_search / onyx). Use for: who-calls-what, blast radius "
+            "before a refactor, where-is-X-defined. kind=impact|callers|callees|search|context|files|status. "
+            "Navigation aid ONLY — never a trading dependency, and never the sole basis for a 'safe to edit' "
+            "claim on a live-bot file. Fails closed with codegraph_index_missing if the per-host .codegraph/ "
+            "index is absent (it is not synced across hosts)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "description": "Query type.",
+                    "enum": ["impact", "callers", "callees", "search", "context", "files", "status"],
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "Symbol name (function/method/class) for impact/callers/callees/search, or a task description for context. Omit for files/status.",
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Max results for search/callers/callees (default 20).",
+                    "default": 20,
+                },
+            },
+            "required": ["kind"],
+        },
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
+    # ── Graphiti Temporal Knowledge Graph (advisory, agent_memory) ──
+    Tool(
+        name="graphiti_search",
+        description=(
+            "Hybrid (semantic + keyword + graph-traversal) search over the AlgoChains "
+            "TEMPORAL knowledge graph (getzep/graphiti). Returns advisory facts with "
+            "validity windows (valid_from/valid_to) extracted from REAL signal traces, "
+            "debate transcripts, and Hive Brain synthesis. Use for 'what was true / what "
+            "changed / what preceded what, over time' — e.g. 'MNQ behavior in trending "
+            "regime'. agent_memory authority: ADVISORY ONLY, never broker truth (P&L/fills "
+            "still require broker verification). Complements rag_search/onyx (semantic) and "
+            "query_codegraph (structural). Fails closed with graphiti_unavailable."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural-language query over temporal facts."},
+                "limit": {"type": "number", "description": "Max facts to return (default 10).", "default": 10},
+            },
+            "required": ["query"],
+        },
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
+    Tool(
+        name="graphiti_temporal_query",
+        description=(
+            "Point-in-time / temporal recipe search over the Graphiti knowledge graph "
+            "(advisory, agent_memory). Like graphiti_search but tagged for temporal recall. "
+            "Fails closed with graphiti_unavailable when graphiti-core/Neo4j are absent."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Temporal query."},
+                "limit": {"type": "number", "description": "Max facts (default 10).", "default": 10},
+            },
+            "required": ["query"],
+        },
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
+    Tool(
+        name="graphiti_health",
+        description=(
+            "Health probe for the Graphiti temporal knowledge-graph backend (Neo4j + "
+            "graphiti-core, advisory/agent_memory). Reports provider, Neo4j URI, group_id, "
+            "and reachability. Fails closed with graphiti_unavailable + recovery_command "
+            "(per-host; not synced across machines)."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+        annotations=ANNOT_READ_EXTERNAL,
+    ),
+    Tool(
+        name="graphiti_add_episode",
+        description=(
+            "Ingest ONE real episode (text/json) into the Graphiti temporal graph. The LLM "
+            "only STRUCTURES the supplied real data — it never invents values (real-data-only "
+            "rule). Body is secret-redacted before ingest. WRITE_LOCAL (internal graph write, "
+            "no broker/money). Routine ingestion runs via the post-market daemon; this tool is "
+            "for targeted operator/agent additions. Discover-only in smart mode."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Short episode name."},
+                "body": {"type": "string", "description": "Real episode content (text or JSON string)."},
+                "source_description": {"type": "string", "description": "Provenance of the data.", "default": "mcp_tool"},
+                "source_kind": {"type": "string", "enum": ["text", "json", "message"], "default": "text"},
+            },
+            "required": ["name", "body"],
         },
         annotations=ANNOT_READ_EXTERNAL,
     ),
@@ -3295,8 +3405,8 @@ TOOLS = [
          annotations=ANNOT_READ_ONLY),
     Tool(name="run_kalshi_ai_debate",
          description="Run the 5-model OpenRouter AI ensemble debate on a specific Kalshi market. "
-                     "Models: Claude Sonnet 4.5 (Lead), Gemini 3.1 Pro (Forecaster), GPT-5.4 (Risk), "
-                     "DeepSeek V3.2 (Bull), Grok 4.1 Fast (Bear). Returns weighted probability, "
+                     "Models: claude-opus-4.8 (Lead), gemini-2.5-pro (Forecaster), gpt-4o (Risk), "
+                     "deepseek-chat (Bull), grok-4.3 (Bear). Returns weighted probability, "
                      "consensus action, and per-model reasoning. Costs ~$0.01-0.05 per call. "
                      "Daily budget cap enforced ($5/day default). Requires OPENROUTER_API_KEY.",
          inputSchema={"type": "object", "properties": {
@@ -3712,6 +3822,9 @@ TOOLS = [
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_onyx_status", description="Check Onyx knowledge base status: health, last sync time, total indexed documents, connector status. Onyx at 100.89.114.31:8085.",
          inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_learn_hub_health", description="Check AlgoChains Learn Hub health: HTTP status of /learn/, /learn/feed.xml RSS MIME, and learn.algochains.ai subdomain redirect. Read-only — does NOT deploy. Use to verify the live Learn Hub is up and public (no login required).",
+         inputSchema={"type": "object", "properties": {"base_url": {"type": "string", "description": "Base URL to check (default: https://algochains.ai)", "default": "https://algochains.ai"}}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     # ═══════════════════════════════════════════════════════════════
     # V22: Live Bot Intelligence — real metrics, heartbeat, academic citations
@@ -4491,6 +4604,9 @@ TIER1_TOOL_NAMES = {
     # Onyx
     "onyx_ask",
     "onyx_search",
+    # Graphiti temporal knowledge graph (advisory reads)
+    "graphiti_search",
+    "graphiti_health",
     "get_bot_dashboard",
     "get_bot_health",
     "get_quant_regime_state",
@@ -4511,6 +4627,7 @@ TIER1_TOOL_NAMES = {
     "get_marketplace_listings",
     "run_onyx_ingest",
     "get_onyx_status",
+    "get_learn_hub_health",
     # V22 — Live Bot Intelligence (always Tier 1 — powers bot cards)
     "get_live_bot_metrics",
     "get_all_bot_metrics",
@@ -4976,7 +5093,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     try:
                         import json as _cljson
                         from pathlib import Path as _clPath
-                        _sh_path = _clPath(__file__).parents[4] / "state" / "signal_health.json"
+                        _sh_path = _clPath(_default_control_tower()) / "state" / "signal_health.json"
                         if _sh_path.exists():
                             _sh = _cljson.loads(_sh_path.read_text())
                             # signal_health.json stores per-bot consecutive_losses if available
@@ -5446,19 +5563,49 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             except Exception:
                 signal_health_slice = {"error": "signal_health.json parse failure"}
 
-        # ── ML feature flags (env mirrors for Massive-standard stack) ────────
-        # Exposes MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, and
-        # MASSIVE_HALT_GUARD so agents can verify the live bot's feature-flag
-        # state without a separate config fetch. Values are "0"/"1" only;
-        # no secrets are surfaced. NOTE: parity with the running bot requires
-        # the MCP server process to share the same .env as trading. If they
-        # differ, see control-tower docs/BACKTEST_FEATURE_TRACE.md §3 for
-        # train/serve risk implications of each flag.
-        ml_env_flags = {
-            "MASSIVE_NEWS_FEATURES": _os.environ.get("MASSIVE_NEWS_FEATURES", "0"),
-            "MASSIVE_PCR_FEATURES": _os.environ.get("MASSIVE_PCR_FEATURES", "0"),
-            "MASSIVE_HALT_GUARD": _os.environ.get("MASSIVE_HALT_GUARD", "0"),
-        }
+        # ── ML feature flags (bot-state mirrors for Massive-standard stack) ──
+        # Do not read the MCP process environment here: the MCP server may run
+        # under a different launch context than the live bot. Prefer the bot's
+        # signal_health.json slice when present, then the control-tower .env file.
+        _flag_keys = ("MASSIVE_NEWS_FEATURES", "MASSIVE_PCR_FEATURES", "MASSIVE_HALT_GUARD")
+        _flag_source = "default_zero"
+        ml_env_flags: dict[str, str] = {key: "0" for key in _flag_keys}
+
+        try:
+            _flag_candidates = []
+            if isinstance(_sh_data, dict):
+                _flag_candidates.append(_sh_data.get("ml_env_flags"))
+                _mnq_flags = _sh_data.get("MNQ_Upgraded_Scalper", {})
+                if isinstance(_mnq_flags, dict):
+                    _flag_candidates.append(_mnq_flags.get("ml_env_flags"))
+                    _flow_versions = _mnq_flags.get("flow_feature_versions")
+                    if isinstance(_flow_versions, dict):
+                        _flag_candidates.append(_flow_versions.get("ml_env_flags"))
+            for _candidate in _flag_candidates:
+                if isinstance(_candidate, dict):
+                    ml_env_flags = {key: str(_candidate.get(key, "0")) for key in _flag_keys}
+                    _flag_source = "signal_health"
+                    break
+        except Exception:
+            pass
+
+        if _flag_source == "default_zero":
+            _env_path = control_tower / ".env"
+            if _env_path.exists():
+                try:
+                    _parsed_env: dict[str, str] = {}
+                    for _raw_line in _env_path.read_text().splitlines():
+                        _line = _raw_line.strip()
+                        if not _line or _line.startswith("#") or "=" not in _line:
+                            continue
+                        _env_key, _env_value = _line.split("=", 1)
+                        if _env_key.strip() in _flag_keys:
+                            _parsed_env[_env_key.strip()] = _env_value.strip().strip('"').strip("'")
+                    ml_env_flags = {key: _parsed_env.get(key, "0") for key in _flag_keys}
+                    _flag_source = "control_tower_.env"
+                except Exception:
+                    _flag_source = "default_zero_parse_error"
+        ml_env_flags["_source"] = _flag_source
 
         # ── Command Center watchdog state (cc_health_state.json) ─────────────
         # Mirrors the OpenClaw "CC degraded" alert sources so agents get
@@ -5551,6 +5698,139 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         })
 
     # ── Broker Management ───────────────────────────────────
+    elif name == "query_codegraph":
+        # Read-only structural code intelligence over the control-tower repo.
+        # WRAPS the pinned CodeGraph binary via npx — never imports it, never
+        # touches any trading/order/risk path. Fails closed if the per-host
+        # .codegraph/ index is absent. Complements semantic rag_search/onyx.
+        import re as _re
+        import shutil as _shutil
+        import subprocess as _subp
+        from pathlib import Path as _Path
+
+        _CG_VERSION = "0.9.7"
+        kind = str(arguments.get("kind") or "").strip().lower()
+        symbol = str(arguments.get("symbol") or "").strip()
+        try:
+            limit = int(arguments.get("limit") or 20)
+        except (TypeError, ValueError):
+            limit = 20
+        control_tower = _Path(_default_control_tower())
+
+        # kind -> (cli subcommand, needs_symbol)
+        _KIND_MAP = {
+            "search":  ("query", True),
+            "callers": ("callers", True),
+            "callees": ("callees", True),
+            "impact":  ("impact", True),
+            "context": ("context", True),
+            "files":   ("files", False),
+            "status":  ("status", False),
+        }
+        if kind not in _KIND_MAP:
+            return _text({
+                "error_type": "ValueError",
+                "tool": "query_codegraph",
+                "message": f"Unknown kind '{kind}'. Use one of: {sorted(_KIND_MAP)}",
+            })
+        subcmd, needs_symbol = _KIND_MAP[kind]
+        if needs_symbol and not symbol:
+            return _text({
+                "error_type": "ValueError",
+                "tool": "query_codegraph",
+                "message": f"kind '{kind}' requires a 'symbol' argument.",
+            })
+
+        # Fail-closed: per-host index must exist (.codegraph/ and mcp-servers/ are gitignored).
+        if not (control_tower / ".codegraph").exists():
+            return _text({
+                "error_type": "codegraph_index_missing",
+                "tool": "query_codegraph",
+                "message": (
+                    "CodeGraph index (.codegraph/) not found on this host. The index is "
+                    "per-host and is not synced across machines."
+                ),
+                "recovery_command": f"cd {control_tower} && npx -y @colbymchenry/codegraph@{_CG_VERSION} init -i",
+            })
+
+        npx = _shutil.which("npx")
+        if not npx:
+            return _text({
+                "error_type": "codegraph_runtime_missing",
+                "tool": "query_codegraph",
+                "message": "npx not found on PATH; cannot launch CodeGraph from this process.",
+            })
+
+        cmd = [npx, "-y", f"@colbymchenry/codegraph@{_CG_VERSION}", subcmd]
+        if needs_symbol:
+            cmd.append(symbol)
+        if kind != "status":  # status takes a positional [path]; rely on cwd instead
+            cmd += ["-p", str(control_tower)]
+        if kind in ("search", "callers", "callees"):
+            cmd += ["-l", str(limit), "-j"]
+        elif kind == "impact":
+            cmd += ["-j"]
+        elif kind == "context":
+            cmd += ["-f", "json"]
+        try:
+            proc = _subp.run(cmd, capture_output=True, text=True, timeout=30, cwd=str(control_tower))
+        except _subp.TimeoutExpired:
+            return _text({
+                "error_type": "TimeoutExpired",
+                "tool": "query_codegraph",
+                "message": "CodeGraph query exceeded 30s.",
+            })
+        except Exception as _cg_exc:  # noqa: BLE001
+            return _text({
+                "error_type": type(_cg_exc).__name__,
+                "tool": "query_codegraph",
+                "message": str(_cg_exc),
+            })
+        raw = (proc.stdout or "")
+        if proc.returncode and proc.stderr:
+            raw = (raw + "\n" + proc.stderr).strip()
+        clean = _re.sub(r"\x1b\[[0-9;]*m", "", raw).strip()
+        return _text({
+            "tool": "query_codegraph",
+            "kind": kind,
+            "symbol": symbol or None,
+            "read_only": True,
+            "note": (
+                "Structural (AST) intel — complements semantic rag_search/onyx; never the sole "
+                "basis for a 'safe to edit' claim on trading files. Check for a staleness banner."
+            ),
+            "result": clean,
+        })
+
+    elif name in ("graphiti_search", "graphiti_temporal_query", "graphiti_health", "graphiti_add_episode"):
+        # Advisory temporal knowledge graph (getzep/graphiti). agent_memory authority —
+        # NEVER broker truth, never a trading dependency. Bridges to the control-tower
+        # shared client; fails closed with graphiti_unavailable when graphiti-core/Neo4j
+        # are absent on this host (per-host, not synced).
+        from .graphiti_intelligence import (
+            graphiti_search as _g_search,
+            graphiti_temporal_query as _g_temporal,
+            graphiti_health as _g_health,
+            graphiti_add_episode as _g_add,
+        )
+        try:
+            limit = int(arguments.get("limit") or 10)
+        except (TypeError, ValueError):
+            limit = 10
+        if name == "graphiti_health":
+            return _text(await _g_health())
+        if name == "graphiti_search":
+            return _text(await _g_search(str(arguments.get("query") or ""), limit=limit))
+        if name == "graphiti_temporal_query":
+            return _text(await _g_temporal(str(arguments.get("query") or ""), limit=limit))
+        # graphiti_add_episode
+        return _text(await _g_add(
+            str(arguments.get("name") or ""),
+            str(arguments.get("body") or ""),
+            source_description=str(arguments.get("source_description") or "mcp_tool"),
+            source_kind=str(arguments.get("source_kind") or "text"),
+        ))
+
     elif name == "list_brokers":
         configured = registry.list_configured()
         connected = registry.list_available()
@@ -7986,7 +8266,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     # ═══════════════════════════════════════════════════════════════
     elif name in ("get_bot_dashboard", "get_bot_metrics", "get_live_pnl"):
         import sys as _sys
-        _ct_path = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+        _ct_path = _default_control_tower()
         if _ct_path not in _sys.path:
             _sys.path.insert(0, _ct_path)
         try:
@@ -8011,7 +8291,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     return _text(daemon.get_dashboard())
         except Exception as exc:
             return _text({"error": f"Bot metrics unavailable: {exc}",
-                          "hint": "Ensure algochains-control-tower is at ~/CascadeProjects/algochains-control-tower"})
+                          "hint": f"Ensure ALGOCHAINS_CONTROL_TOWER is set or algochains-control-tower exists at {_ct_path}"})
 
     elif name == "subscribe_bot_metrics":
         SubscriptionManager = _lazy_import("subscriptions_v21", "SubscriptionManager")
@@ -8371,7 +8651,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_signal_conflict_stats":
         import os as _os_sc
         import sys as _sys
-        _ct_path = _os_sc.path.expanduser("~/CascadeProjects/algochains-control-tower")
+        _ct_path = _default_control_tower()
         if _ct_path not in _sys.path:
             _sys.path.insert(0, _ct_path)
         try:
@@ -8398,7 +8678,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             import os as _os
             from dotenv import load_dotenv as _ld
-            _ld(_os.path.expanduser("~/CascadeProjects/algochains-control-tower/.env"), override=False)
+            _ld(_os.path.join(_default_control_tower(), ".env"), override=False)
             key = _os.getenv("ALPACA_PAPER_KEY", "")
             secret = _os.getenv("ALPACA_PAPER_SECRET", "")
             if not key:
@@ -8427,7 +8707,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             import subprocess as _sp
             import sys as _sys
-            _ct = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+            _ct = _default_control_tower()
             _script = os.path.join(_ct, "autonomous", "marketplace_autopilot.py")
             _cmd = [_sys.executable, _script]
             _stage = args.get("stage", "all")
@@ -8509,7 +8789,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             import subprocess as _sp
             import sys as _sys
-            _ct = os.path.expanduser("~/CascadeProjects/algochains-control-tower")
+            _ct = _default_control_tower()
             _script = os.path.join(_ct, "autonomous", "onyx_ingest.py")
             _mode = "--full-sync" if args.get("full_sync", False) else "--incremental"
             _result = _sp.run(
@@ -8543,6 +8823,47 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             })
         except Exception as exc:
             return _text({"error": f"Onyx status check failed: {exc}", "url": os.getenv("ONYX_API_URL", "http://100.89.114.31:8085")})
+
+    elif name == "get_learn_hub_health":
+        try:
+            import httpx as _httpx
+            _base = (args.get("base_url") or "https://algochains.ai").rstrip("/")
+            _results: dict = {"base_url": _base, "checks": {}}
+            async with _httpx.AsyncClient(timeout=10, follow_redirects=False) as _hc:
+                # Hub page — must be 200 (no login redirect)
+                _hub = await _hc.get(f"{_base}/learn/")
+                _results["checks"]["hub"] = {
+                    "url": f"{_base}/learn/",
+                    "status": _hub.status_code,
+                    "ok": _hub.status_code == 200,
+                    "note": "200 expected. 302 to /signin/ means login gate is broken." if _hub.status_code != 200 else "OK — anonymous access confirmed.",
+                }
+                # RSS feed — must be 200 with rss+xml content-type
+                _rss = await _hc.get(f"{_base}/learn/feed.xml")
+                _rss_ct = _rss.headers.get("content-type", "")
+                _results["checks"]["rss"] = {
+                    "url": f"{_base}/learn/feed.xml",
+                    "status": _rss.status_code,
+                    "content_type": _rss_ct,
+                    "ok": _rss.status_code == 200 and "rss+xml" in _rss_ct,
+                }
+                # Subdomain redirect (external — only works if learn.algochains.ai is live)
+                try:
+                    _sub = await _hc.get("https://learn.algochains.ai/")
+                    _loc = _sub.headers.get("location", "")
+                    _results["checks"]["subdomain"] = {
+                        "url": "https://learn.algochains.ai/",
+                        "status": _sub.status_code,
+                        "location": _loc,
+                        "ok": _sub.status_code in (301, 302) and "/learn/" in _loc,
+                        "note": "301 → algochains.ai/learn/ expected. Not yet live until CF rule set.",
+                    }
+                except Exception as _se:
+                    _results["checks"]["subdomain"] = {"error": str(_se), "note": "DNS/CF not yet set up."}
+            _results["healthy"] = all(c.get("ok") for c in _results["checks"].values() if isinstance(c, dict) and "ok" in c)
+            return _text(_results)
+        except Exception as exc:
+            return _text({"error": f"Learn Hub health check failed: {exc}"})
 
     # ═══════════════════════════════════════════════════════════════
     # V22: Live Bot Intelligence

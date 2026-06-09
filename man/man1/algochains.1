@@ -1,0 +1,265 @@
+.TH ALGOCHAINS 1 "June 2026" "AlgoChains 22.4.0" "AlgoChains CLI Manual"
+
+.SH NAME
+algochains \- AI-native algorithmic trading CLI with 482 MCP tools
+
+.SH SYNOPSIS
+.B algochains
+[\fIOPTIONS\fR] [\fICOMMAND\fR] [\fIARGS\fR]
+
+.SH DESCRIPTION
+AlgoChains CLI provides an interactive REPL and one-shot command access to the AlgoChains MCP server (482 tools across live trading, backtesting, market data, marketplace, and AI intelligence).
+
+Running \fBalgochains\fR with no arguments launches the interactive REPL.
+
+.SH GLOBAL OPTIONS
+.TP
+.B \-\-profile \fINAME\fR
+Active credential profile: \fIdemo\fR (default), \fIpaper\fR, or \fIlive\fR.
+.TP
+.B \-\-dry\-run
+Preview T2/T3 (paper/live) actions without executing them.
+.TP
+.B \-\-safe\-only
+Block all T2/T3 tools (read-only + compute only).
+.TP
+.B \-\-confirm
+Required flag for T3/LIVE tools (place-order, flatten-position, restart-bot).
+.TP
+.B \-\-json
+Output structured JSON instead of human-readable text.
+.TP
+.B \-\-verbose
+Verbose output with timing and debug information.
+.TP
+.B \-\-version
+Show version and exit.
+.TP
+.B \-h, \-\-help
+Show help and exit.
+
+.SH TRUST LADDER
+All tools are classified into trust tiers:
+.PP
+.RS
+\fBT0 — READ\fR: discover-tools, detect-market-regime, get-bot-health, market data. Always allowed.
+.PP
+\fBT1 — COMPUTE\fR: run-backtest, optimize-strategy, dispatch-tower-job. Requires \-\-confirm or paper/live profile.
+.PP
+\fBT2 — PAPER\fR: place-order (paper broker), subscribe-to-bot. Requires paper profile.
+.PP
+\fBT3 — LIVE\fR: place-order (live), flatten-position, restart-bot. Requires live profile + \-\-confirm.
+.RE
+
+.SH KILL SWITCH
+The kill switch blocks all T2/T3 operations immediately, regardless of other flags.
+.PP
+.RS
+.nf
+algochains killswitch on [--reason TEXT]    # activate
+algochains killswitch off                   # deactivate
+algochains killswitch status                # check state
+.fi
+.RE
+
+When active, the KILLSWITCH file exists at \fI~/.algochains/KILLSWITCH\fR.
+
+.SH COMMANDS
+
+.TP
+.B doctor [\-\-fix] [\-\-quick]
+Pre-flight health checks: broker auth, MCP bridge, Onyx/Graphiti reachability, kill switch, market session, disk space.
+
+.TP
+.B auth set \fISERVICE\fR
+Interactive prompts to store credentials in the OS keyring.
+Services: tradovate, alpaca, polygon, oanda, ibkr, kalshi, onyx, openai, anthropic.
+
+.TP
+.B auth list
+Show all authenticated services and how credentials are stored (keyring or file).
+
+.TP
+.B auth rotate \fISERVICE\fR
+Re-prompt and update credentials for a service.
+
+.TP
+.B auth clear \fISERVICE\fR|all
+Remove stored credentials.
+
+.TP
+.B auth test \fISERVICE\fR
+Verify that stored credentials are valid against the live API.
+
+.TP
+.B daemon start|stop|status|logs|install|uninstall
+Manage the background daemon (SSE stream on localhost:39337).
+\fBdaemon install\fR registers as a launchd service on macOS (auto-start on login).
+
+.TP
+.B killswitch on|off|status
+Emergency stop for all T2/T3 operations.
+
+.TP
+.B audit tail [\-n N]
+Show last N audit log entries (default 50). Audit captures all T2/T3 tool invocations.
+
+.TP
+.B completion \fISHELL\fR
+Generate shell completion for bash, zsh, fish, or powershell.
+.br
+Install: \fBalgochains completion bash >> ~/.bashrc\fR
+
+.TP
+.B plugin install \fINAME\fR [\-\-allow\-community]
+Install an official (@algochains/plugin-*) or community (github:user/repo) plugin.
+
+.TP
+.B plugin list
+List installed plugins with their tools and trust level.
+
+.TP
+.B plugin remove \fINAME\fR
+Uninstall a plugin.
+
+.TP
+.B trigger add \fITYPE\fR \fISCHEDULE\fR \fICOMMAND\fR
+Add an automation trigger. Types: cron, watch, webhook, datetime.
+.br
+Examples:
+.RS
+.nf
+algochains trigger add cron "0 9 * * 1-5" "detect-market-regime --json"
+algochains trigger add watch ~/.algochains/state/signal_health.json "get-bot-health"
+.fi
+.RE
+
+.TP
+.B trigger list|disable|enable|remove
+Manage configured triggers.
+
+.TP
+.B config init|show|generate \fITARGET\fR
+Manage configuration. \fIgenerate\fR creates IDE MCP configs (cursor, claude-desktop, windsurf).
+
+.TP
+.B version
+Show AlgoChains CLI and MCP server version.
+
+.SH DIRECT TOOL CALLS
+Any unrecognized command is treated as a direct MCP tool call:
+.PP
+.RS
+.nf
+algochains detect-market-regime
+algochains get-bot-health
+algochains discover-tools --query portfolio
+algochains run-backtest --strategy RSI --symbol AAPL --days 365
+algochains place-order --broker alpaca --symbol AAPL --side buy --qty 10 --confirm
+.fi
+.RE
+
+.SH INTERACTIVE REPL
+Running \fBalgochains\fR with no arguments launches the REPL. Slash commands:
+.PP
+.RS
+.nf
+/help           show help
+/tools [query]  discover tools
+/cost           show session cost
+/history [n]    show command history
+/profile        show active profile
+/kill on|off    toggle kill switch
+/doctor         run health checks
+/clear          clear output
+/exit           exit
+.fi
+.RE
+
+.SH FILES
+.TP
+.I ~/.algochains/config.toml
+CLI configuration (profiles, REPL settings, daemon port).
+.TP
+.I ~/.algochains/credentials.toml
+Credential file fallback (mode 0600). Prefer OS keyring.
+.TP
+.I ~/.algochains/KILLSWITCH
+Kill switch file. Existence blocks all T2/T3 operations.
+.TP
+.I ~/.algochains/audit.jsonl
+Append-only audit log of all T2/T3 operations.
+.TP
+.I ~/.algochains/history.jsonl
+REPL command history.
+.TP
+.I ~/.algochains/triggers.json
+Configured automation triggers.
+.TP
+.I ~/.algochains/daemon.pid
+Daemon process ID (written when daemon starts).
+.TP
+.I ~/.algochains/daemon.token
+Random 64-char SSE authentication token (mode 0600).
+.TP
+.I ~/.algochains/plugins/
+Installed plugin directories.
+
+.SH ENVIRONMENT
+.TP
+.B ALGOCHAINS_BRIDGE_KEY
+Developer API key for the hosted MCP bridge (from algochains.ai/account/developer-keys).
+.TP
+.B ALGOCHAINS_BRIDGE_URL
+Override MCP bridge URL (default: http://127.0.0.1:8090).
+.TP
+.B ALGOCHAINS_MCP_SERVER_ROOT
+Path to algochains-mcp-server repo root (for IDE config generation).
+.TP
+.B ALGOCHAINS_CONTROL_TOWER
+Path to algochains-control-tower repo root (for live bot state).
+.TP
+.B ALGOCHAINS_TOOL_MODE
+MCP tool mode: smart (150 tools, default) or full (482 tools).
+
+.SH EXAMPLES
+.nf
+# First-time setup
+algochains doctor
+algochains auth set alpaca
+algochains auth set tradovate
+
+# Demo mode (no credentials)
+algochains --profile demo detect-market-regime
+
+# Paper trading
+algochains --profile paper place-order --broker alpaca --symbol AAPL --side buy --qty 10 --confirm
+
+# Live trading (with kill switch)
+algochains --profile live get-bot-health
+algochains killswitch on --reason "earnings blackout"
+
+# Strategy research
+algochains discover-tools --query "backtesting momentum"
+algochains run-backtest --strategy RSI --symbol AAPL --days 365 --confirm
+
+# Automation
+algochains trigger add cron "0 9 * * 1-5" "detect-market-regime --json"
+algochains daemon start
+
+# IDE setup
+algochains config generate cursor
+.fi
+
+.SH SEE ALSO
+.BR algochains-doctor (1),
+.BR algochains-daemon (1)
+
+.SH AUTHOR
+AlgoChains <team@algochains.ai>
+
+.SH "REPORTING BUGS"
+Report bugs at https://github.com/AlgoChains/algochains-mcp-server/issues
+
+.SH COPYRIGHT
+Copyright © 2026 AlgoChains. Licensed under the MIT License.

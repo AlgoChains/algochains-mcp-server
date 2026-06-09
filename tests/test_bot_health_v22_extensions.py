@@ -10,7 +10,6 @@ Verifies that:
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 import tempfile
 
@@ -19,12 +18,30 @@ import tempfile
 # Helpers — replicate the logic extracted from server.py for unit testing
 # ---------------------------------------------------------------------------
 
-def _build_ml_env_flags(env: dict) -> dict:
+def _build_ml_env_flags(control_tower: pathlib.Path, signal_health: dict | None = None) -> dict:
     """Replicate ml_env_flags extraction from get_bot_health."""
+    keys = ("MASSIVE_NEWS_FEATURES", "MASSIVE_PCR_FEATURES", "MASSIVE_HALT_GUARD")
+    signal_health = signal_health or {}
+    for candidate in (
+        signal_health.get("ml_env_flags"),
+        signal_health.get("MNQ_Upgraded_Scalper", {}).get("ml_env_flags"),
+        signal_health.get("MNQ_Upgraded_Scalper", {}).get("flow_feature_versions", {}).get("ml_env_flags"),
+    ):
+        if isinstance(candidate, dict):
+            return {key: str(candidate.get(key, "0")) for key in keys}
+    env_file = control_tower / ".env"
+    parsed = {}
+    if env_file.exists():
+        for raw_line in env_file.read_text().splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            parsed[key.strip()] = value.strip().strip('"').strip("'")
     return {
-        "MASSIVE_NEWS_FEATURES": env.get("MASSIVE_NEWS_FEATURES", "0"),
-        "MASSIVE_PCR_FEATURES": env.get("MASSIVE_PCR_FEATURES", "0"),
-        "MASSIVE_HALT_GUARD": env.get("MASSIVE_HALT_GUARD", "0"),
+        "MASSIVE_NEWS_FEATURES": parsed.get("MASSIVE_NEWS_FEATURES", "0"),
+        "MASSIVE_PCR_FEATURES": parsed.get("MASSIVE_PCR_FEATURES", "0"),
+        "MASSIVE_HALT_GUARD": parsed.get("MASSIVE_HALT_GUARD", "0"),
     }
 
 
@@ -74,57 +91,67 @@ def _write_cc_health(directory: pathlib.Path, payload: dict | None = None) -> pa
 class TestMlEnvFlags:
     """Unit tests for ml_env_flags extraction."""
 
-    def test_all_flags_default_to_zero_when_absent(self):
-        flags = _build_ml_env_flags({})
+    def test_all_flags_default_to_zero_when_absent(self, tmp_path):
+        flags = _build_ml_env_flags(tmp_path)
         assert flags["MASSIVE_NEWS_FEATURES"] == "0"
         assert flags["MASSIVE_PCR_FEATURES"] == "0"
         assert flags["MASSIVE_HALT_GUARD"] == "0"
 
-    def test_enabled_flags_surfaced_correctly(self):
-        env = {
-            "MASSIVE_NEWS_FEATURES": "1",
-            "MASSIVE_PCR_FEATURES": "1",
-            "MASSIVE_HALT_GUARD": "0",
-        }
-        flags = _build_ml_env_flags(env)
+    def test_enabled_flags_surfaced_correctly(self, tmp_path):
+        (tmp_path / ".env").write_text(
+            "MASSIVE_NEWS_FEATURES=1\n"
+            "MASSIVE_PCR_FEATURES=1\n"
+            "MASSIVE_HALT_GUARD=0\n"
+        )
+        flags = _build_ml_env_flags(tmp_path)
         assert flags["MASSIVE_NEWS_FEATURES"] == "1"
         assert flags["MASSIVE_PCR_FEATURES"] == "1"
         assert flags["MASSIVE_HALT_GUARD"] == "0"
 
-    def test_flags_read_from_os_environ(self, monkeypatch):
+    def test_mcp_process_env_is_not_used_as_bot_truth(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MASSIVE_NEWS_FEATURES", "1")
-        monkeypatch.setenv("MASSIVE_PCR_FEATURES", "0")
-        monkeypatch.delenv("MASSIVE_HALT_GUARD", raising=False)
-        # Simulate os.environ.get as server.py does
-        flags = {
-            "MASSIVE_NEWS_FEATURES": os.environ.get("MASSIVE_NEWS_FEATURES", "0"),
-            "MASSIVE_PCR_FEATURES": os.environ.get("MASSIVE_PCR_FEATURES", "0"),
-            "MASSIVE_HALT_GUARD": os.environ.get("MASSIVE_HALT_GUARD", "0"),
-        }
-        assert flags["MASSIVE_NEWS_FEATURES"] == "1"
+        monkeypatch.setenv("MASSIVE_PCR_FEATURES", "1")
+        monkeypatch.setenv("MASSIVE_HALT_GUARD", "1")
+        flags = _build_ml_env_flags(tmp_path)
+        assert flags["MASSIVE_NEWS_FEATURES"] == "0"
         assert flags["MASSIVE_PCR_FEATURES"] == "0"
         assert flags["MASSIVE_HALT_GUARD"] == "0"
 
-    def test_flags_are_string_values_not_bool(self):
+    def test_signal_health_flags_preferred_over_env_file(self, tmp_path):
+        (tmp_path / ".env").write_text(
+            "MASSIVE_NEWS_FEATURES=0\nMASSIVE_PCR_FEATURES=0\nMASSIVE_HALT_GUARD=0\n"
+        )
+        signal_health = {
+            "MNQ_Upgraded_Scalper": {
+                "ml_env_flags": {
+                    "MASSIVE_NEWS_FEATURES": "1",
+                    "MASSIVE_PCR_FEATURES": "1",
+                    "MASSIVE_HALT_GUARD": "0",
+                }
+            }
+        }
+        flags = _build_ml_env_flags(tmp_path, signal_health)
+        assert flags["MASSIVE_NEWS_FEATURES"] == "1"
+        assert flags["MASSIVE_PCR_FEATURES"] == "1"
+
+    def test_flags_are_string_values_not_bool(self, tmp_path):
         """Flags should be "0"/"1" strings, not Python bools — avoids JSON type mismatch."""
-        flags = _build_ml_env_flags({"MASSIVE_NEWS_FEATURES": "1"})
+        (tmp_path / ".env").write_text("MASSIVE_NEWS_FEATURES=1\n")
+        flags = _build_ml_env_flags(tmp_path)
         assert isinstance(flags["MASSIVE_NEWS_FEATURES"], str), (
             "Flag values must be strings ('0'/'1'), not booleans. "
             "JSON serialization of True/False would break agent comparisons."
         )
 
-    def test_flags_dict_has_exactly_three_keys(self):
+    def test_flags_dict_has_exactly_three_keys(self, tmp_path):
         """No secret or unexpected keys are surfaced."""
-        flags = _build_ml_env_flags({})
+        flags = _build_ml_env_flags(tmp_path)
         assert set(flags.keys()) == {"MASSIVE_NEWS_FEATURES", "MASSIVE_PCR_FEATURES", "MASSIVE_HALT_GUARD"}
 
-    def test_unknown_massive_env_vars_not_surfaced(self):
+    def test_unknown_massive_env_vars_not_surfaced(self, tmp_path):
         """MASSIVE_API_KEY and other sensitive vars must NOT appear in flags."""
-        env = {
-            "MASSIVE_API_KEY": "secret_value",
-            "MASSIVE_PCR_FEATURES": "1",
-        }
-        flags = _build_ml_env_flags(env)
+        (tmp_path / ".env").write_text("MASSIVE_API_KEY=secret_value\nMASSIVE_PCR_FEATURES=1\n")
+        flags = _build_ml_env_flags(tmp_path)
         assert "MASSIVE_API_KEY" not in flags, "Secret keys must never appear in ml_env_flags"
 
 
@@ -219,12 +246,9 @@ class TestGetBotHealthV22Extensions:
     """Verify ml_env_flags and cc_health coexist in one output dict."""
 
     def test_output_has_both_new_keys(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("MASSIVE_NEWS_FEATURES", "0")
-        monkeypatch.setenv("MASSIVE_PCR_FEATURES", "0")
-        monkeypatch.delenv("MASSIVE_HALT_GUARD", raising=False)
         _write_cc_health(tmp_path)
 
-        flags = _build_ml_env_flags(dict(os.environ))
+        flags = _build_ml_env_flags(tmp_path)
         cc = _build_cc_health(tmp_path)
 
         # Simulate the return dict from get_bot_health
@@ -248,7 +272,7 @@ class TestGetBotHealthV22Extensions:
     def test_no_secrets_in_combined_output(self, tmp_path, monkeypatch):
         monkeypatch.setenv("MASSIVE_API_KEY", "secret_key_never_leak")
         _write_cc_health(tmp_path)
-        flags = _build_ml_env_flags(dict(os.environ))
+        flags = _build_ml_env_flags(tmp_path)
         for key, value in flags.items():
             assert "secret_key_never_leak" not in str(value)
         assert "MASSIVE_API_KEY" not in flags
