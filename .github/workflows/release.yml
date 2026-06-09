@@ -69,10 +69,17 @@ jobs:
           npx mcporter emit-ts algochains --mode client --out packages/sdk/src/client.d.ts
           echo "SDK_LINES=$(wc -l < packages/sdk/src/types.d.ts)" >> $GITHUB_ENV
 
+      - name: Configure MCPorter for full-mode tool count
+        run: |
+          # mcporter reads config/mcporter.json and passes its env to the MCP server process,
+          # overriding any shell-level ALGOCHAINS_TOOL_MODE env var. Patch the JSON directly.
+          jq '.mcpServers.algochains.env.ALGOCHAINS_TOOL_MODE = "full"' config/mcporter.json \
+            > /tmp/mcporter-full.json
+          mv /tmp/mcporter-full.json config/mcporter.json
+          echo "mcporter.json ALGOCHAINS_TOOL_MODE: $(jq -r '.mcpServers.algochains.env.ALGOCHAINS_TOOL_MODE' config/mcporter.json)"
+
       - name: Verify tool count
         id: toolcount
-        env:
-          ALGOCHAINS_TOOL_MODE: full
         run: |
           TOOLS=$(npx mcporter list algochains --json | jq '.tools | length')
           echo "count=${TOOLS}" >> $GITHUB_OUTPUT
