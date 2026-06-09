@@ -1,0 +1,50 @@
+name: PyPI version drift check
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # Daily at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+
+      - name: Compare git tag to PyPI latest version
+        run: |
+          # Get latest version from PyPI
+          PYPI_VERSION=$(curl -sf https://pypi.org/pypi/algochains-mcp-server/json \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['info']['version'])" \
+            || echo "UNAVAILABLE")
+
+          # Get latest git tag (strip leading v)
+          GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "NO_TAG")
+
+          echo "PyPI latest:  $PYPI_VERSION"
+          echo "Git latest:   $GIT_TAG"
+
+          if [ "$PYPI_VERSION" = "UNAVAILABLE" ]; then
+            echo "⚠ Could not reach PyPI — skipping comparison"
+            exit 0
+          fi
+
+          if [ "$GIT_TAG" = "NO_TAG" ]; then
+            echo "⚠ No git tag found — skipping comparison"
+            exit 0
+          fi
+
+          if [ "$PYPI_VERSION" != "$GIT_TAG" ]; then
+            echo ""
+            echo "VERSION DRIFT DETECTED"
+            echo "  Git tag: $GIT_TAG"
+            echo "  PyPI:    $PYPI_VERSION"
+            echo ""
+            echo "The latest git tag has NOT been published to PyPI."
+            echo "Run the release workflow with tag v$GIT_TAG to publish."
+            exit 1
+          fi
+
+          echo "✓ PyPI ($PYPI_VERSION) matches git tag ($GIT_TAG) — no drift"
