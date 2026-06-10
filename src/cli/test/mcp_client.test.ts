@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { createMcpClient } from "./mcp_client";
+import { createMcpClient } from "../src/mcp_client";
 
 interface CapturedRequest {
   url: string;
