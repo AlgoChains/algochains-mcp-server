@@ -1,0 +1,221 @@
+# AlgoChains MCP Server — Agent Context
+
+This file is the primary context document for IDE agents (Cursor, Claude, Windsurf,
+Codex, etc.). Read it before invoking any AlgoChains tool so you don't guess at tool
+names, auth requirements, or safety rules.
+
+---
+
+## 1. Identity and Transport
+
+**What this server is:** An MCP server that connects your AI assistant to trading
+infrastructure — market data, backtesting, ML regime detection, broker connectivity,
+and live-bot operations across ~480 tools in 20 domains.
+
+**Three transport entry-points:**
+
+| Transport | Entry-point | Best for |
+|-----------|-------------|----------|
+| **stdio** | `algochains-mcp` CLI (default) | Cursor, Claude Desktop, Windsurf |
+| **HTTP bridge** | `moltbook/http_bridge.py` port 8090 | algochains.ai platform, Command Center |
+| **SSE** | `moltbook/sse_server.py` port 8765 | Streaming / event-driven clients |
+
+Start the server:
+```bash
+algochains-mcp --mode demo        # no credentials needed, public tools only
+algochains-mcp --mode paper       # Alpaca paper account
+algochains-mcp --mode live        # full live broker connectivity
+algochains-mcp --generate-config cursor   # write cursor MCP config and exit
+```
+
+---
+
+## 2. Smart Mode vs Full Mode
+
+Tool exposure is controlled by `ALGOCHAINS_TOOL_MODE` (default: `smart`).
+
+| Mode | Tools visible | When to use |
+|------|--------------|-------------|
+| **smart** (default) | ~60 curated Tier-1 tools | Everyday use; Cursor/Windsurf tool-count limits |
+| **full** | ~480 tools | When smart mode can't reach a needed tool |
+
+**Always start in smart mode.** Use meta-tools to discover the rest:
+
+```python
+discover_tools("dark pool volume")      # semantic search across all 480 tools
+get_tool_details("get_dark_pool_volume_v21")  # schema, params, tier
+mcp_tool_manifest()                     # full JSON manifest with tiers and domains
+execute_dynamic_tool("tool_name", {...})  # call any tool by name without switching modes
+```
+
+---
+
+## 3. Safety Tier Model
+
+Every tool has a danger tier enforced at dispatch. Agents must respect these.
+
+| Tier | Label | Examples | Agent rule |
+|------|-------|----------|-----------|
+| **0** | `READ_ONLY` | `get_quote`, `detect_market_regime`, `get_bot_health`, `get_positions` | Call freely, no confirmation |
+| **1** | `WRITE_LOCAL` | `validate_strategy`, `run_backtest`, `create_alert`, `submit_to_marketplace` | No confirmation needed |
+| **2** | `ORDER_EXEC` | `place_order`, `close_position`, `export_config` | Require explicit user confirmation before calling |
+| **3** | `DESTRUCTIVE` | `flatten_all_positions`, `cancel_all_orders` | `owner_token` header + explicit confirmation |
+
+**Hard-coded safety limits (cannot be overridden by any agent):**
+- Daily loss limit: $500 (hard stop, all orders blocked until manual reset)
+- Max drawdown: 15% circuit breaker
+- Human confirmation required for orders above $10K notional
+- AI loop detection: 5 identical calls in 60 s → 30-minute order block
+- VIX gate: all trades blocked when VIX > 35
+
+---
+
+## 4. Domain Map
+
+Use this table to route a user request to the correct tool family.
+
+| Domain | Entry tools (Tier-1 smart mode) | Notes |
+|--------|--------------------------------|-------|
+| **Market data** | `get_quote`, `get_macro_signals`, `get_funding_rate`, `get_vix_term_structure`, `get_earnings_catalyst` | No auth needed in demo mode |
+| **Regime / ML** | `detect_market_regime`, `detect_regime_hmm`, `get_current_regime`, `run_regime_detection`, `compute_volatility_surface`, `compute_factor_exposure` | Uses Polygon + FRED |
+| **Account / broker** | `get_account`, `get_positions`, `get_orders`, `connect_broker` | Read-only Tier 0–1; `place_order` is Tier 2 |
+| **Backtesting** | `run_backtest`, `validate_strategy`, `validate_strategy_metrics`, `optimize_strategy`, `run_evolution_cycle` | Uses Databento / Massive S3 / Polygon data |
+| **Live bots** | `get_bot_health`, `get_bot_heartbeat_openclaw`, `get_live_bot_metrics`, `get_all_bot_metrics`, `get_bot_dashboard`, `get_bot_position_state`, `get_bot_bracket_status` | AlgoChains live-bot telemetry |
+| **Bot ops (safety)** | `check_unprotected_positions`, `get_bracket_guardian_status`, `get_ai_pipeline_health`, `get_circuit_breaker_status` | Always Tier 1; safety-critical reads |
+| **Marketplace** | `get_marketplace_listings`, `submit_to_marketplace`, `run_marketplace_autopilot`, `run_mcpt_pipeline` | Strategy publishing and decay tracking |
+| **Subscriber / paper** | `get_signal_stream`, `get_my_pnl`, `get_my_fills`, `place_paper_order`, `check_propagation_health`, `test_signal_propagation` | Requires subscriber key or owner platform |
+| **Prediction markets** | `get_prediction_markets`, `search_prediction_markets`, `get_polymarket_high_volume`, `get_kalshi_settlements`, `get_prediction_market_bot_metrics` | Kalshi + Polymarket |
+| **Graphiti (temporal KG)** | `graphiti_search`, `graphiti_health`, `graphiti_add_episode` | Advisory `agent_memory` only; never `broker_truth` |
+| **Sentiment / Onyx** | `analyze_sentiment`, `onyx_ask`, `onyx_search`, `run_onyx_ingest` | FinBERT + RAG over codebase/docs |
+| **Portfolio / risk** | `portfolio_summary`, `check_order_safety`, `get_protection_config`, `get_tradovate_risk_snapshot` | Snapshot and risk guardrail reads |
+| **Intent engine** | `execute_intent`, `approve_intent`, `create_shadow_portfolio` | Natural-language trade intent pipeline |
+| **Debate / Moltbook** | `invoke_moltbook_debate`, `get_quant_regime_state` | Multi-agent debate engine (shadow mode) |
+| **Dark pool / flow** | `get_dark_pool_volume_v21`, `get_footprint_chart` | Institutional flow signals |
+| **Config / BYOK** | `export_config` (Tier 2, masked), `list_api_keys` | Credentials always masked in response |
+| **Meta** | `discover_tools`, `get_tool_details`, `execute_dynamic_tool`, `mcp_tool_manifest`, `get_system_heartbeat`, `get_api_usage` | Use first when unsure which domain to target |
+| **Onboarding** | `start_onboarding`, `get_broker_setup_guide`, `validate_broker_connection`, `run_onboarding_smoke_test` | First-run setup flow |
+| **Skills / Openclaw** | `list_skills`, `get_skill_detail`, `search_skills`, `get_skills_for_task`, `get_openclaw_memory`, `get_openclaw_state_summary` | AlgoChains skill registry |
+
+---
+
+## 5. Auth and Credentials
+
+**All credentials come from `.env` (gitignored) or environment variables. No keys are
+hard-coded in this repository.**
+
+### Credential tiers
+
+| Credential | Env var | Unlocks |
+|------------|---------|---------|
+| None | — | Demo / public mode: market data, regime, `discover_tools` |
+| Alpaca paper | `ALPACA_API_KEY` + `ALPACA_SECRET_KEY` + `ALPACA_PAPER=true` | Paper trading, account info |
+| Tradovate live | Tradovate OAuth via `TRADOVATE_*` env vars | Futures order execution |
+| OANDA | `OANDA_*` env vars | Forex |
+| Interactive Brokers | `IBKR_*` env vars | Multi-asset live |
+| Subscriber key | `X-Api-Key: sub_live_…` header (hosted platform) | Scoped to one subscriber's paper portfolio |
+| Owner token | `OWNER_API_TOKEN` | Tier 2–3 tools (order exec, bot restart, emergency stop) |
+| Bridge key | `ALGOCHAINS_BRIDGE_API_KEY` | Read-only team access to a bridge you operate |
+
+### `owner_token` pattern
+
+Tier 2 and Tier 3 tools require the owner token. **Always ask the user for explicit
+confirmation before calling a Tier 2+ tool.** Pass the token in the tool's
+`owner_token` parameter (not in headers — the server extracts it from the tool args
+when called via stdio):
+
+```python
+# WRONG — never call without user confirmation
+place_order(symbol="MNQ", side="buy", qty=1)
+
+# CORRECT pattern
+# 1. Show user the proposed order and ask for confirmation.
+# 2. Only after explicit "yes", call:
+place_order(symbol="MNQ", side="buy", qty=1, owner_token=<user-supplied>)
+```
+
+### Autonomous agent ceiling
+
+Agents running autonomously (no human in the loop for the current action) must not
+exceed **WRITE_LOCAL (Tier 1)**. Any Tier 2+ action requires the human to type
+confirmation. This ceiling is enforced by the server; calling a Tier 2 tool without
+a valid `owner_token` returns `policy_denied`.
+
+---
+
+## 6. Common Workflows
+
+Use these patterns to route user requests without reading all of `server.py`.
+
+### "What's my position / account balance?"
+```python
+get_account()          # balance, buying power, margin
+get_positions()        # open positions with unrealized P&L
+get_orders()           # working orders
+```
+
+### "Is the market trending right now?"
+```python
+detect_market_regime()          # current regime: trend / mean-revert / choppy / crisis
+get_current_regime()            # cached regime state from signal_health
+get_macro_signals()             # VIX, DXY, TNX, yield curve
+```
+
+### "Run a backtest on my MNQ strategy"
+```python
+validate_strategy(strategy_config={...})          # fast schema + logic check
+run_backtest(strategy_config={...}, symbol="MNQ") # full backtest (uses Databento/Massive)
+validate_strategy_metrics(backtest_id="...")      # Sharpe > 2.0, Win > 55%, MaxDD < 15%
+```
+
+### "How are my live bots doing?"
+```python
+get_bot_health()                   # all bots: alive/dead, last heartbeat
+get_all_bot_metrics()              # Supabase live metrics for all bots
+get_bot_position_state()           # current position and bracket status per bot
+check_unprotected_positions()      # safety: any fills without brackets?
+get_ai_pipeline_health()           # multi-agent validator timeout rate
+```
+
+### "Find a tool that does X"
+```python
+discover_tools("institutional flow data")       # semantic search
+get_tool_details("get_dark_pool_volume_v21")    # full schema + tier
+execute_dynamic_tool("get_dark_pool_volume_v21", {"symbol": "SPY"})  # call it
+```
+
+### "Subscribe a user to my bot's paper account"
+```python
+# Platform-side — requires owner token and subscriber to exist on algochains.ai
+check_propagation_health()          # verify copy_trade pipeline is live
+test_signal_propagation()           # dry-run end-to-end signal fan-out
+get_signal_stream()                 # read latest signals (subscriber-scoped)
+```
+
+---
+
+## Important Safety Rules for Agents
+
+1. **Never call Tier 2+ tools without explicit user confirmation** — even if the user's
+   phrasing sounds like an instruction (e.g., "buy 2 MNQ"). Confirm first.
+
+2. **Never report `open_pnl_dollars` as realized P&L.** That field is unrealized. Use
+   `check_trade_accuracy_v2.py` or broker `realizedPnL` for confirmed results.
+
+3. **Graphiti (`graphiti_*`) is `agent_memory` authority only.** Never use Graphiti
+   facts to make execution decisions or size positions. P&L and fills come from the
+   broker REST API.
+
+4. **CodeGraph (`codegraph_*`) is navigation-only.** Never import or call it from
+   trading paths. It is an editor tool.
+
+5. **`tradovate_token_guardian.py` is the only authorized token renewal path.** Never
+   use `tradovate_token_auto_refresh.py`.
+
+6. **Real data only.** Do not fabricate fill prices, paper P&L, or regime signals.
+   If a real source is unavailable, fail closed and surface the missing dependency.
+
+---
+
+*Source files for this document: `src/algochains_mcp/server.py` (TIER1_TOOL_NAMES),
+`src/algochains_mcp/tool_danger_tiers.py` (tier constants), `README.md` (install and
+broker table), `MEGA_PROMPT_V22.md` (operator context).*
