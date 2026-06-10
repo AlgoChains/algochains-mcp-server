@@ -3542,8 +3542,10 @@ TOOLS = [
              "take_profit": {"type": "number", "default": 0.0},
          }, "required": ["strategy_name", "symbol", "side", "qty"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="check_propagation_health", description="Check if the AlgoChains Django signal propagation service (Roo architecture) is reachable. Returns endpoint URL, reachability, and setup status. Use before running bots.",
-         inputSchema={"type": "object", "properties": {}, "required": []},
+    Tool(name="check_propagation_health", description="Check if the AlgoChains Django signal propagation service (Roo architecture) is reachable and whether copy-trade paper fanout has active backlog. Separates active_lag_seconds from idle_since_last_signal_seconds so quiet markets do not look stalled.",
+         inputSchema={"type": "object", "properties": {
+             "max_lag_seconds": {"type": "number", "default": 30.0, "description": "SLO threshold for active, unexpired signal backlog."},
+         }, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="run_guardrail", description="Run the GUARDRAIL pre-flight middleware chain before placing any order. Executes 6 gates: VIX, daily-loss, stoploss-guard, cooldown, confidence, R/R. Returns approved=true only if all gates pass. Wire this before every order execution.",
          inputSchema={"type": "object", "properties": {
@@ -7997,7 +7999,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "check_propagation_health":
         from .trade_propagation import check_propagation_health
         try:
-            out = await check_propagation_health()
+            out = await check_propagation_health(
+                max_lag_seconds=float(args.get("max_lag_seconds", 30.0))
+            )
             return _text(out)
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
