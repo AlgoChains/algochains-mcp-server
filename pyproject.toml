@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "algochains-mcp-server"
-version = "22.4.1"
+version = "22.5.0"
 description = "AlgoChains MCP Server — 482 tools for live algo trading: Tradovate/Alpaca/OANDA, Databento/Polygon data, Onyx RAG, Graphiti KG, AlphaLoop, HMM regimes, autonomous marketplace pipeline, Kalshi, real data only."
 readme = "README.md"
 license = { text = "MIT" }

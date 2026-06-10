@@ -2,7 +2,7 @@
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
 [![Tools](https://img.shields.io/badge/tools-~480%20full%20%7C%20curated%20smart-green?style=flat-square)](#tool-domains)
-[![Version](https://img.shields.io/badge/version-22.4.1-blueviolet?style=flat-square)](#whats-new)
+[![Version](https://img.shields.io/badge/version-22.5.0-blueviolet?style=flat-square)](#whats-new)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
 [![Data](https://img.shields.io/badge/data-Databento%20%7C%20Massive%20S3%20%7C%20Polygon-yellow?style=flat-square)](#data-backends)

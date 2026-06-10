@@ -18,7 +18,7 @@ export interface McpClient {
 export function createMcpClient(bridgeUrl: string, timeoutMs = 30_000): McpClient {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "User-Agent": "algochains-cli/22.4.1",
+    "User-Agent": "algochains-cli/22.5.0",
   };
 
   // Subscriber keys (sub_live_*) use X-Api-Key on the HTTP bridge.
