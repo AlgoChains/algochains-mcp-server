@@ -118,7 +118,7 @@ async function callPaperTool(
   const bridgeUrl =
     process.env.ALGOCHAINS_BRIDGE_URL
     ?? config.mcp?.bridge_url
-    ?? "https://api.algochains.ai";
+    ?? "https://mcp.algochains.ai";
   if (!process.env.ALGOCHAINS_SUB_KEY) {
     console.error("  Set ALGOCHAINS_SUB_KEY (sub_live_… from algochains.ai → Account → API Keys)");
     process.exit(1);
