@@ -25,6 +25,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 import httpx
 import pandas as pd
@@ -33,6 +34,16 @@ from ..config import MassiveConfig
 from ..errors import AlgoChainsError
 
 logger = logging.getLogger("algochains_mcp.data_providers.massive")
+
+
+def _host_allowed(host: str, allowed_hosts: set[str]) -> bool:
+    """True if `host` exactly matches, or is a subdomain of, an allowed host."""
+    host = (host or "").lower()
+    if ":" in host:  # strip any :port
+        host = host.split(":", 1)[0]
+    if not host:
+        return False
+    return any(host == a or host.endswith("." + a) for a in allowed_hosts)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -385,7 +396,33 @@ class MassiveWhiteLabelProvider:
         self._table_timestamps: dict[str, float] = {}
         self._raw_llms_txt: str = ""
         self._endpoint_docs_cache: dict[str, dict] = {}
-        self._http: httpx.AsyncClient = httpx.AsyncClient(timeout=60)
+        # SECURITY (2026-06-10): never follow redirects on the authenticated
+        # client — a 30x to an attacker host would otherwise replay the
+        # Authorization header off-domain (httpx forwards auth on same-host
+        # redirects; an open redirect to a sibling subdomain is enough).
+        self._http: httpx.AsyncClient = httpx.AsyncClient(timeout=60, follow_redirects=False)
+        self._allowed_hosts: set[str] = self._compute_allowed_hosts()
+
+    def _compute_allowed_hosts(self) -> set[str]:
+        """Registrable hosts the provider is permitted to talk to.
+
+        Derived from configured Massive URLs (api base + docs/llms.txt host) so
+        that a deployment override of MASSIVE_API_BASE_URL stays in sync. The
+        docs/llms host is included because endpoint docs live on the marketing
+        domain (massive.com), separate from the api host (api.massive.com).
+        """
+        hosts: set[str] = set()
+        for raw in (self.cfg.base_url, self.cfg.llms_txt_url):
+            try:
+                h = (urlsplit(raw).hostname or "").lower()
+            except Exception:
+                h = ""
+            if h:
+                hosts.add(h)
+        # Always permit the massive.com family even if only api.massive.com was
+        # configured — docs_url values from llms.txt point at massive.com.
+        hosts.update({"massive.com", "api.massive.com"})
+        return hosts
 
     async def startup(self) -> None:
         """Build BM25 search index from Massive's llms.txt endpoint catalog."""
@@ -521,13 +558,31 @@ class MassiveWhiteLabelProvider:
         return results
 
     async def get_endpoint_docs(self, docs_url: str) -> dict:
-        """Fetch parameter documentation for a specific endpoint."""
+        """Fetch parameter documentation for a specific endpoint.
+
+        SECURITY (2026-06-10): `docs_url` is caller-supplied (it flows straight
+        from a model/tool argument). Two hard rules apply:
+          1. The URL must be https on an allow-listed Massive host — otherwise a
+             caller could point this at an attacker server.
+          2. NO Authorization header is sent. Massive's docs/llms catalog is
+             public (see startup(), which fetches llms_txt_url unauthenticated),
+             so the API key must never leave the api host. This closes the
+             "API key leaks to attacker-controlled URL" finding.
+        """
         if docs_url in self._endpoint_docs_cache:
             return self._endpoint_docs_cache[docs_url]
 
+        parts = urlsplit(docs_url)
+        if parts.scheme != "https" or not _host_allowed(parts.hostname or "", self._allowed_hosts):
+            raise MassiveError(
+                "Refusing to fetch endpoint docs from a non-allowlisted URL: "
+                f"{docs_url!r}. Only https URLs on {sorted(self._allowed_hosts)} are permitted."
+            )
+
         try:
-            headers = {"Authorization": f"Bearer {self.cfg.api_key}"}
-            resp = await self._http.get(docs_url, headers=headers)
+            # No auth header: docs are public, and forwarding the key off the
+            # api host (docs live on massive.com) would leak it.
+            resp = await self._http.get(docs_url)
             resp.raise_for_status()
             docs = resp.json()
             self._endpoint_docs_cache[docs_url] = docs
@@ -538,6 +593,8 @@ class MassiveWhiteLabelProvider:
                 status_code=e.response.status_code,
                 path=docs_url,
             )
+        except MassiveError:
+            raise
         except Exception as e:
             raise MassiveError(f"Failed to fetch endpoint docs: {e}")
 
@@ -576,7 +633,20 @@ class MassiveWhiteLabelProvider:
             )
 
         key = api_key or self.cfg.api_key
-        url = f"{self.cfg.base_url}{path}"
+        # SECURITY (2026-06-10): `path` is caller-supplied. Naive concatenation
+        # allows host smuggling that would replay the API key off-domain — e.g.
+        # path="@evil.com/x" → https://api.massive.com@evil.com/x (userinfo
+        # trick), path="//evil.com/x" → protocol-relative host swap, or an
+        # absolute "https://evil.com". Resolve the final URL and require it to
+        # stay on an allow-listed Massive host before attaching the key.
+        url = f"{self.cfg.base_url.rstrip('/')}/{path.lstrip('/')}"
+        resolved = urlsplit(url)
+        if resolved.scheme != "https" or not _host_allowed(resolved.hostname or "", self._allowed_hosts):
+            raise MassiveError(
+                f"Refusing Massive API call to non-allowlisted host derived from path={path!r} "
+                f"(resolved={url!r}). Only https URLs on {sorted(self._allowed_hosts)} are permitted."
+            )
+
         headers = {"Authorization": f"Bearer {key}"}
         if llm_model:
             headers["X-LLM-Model"] = llm_model
