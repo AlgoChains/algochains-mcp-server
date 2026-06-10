@@ -403,8 +403,7 @@ def create_fastapi_app():
         arguments: dict = {}
         user_email: str | None = None
 
-    @app_http.get("/health")
-    async def health():
+    def _health_payload() -> dict:
         """
         Bridge health — includes version, auth mode, and server import check.
         Phase J observability: richer /health for incident triage.
@@ -426,6 +425,15 @@ def create_fastapi_app():
             "tool_count": tool_count,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    @app_http.get("/health")
+    async def health():
+        return _health_payload()
+
+    @app_http.get("/status")
+    async def status():
+        """Legacy watchdog-compatible alias for /health."""
+        return _health_payload()
 
     @app_http.get("/tools")
     async def list_available_tools(

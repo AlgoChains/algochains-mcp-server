@@ -79,6 +79,14 @@ def test_health_includes_version():
     assert body["version"] == _SERVER_VERSION
 
 
+def test_status_alias_matches_health():
+    client = _make_client()
+    health = client.get("/health")
+    status = client.get("/status")
+    assert status.status_code == 200
+    assert status.json() == health.json()
+
+
 # ── Anonymous access ─────────────────────────────────────────────────────────
 
 

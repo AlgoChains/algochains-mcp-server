@@ -142,8 +142,7 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
         if not _verify_bearer_token(request.headers.get("Authorization")):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-    @http_app.get("/health")
-    async def health() -> dict:
+    def _health_payload() -> dict:
         return {
             "status": "ok",
             "server": "algochains-mcp",
@@ -151,6 +150,15 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
             "transport": "http+sse",
             "active_sessions": len(_sessions),
         }
+
+    @http_app.get("/health")
+    async def health() -> dict:
+        return _health_payload()
+
+    @http_app.get("/status")
+    async def status() -> dict:
+        """Legacy watchdog-compatible alias for /health."""
+        return _health_payload()
 
     @http_app.post("/mcp")
     async def handle_post(request: Request, _: None = Depends(_auth)) -> Response:
