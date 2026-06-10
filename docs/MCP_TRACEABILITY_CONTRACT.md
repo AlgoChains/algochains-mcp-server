@@ -90,3 +90,46 @@ result = response.json()
 
 - Broker `order.id` returned by `place_order` should be stored in `trade_log.entry_order_id` by the caller if using MCP for ops order placement
 - If MCP order volume grows, consider writing a `bot_events` row with `event="MCP_ORDER_PLACED"` and `detail={"client_trace_id":..., "order_id":...}` automatically
+
+---
+
+## `trade_log.exit_reason` code catalogue (updated 2026-06-10)
+
+When querying `trade_log` via MCP or Supabase, use this catalogue to interpret `exit_reason` values. Codes written by `_async_upsert` are preserved verbatim (uppercase); codes written by `on_exit()` are lowercased.
+
+### Normal trade exits (bracket lifecycle)
+| Code | Meaning |
+|---|---|
+| `bracket_stop` | Stop-loss bracket order filled (normal stop-out) |
+| `bracket_target` | Take-profit bracket order filled (normal win) |
+| `bracket_stop_ws` | Stop filled via WebSocket fast-path |
+| `bracket_target_ws` | Target filled via WebSocket fast-path |
+| `daily_loss` | Daily max-loss enforcer triggered |
+| `manual` | Operator or MCP tool manually closed position |
+| `timeout` | Time-based exit (overnight hold, session end) |
+
+### Abort exits — pre-fill (no broker position created)
+| Code | Meaning |
+|---|---|
+| `T4_FAIL_CLOSED_ABORTED` | T4 price-source gate fired (no live market price) — order never placed |
+| `PRE_SUBMIT_RR_ABORT` | Pre-submit R:R gate fired — signal geometry insufficient before OSO |
+| `PRE_SUBMIT_FLOOR_RR_PROJECTED` | Pre-submit projected-floor R:R gate fired — current market slip would trigger stop floor, collapsing R:R below minimum |
+| `slip_abort_ref_px` | Slip abort — market moved > ceiling ticks from signal entry before submit |
+
+### Abort exits — post-fill (broker position was created and immediately closed)
+| Code | Meaning |
+|---|---|
+| `SIGNAL_ABORTED_BAD_REBASE_RR` | Post-fill R:R gate fired — fill deviation triggered stop floor, R:R < minimum. `fill_price` IS set; broker position was closed by OSO brackets. `confirmed_pnl=NULL` (unreconciled) until `oso_bracket_stop_fill` is written by STALE_PENDING_PURGE. |
+
+### Reconciliation / cleanup exits
+| Code | Meaning |
+|---|---|
+| `oso_bracket_stop_fill` | OSO bracket stop fill detected by STALE_PENDING_PURGE reconciliation — actual exit price written back. `confirmed_pnl=NULL` (needs V2 broker reconciliation). |
+| `sentinel_reconciled_stale` | E2E sentinel marked row stale after 600s with broker flat and no fill — DB-only cleanup, no order sent. |
+| `EXIT_UNCONFIRMED` | `result` field value for unreconciled rows — do NOT report as confirmed P&L. |
+
+### Key rules for consumers
+1. **Never report `confirmed_pnl=0.0` without `confirmed_basis="broker_confirmed"`** — `0.0` may be an unreconciled abort, not a genuine breakeven.
+2. **`confirmed_pnl=NULL`** always means unreconciled. Use `check_trade_accuracy_v2.py` Source A for broker ground truth.
+3. **Abort rows** (`T4_FAIL_CLOSED_ABORTED`, `PRE_SUBMIT_*`, `SIGNAL_ABORTED_*`) may have `fill_price` set even though `exit_price` is absent — the fill happened but `on_exit()` was never called cleanly.
+4. **Do NOT treat abort rows as losses or wins** in win-rate calculations until `confirmed_pnl` is populated by broker reconciliation.
