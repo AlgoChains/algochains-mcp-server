@@ -144,7 +144,7 @@ async def provision(request: Request):
         "resource_id": f"ac_{stripe_customer_id[:12]}_{product_id}",
         "credentials": {
             "ALGOCHAINS_BRIDGE_KEY": raw_key,
-            "ALGOCHAINS_BRIDGE_URL": "https://api.algochains.ai/api/mcp",
+            "ALGOCHAINS_BRIDGE_URL": "https://mcp.algochains.ai/api/mcp",
         },
         "next_steps": [
             "Run: algochains doctor",

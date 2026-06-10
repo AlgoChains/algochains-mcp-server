@@ -62,7 +62,8 @@ data-all = [
 notifications = ["firebase-admin>=6.0.0"]
 datasets = ["pandas>=2.0.0", "pyarrow>=14.0.0"]
 backtrader = ["backtrader>=1.9.78"]
-supabase = ["supabase>=2.0.0"]
+# 2.28.3+ required for sb_secret_* keys (supabase-py 2.6.0 incident, 2026-06)
+supabase = ["supabase>=2.28.3,<3"]
 http = ["fastapi>=0.111.0", "uvicorn[standard]>=0.30.0"]
 otel = [
     "opentelemetry-api",

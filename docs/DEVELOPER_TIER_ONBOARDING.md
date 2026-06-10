@@ -45,7 +45,7 @@ Add to your MCP server config (`~/.cursor/mcp.json` or equivalent):
   "mcpServers": {
     "algochains-dev": {
       "transport": "http",
-      "url": "https://api.algochains.ai/api/mcp",
+      "url": "https://mcp.algochains.ai/api/mcp",
       "headers": {
         "X-Developer-Key": "ac_live_YOUR_KEY_HERE"
       }
@@ -64,7 +64,7 @@ from mcp.client.http import http_client
 dev_key = os.environ["AC_DEV_KEY"]   # ac_live_... stored in env
 
 async with http_client(
-    url="https://api.algochains.ai/api/mcp",
+    url="https://mcp.algochains.ai/api/mcp",
     headers={"X-Api-Key": dev_key},
 ) as (read, write):
     async with ClientSession(read, write) as session:
@@ -88,7 +88,7 @@ Developer keys have access to read-only and analysis tools only.
 No broker order execution access.
 
 ```
-GET https://api.algochains.ai/tools
+GET https://mcp.algochains.ai/tools
 X-Developer-Key: ac_live_...
 ```
 
