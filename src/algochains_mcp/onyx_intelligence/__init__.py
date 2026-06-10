@@ -10,7 +10,7 @@ Provides semantic search and natural language QA over:
   - Live bot trade logs (last 7 days)
   - Marketplace strategy listings and audit reports
 
-Onyx runs on the AlgoChains desktop GPU tower (100.89.114.31:8085)
+Onyx runs on the AlgoChains desktop GPU tower (localhost:8085)
 and is accessed via Tailscale from any agent node.
 """
 

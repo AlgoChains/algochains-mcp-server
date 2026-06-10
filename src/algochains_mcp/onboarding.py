@@ -399,7 +399,7 @@ def get_data_provider_setup_guide(provider: str) -> dict:
             "provider": "onyx",
             "description": "Self-hosted RAG knowledge base (research, skills, strategies)",
             "required_env_vars": {
-                "ONYX_API_URL": "URL of your Onyx instance (e.g., http://100.89.114.31:8085)",
+                "ONYX_API_URL": "URL of your Onyx instance (e.g., http://localhost:8085)",
                 "ONYX_API_KEY": "Onyx API key (optional if auth disabled)",
                 "ONYX_ADMIN_EMAIL": "Onyx admin email for document ingestion",
                 "ONYX_ADMIN_PASS": "Onyx admin password",
@@ -407,7 +407,7 @@ def get_data_provider_setup_guide(provider: str) -> dict:
             "where_to_get": (
                 "Onyx is self-hosted. Install at https://docs.onyx.app\n"
                 "Then set ONYX_API_URL to your instance's base URL.\n"
-                "AlgoChains default: http://100.89.114.31:8085 (desktop tower via Tailscale)"
+                "AlgoChains default: http://localhost:8085 (desktop tower via Tailscale)"
             ),
             "free_tier": "Self-hosted, open source (Apache 2.0)",
             "verification_command": "validate_data_provider(provider='onyx')",
@@ -603,7 +603,7 @@ async def validate_data_provider(provider: str) -> dict:
                     result["http_status"] = resp.status_code
 
         elif provider == "onyx":
-            url = os.getenv("ONYX_API_URL", "http://100.89.114.31:8085")
+            url = os.getenv("ONYX_API_URL", "http://localhost:8085")
             import httpx
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:

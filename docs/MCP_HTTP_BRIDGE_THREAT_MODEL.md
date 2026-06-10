@@ -26,7 +26,7 @@
 |-------|---------------|-------------|------------------------|
 | Anonymous / no key | None | `PUBLIC_TOOLS` only (13 tools) | No |
 | Owner | `ALGOCHAINS_BRIDGE_API_KEY` + `user_email == OWNER_EMAIL` | `PUBLIC_TOOLS` + `OWNER_TOOLS` (40 tools total) | Yes — with `confirm=true` |
-| Subscriber | `sub_live_*` key resolved against Supabase | `SUBSCRIBER_TOOLS` (7 tools, scoped) | No |
+| Subscriber | `sub_live_*` key resolved against Supabase | `SUBSCRIBER_TOOLS` (12 tools, scoped) | No |
 | Dev mode (localhost only) | `ALGOCHAINS_BRIDGE_DEV_MODE=true` | Public tools without key | No |
 
 Current implementation note: HTTP bridge dispatch now delegates danger tier,

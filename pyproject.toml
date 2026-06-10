@@ -9,7 +9,7 @@ description = "AlgoChains MCP Server — 482 tools for live algo trading: Tradov
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
-authors = [{ name = "AlgoChains", email = "tyler@algochains.io" }]
+authors = [{ name = "AlgoChains", email = "support@algochains.ai" }]
 keywords = ["mcp", "trading", "broker", "algochains", "alpaca", "ibkr", "oanda", "quantconnect", "polygon", "finnhub", "portfolio", "streaming", "byok", "datasets", "ml", "backtrader", "marketplace", "account-protection"]
 classifiers = [
     "Development Status :: 4 - Beta",

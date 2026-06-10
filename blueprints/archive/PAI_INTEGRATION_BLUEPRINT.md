@@ -35,7 +35,7 @@ This blueprint identifies what to integrate, what to skip (because we already do
 | Hook system | Autonomous agents (5-min cycles) | Running in production |
 | BYOK / API key mgmt | byok/provider_registry.py | More comprehensive |
 | Dashboard | algochains-command-center (Next.js) | Already deployed |
-| RAG / knowledge brain | Onyx at 100.89.114.31:8085 | Already indexing all docs |
+| RAG / knowledge brain | Onyx at localhost:8085 | Already indexing all docs |
 
 ### 🆕 Novel (Build — Genuinely Missing)
 

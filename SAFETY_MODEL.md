@@ -154,7 +154,7 @@ pip install -e .
 
 # 2. Set only the bridge API key (get from Tyler)
 export ALGOCHAINS_BRIDGE_API_KEY=<key-from-tyler>
-export ONYX_API_URL=http://100.89.114.31:8085    # Desktop Onyx via Tailscale
+export ONYX_API_URL=http://localhost:8085    # Desktop Onyx via Tailscale
 
 # 3. Run quickstart in demo mode
 python scripts/quickstart.py --mode demo
@@ -189,7 +189,7 @@ Tyler, Roo, Eric, RJ — all AI tools should talk to the **same Onyx instance**.
 
 **To connect your AI to the shared Onyx:**
 ```bash
-export ONYX_API_URL=http://100.89.114.31:8085   # via Tailscale
+export ONYX_API_URL=http://localhost:8085   # via Tailscale
 export ONYX_API_KEY=<get-from-tyler>
 ```
 

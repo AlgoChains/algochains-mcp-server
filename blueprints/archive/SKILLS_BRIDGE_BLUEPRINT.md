@@ -138,7 +138,7 @@ get_current_regime    — read current market regime from OpenClaw
 
 ## Onyx Knowledge Brain Update
 
-Onyx at `100.89.114.31:8085` needs to index these additional paths:
+Onyx at `localhost:8085` needs to index these additional paths:
 
 | Path | Contents | Priority |
 |------|----------|----------|

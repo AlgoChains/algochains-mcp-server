@@ -329,7 +329,7 @@ def create_fastapi_app():
         log.warning("Request-ID middleware unavailable: %s", _mw_err)
 
     BRIDGE_API_KEY = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
-    OWNER_EMAIL = os.getenv("OWNER_EMAIL", "tyler@algochains.ai")
+    OWNER_EMAIL = os.getenv("OWNER_EMAIL", "owner@algochains.ai")
     # K-8 fix: dev-mode escape hatch — set ALGOCHAINS_BRIDGE_DEV_MODE=true to
     # allow unauthenticated public-tool access on localhost during development.
     # In production (default) an empty key means the bridge refuses all requests.

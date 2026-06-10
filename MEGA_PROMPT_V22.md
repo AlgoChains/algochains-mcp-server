@@ -76,14 +76,14 @@ MARKET DATA:
   FRED_API_KEY        — Macro data (VIX, rates, GDP)
 
 KNOWLEDGE / AI:
-  ONYX_API_URL        — Self-hosted RAG (default: http://100.89.114.31:8085)
+  ONYX_API_URL        — Self-hosted RAG (default: http://localhost:8085)
   ONYX_API_KEY        — Onyx auth token
   ONYX_ADMIN_EMAIL    — For document ingestion
   ONYX_ADMIN_PASS     — For document ingestion
 
 HTTP BRIDGE:
   ALGOCHAINS_BRIDGE_API_KEY — Required for /api/bots, /api/heartbeat
-  OWNER_EMAIL               — tyler@algochains.ai (controls owner-tier tools)
+  OWNER_EMAIL               — support@algochains.ai (controls owner-tier tools)
   MCP_BRIDGE_PORT           — Default: 8090
 
 SSE BRIDGE:
@@ -253,7 +253,7 @@ All ingestion uses real data only. If a file doesn't exist, fail loudly. No synt
 
 The system has access to:
 
-1. **Onyx RAG** (http://100.89.114.31:8085 via Tailscale)
+1. **Onyx RAG** (http://localhost:8085 via Tailscale)
    - 400+ strategy research JSONs
    - 45+ system blueprints
    - 126 OpenClaw/Windsurf/Cursor skills

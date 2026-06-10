@@ -12,9 +12,20 @@
 
 set -euo pipefail
 
-DESKTOP_WIN="trrey@100.89.114.31"
-MCP_SRC="/Users/treycsa/CascadeProjects/algochains-mcp-server"
+# Configure for your own environment (no personal hosts/paths are baked in):
+#   DESKTOP_WIN  — user@host of your Windows/WSL compute node (e.g. user@your-tower-host)
+#   MCP_SRC      — path to this repo on the machine you run the script from
+DESKTOP_WIN="${DESKTOP_WIN:-${DESKTOP_USER:-user}@${ALGOCHAINS_TOWER_HOST:-your-tower-host}}"
+MCP_SRC="${MCP_SRC:-$(cd "$(dirname "$0")/.." && pwd)}"
+WIN_USER="${WIN_USER:-${DESKTOP_USER:-user}}"
+ONYX_URL="${ONYX_API_URL:-http://localhost:8085}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+
+if [[ "$DESKTOP_WIN" == *"your-tower-host"* ]]; then
+  echo "❌ Set DESKTOP_WIN (and ALGOCHAINS_TOWER_HOST) before running. Example:" >&2
+  echo "   DESKTOP_WIN=youruser@your-tower-host bash scripts/install_on_desktop.sh" >&2
+  exit 1
+fi
 
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
 ok()   { echo "✅ $*"; }
@@ -63,7 +74,7 @@ ok "MCP server install triggered on WSL"
 
 # ─── Step 3: Register in Claude Desktop config on Windows ────────────────────
 log "Registering MCP server in Claude Desktop config on Windows..."
-CLAUDE_CONFIG_PATH='C:\Users\trrey\AppData\Roaming\Claude\claude_desktop_config.json'
+CLAUDE_CONFIG_PATH="C:\Users\${WIN_USER}\AppData\Roaming\Claude\claude_desktop_config.json"
 
 ssh $SSH_OPTS "$DESKTOP_WIN" "powershell -Command \"
 \$configPath = '$CLAUDE_CONFIG_PATH'
@@ -80,7 +91,7 @@ if (-not \$existing.mcpServers) { \$existing | Add-Member -Name 'mcpServers' -Va
     args = @('-d', 'Ubuntu', '--', 'python3', '-m', 'algochains_mcp.server')
     env = @{
         ALGOCHAINS_TOOL_MODE = 'full'
-        ONYX_API_URL = 'http://100.89.114.31:8085'
+        ONYX_API_URL = '$ONYX_URL'
     }
 }
 \$existing | ConvertTo-Json -Depth 10 | Set-Content \$configPath
@@ -91,7 +102,7 @@ ok "Claude Desktop config updated"
 
 # ─── Step 4: Also register in Cursor MCP config on Windows ───────────────────
 log "Registering in Cursor MCP config..."
-CURSOR_MCP_PATH='C:\Users\trrey\.cursor\mcp.json'
+CURSOR_MCP_PATH="C:\Users\${WIN_USER}\.cursor\mcp.json"
 
 ssh $SSH_OPTS "$DESKTOP_WIN" "powershell -Command \"
 \$configPath = '$CURSOR_MCP_PATH'
@@ -104,7 +115,7 @@ if (-not (Test-Path \$configDir)) { New-Item -ItemType Directory -Force \$config
             args = @('-d', 'Ubuntu', '--', 'python3', '-m', 'algochains_mcp.server')
             env = @{
                 ALGOCHAINS_TOOL_MODE = 'full'
-                ONYX_API_URL = 'http://100.89.114.31:8085'
+                ONYX_API_URL = '$ONYX_URL'
             }
         }
     }
@@ -118,11 +129,11 @@ ok "Cursor MCP config updated"
 # ─── Step 5: Verify heartbeat file is accessible ─────────────────────────────
 log "Verifying heartbeat file accessibility on desktop WSL..."
 HB_CHECK=$(ssh $SSH_OPTS "$DESKTOP_WIN" "powershell -Command \"
-\$r = wsl -d Ubuntu -- bash -c 'ls /mnt/c/Users/trrey/mac_heartbeat.json 2>/dev/null && cat /mnt/c/Users/trrey/mac_heartbeat.json' 2>&1
+\$r = wsl -d Ubuntu -- bash -c 'ls /mnt/c/Users/${WIN_USER}/mac_heartbeat.json 2>/dev/null && cat /mnt/c/Users/${WIN_USER}/mac_heartbeat.json' 2>&1
 Write-Host \$r
 \"" 2>&1)
 if echo "$HB_CHECK" | grep -q "macbook\|alive\|timestamp"; then
-    ok "Heartbeat file accessible from WSL at /mnt/c/Users/trrey/mac_heartbeat.json"
+    ok "Heartbeat file accessible from WSL at /mnt/c/Users/${WIN_USER}/mac_heartbeat.json"
 else
     warn "Heartbeat file not accessible from WSL yet — SCP is active every 2 min, will sync"
 fi
@@ -135,8 +146,8 @@ echo ""
 ok "MCP server v22 installed on desktop (WSL Ubuntu)"
 ok "Claude Desktop: mcp server 'algochains' registered (full mode)"
 ok "Cursor: mcp server 'algochains' registered (full mode)"
-ok "Heartbeat: /mnt/c/Users/trrey/mac_heartbeat.json"
-ok "Onyx: http://100.89.114.31:8085"
+ok "Heartbeat: /mnt/c/Users/${WIN_USER}/mac_heartbeat.json"
+ok "Onyx: $ONYX_URL"
 echo ""
 echo "New V22 tools available:"
 echo "  get_live_bot_metrics(bot_id)           — real P&L from logs"

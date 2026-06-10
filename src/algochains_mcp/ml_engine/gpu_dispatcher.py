@@ -1,6 +1,7 @@
 """Route compute to Mac M3 Max or Desktop RTX via Tailscale."""
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timezone
 from typing import Any
@@ -16,7 +17,9 @@ def _fallback_config() -> dict[str, dict[str, Any]]:
     return {
         "mac": {"device": "mps", "max_batch": 4096, "models": ["xgboost", "ensemble"]},
         "desktop": {
-            "host": "100.89.114.31",
+            # Configure your compute node via ALGOCHAINS_TOWER_HOST (e.g. a
+            # private VPN/Tailscale address). No host is hard-coded.
+            "host": os.environ.get("ALGOCHAINS_TOWER_HOST", ""),
             "device": "cuda",
             "max_batch": 32768,
             "models": ["lstm", "transformer", "rl", "optuna", "large_backtest"],

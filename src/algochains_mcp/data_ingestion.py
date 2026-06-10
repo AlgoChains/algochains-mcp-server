@@ -347,7 +347,7 @@ def connect_onyx_docs(
             "error": f"doc_type must be one of: {sorted(VALID_DOC_TYPES)}",
         }
 
-    url = onyx_url or os.getenv("ONYX_API_URL", "http://100.89.114.31:8085")
+    url = onyx_url or os.getenv("ONYX_API_URL", "http://localhost:8085")
     key = onyx_key or os.getenv("ONYX_API_KEY", "")
 
     # Expand all paths to individual files

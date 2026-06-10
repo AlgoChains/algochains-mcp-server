@@ -19,3 +19,7 @@ state/guardrails_state.json
 state/guardrails_state.json.bak*
 state/onboarding_state.json
 .env.bak*
+
+# Node toolchain artifacts (CLI builds use bun; npm install is local-only)
+node_modules/
+src/cli/package-lock.json

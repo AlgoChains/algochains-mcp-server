@@ -3722,7 +3722,7 @@ TOOLS = [
     Tool(name="onyx_ask", description="Ask a natural language question against the Onyx knowledge base with RAG grounding. Returns an answer with cited sources. E.g. 'What is the best CL swing setup in trending regimes?' or 'How do I configure Token Guardian?'",
          inputSchema={"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]},
          annotations=ANNOT_SEARCH),
-    Tool(name="onyx_health", description="Check if the Onyx knowledge base is reachable (requires Tailscale to desktop PC at 100.89.114.31:8085).",
+    Tool(name="onyx_health", description="Check if the Onyx knowledge base is reachable (self-hosted RAG host configured via ONYX_API_URL).",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="onyx_find_best_setup", description="Ask Onyx to find the best historical setup for a symbol/regime combination by searching trade memory, research JSONs, and strategy docs. Returns top 3 setups with evidence.",
@@ -3764,13 +3764,13 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════
     # Desktop Tower Job Dispatcher
     # ═══════════════════════════════════════════════════════════════
-    Tool(name="dispatch_tower_job", description="Dispatch a heavy compute job to the AlgoChains desktop tower (TeesPC, 100.89.114.31) via Tailscale SSH. Jobs: optuna_optimize, walk_forward_backtest, ml_retrain, mcpt_validation. Returns job_id for polling. Mac handles small jobs (<500MB); tower handles GPU/large jobs automatically.",
+    Tool(name="dispatch_tower_job", description="Dispatch a heavy compute job to a configured GPU compute node (set ALGOCHAINS_TOWER_HOST) via SSH. Jobs: optuna_optimize, walk_forward_backtest, ml_retrain, mcpt_validation. Returns job_id for polling. Small jobs (<500MB) run locally; large/GPU jobs route to the compute node automatically.",
          inputSchema={"type": "object", "properties": {"job_type": {"type": "string", "enum": ["optuna_optimize", "walk_forward_backtest", "ml_retrain", "mcpt_validation", "large_backtest", "factor_model_compute"]}, "params": {"type": "object", "description": "Job parameters: bot, symbol, n_trials, data_start, data_end, model, etc."}, "force_local": {"type": "boolean", "default": False}}, "required": ["job_type"]},
          annotations=ANNOT_COMPUTE),
     Tool(name="get_tower_job_status", description="Get status and result of a dispatched tower job. Polls the tower via SSH for the result file.",
          inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
          annotations=ANNOT_READ_ONLY),
-    Tool(name="get_tower_health", description="Check desktop tower (100.89.114.31) health: reachable, memory, active jobs, GPU status.",
+    Tool(name="get_tower_health", description="Check the configured compute node (ALGOCHAINS_TOWER_HOST) health: reachable, memory, active jobs, GPU status.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="list_tower_jobs", description="List recent tower jobs with status, type, and memory usage.",
@@ -3815,12 +3815,12 @@ TOOLS = [
              "token_ttl_seconds": {"type": "integer", "default": 86400, "description": "Config token lifetime in seconds (default 24h)"},
          }, "required": ["subscriber_id", "strategy_id"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the AlgoChains knowledge brain at 100.89.114.31:8085. Replaces Vertex AI RAG pipeline.",
+    Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the self-hosted Onyx RAG host (ONYX_API_URL).",
          inputSchema={"type": "object", "properties": {
              "full_sync": {"type": "boolean", "default": False, "description": "Full re-index vs incremental (new files only)"},
          }, "required": []},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="get_onyx_status", description="Check Onyx knowledge base status: health, last sync time, total indexed documents, connector status. Onyx at 100.89.114.31:8085.",
+    Tool(name="get_onyx_status", description="Check Onyx knowledge base status: health, last sync time, total indexed documents, connector status (self-hosted host via ONYX_API_URL).",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="get_learn_hub_health", description="Check AlgoChains Learn Hub health: HTTP status of /learn/, /learn/feed.xml RSS MIME, and learn.algochains.ai subdomain redirect. Read-only — does NOT deploy. Use to verify the live Learn Hub is up and public (no login required).",
@@ -8809,7 +8809,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_onyx_status":
         try:
             import httpx as _httpx
-            _onyx_url = os.getenv("ONYX_API_URL", "http://100.89.114.31:8085")
+            _onyx_url = os.getenv("ONYX_API_URL", "http://localhost:8085")
             _key = os.getenv("ONYX_API_KEY", "")
             _headers = {"Authorization": f"Bearer {_key}"} if _key else {}
             async with _httpx.AsyncClient(timeout=10) as _hc:
@@ -8819,10 +8819,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "healthy": _health,
                 "url": _onyx_url,
                 "source": "onyx_health_check",
-                "note": "Onyx at 100.89.114.31:8085 (Desktop Tower). Replaces Vertex AI RAG.",
+                "note": "Onyx host is configured via ONYX_API_URL (self-hosted RAG).",
             })
         except Exception as exc:
-            return _text({"error": f"Onyx status check failed: {exc}", "url": os.getenv("ONYX_API_URL", "http://100.89.114.31:8085")})
+            return _text({"error": f"Onyx status check failed: {exc}", "url": os.getenv("ONYX_API_URL", "http://localhost:8085")})
 
     elif name == "get_learn_hub_health":
         try:
@@ -11286,10 +11286,10 @@ def _request_access(email: str) -> None:
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="ignore")
         print(f"\nRequest failed (HTTP {e.code}): {body}")
-        print(f"Contact tyler@algochains.ai directly to request MNQ paper access.\n")
+        print(f"Contact support@algochains.ai to request MNQ paper access.\n")
     except Exception as e:
         print(f"\nRequest failed: {e}")
-        print(f"Contact tyler@algochains.ai directly.\n")
+        print(f"Contact support@algochains.ai.\n")
 
 
 def _run_demo_signal() -> None:

@@ -508,7 +508,7 @@ algochains train_model name:mnq_regime_classifier feature_set_id:mnq_tick_featur
 ```
 
 **Maps to real infrastructure:**
-- Desktop: `100.89.114.31` (WSL2, RTX 5080)
+- Desktop: `localhost` (WSL2, RTX 5080)
 - GPU dispatcher: `ml_engine/gpu_dispatcher.py`
 - Data path: `/home/trrey/tick_data/` (rsync'd)
 

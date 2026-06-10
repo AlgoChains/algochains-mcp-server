@@ -2,7 +2,7 @@
 Onyx Intelligence Layer — AlgoChains Knowledge Search
 ======================================================
 Connects AlgoChains MCP tools to the self-hosted Onyx knowledge base
-(Onyx on-prem at 100.89.114.31:8085 via Tailscale).
+(Onyx on-prem at localhost:8085 via Tailscale).
 
 Capabilities:
   - Semantic search across 400+ strategy research JSONs
@@ -32,7 +32,7 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-ONYX_BASE = os.getenv("ONYX_API_URL", "http://100.89.114.31:8085")
+ONYX_BASE = os.getenv("ONYX_API_URL", "http://localhost:8085")
 ONYX_KEY = os.getenv("ONYX_API_KEY", "")
 ONYX_ADMIN_EMAIL = os.getenv("ONYX_ADMIN_EMAIL", "admin@algochains.io")
 ONYX_ADMIN_PASS = os.getenv("ONYX_ADMIN_PASS", "")

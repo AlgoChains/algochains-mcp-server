@@ -274,7 +274,10 @@ async function checkMarketSession(): Promise<CheckResult> {
 }
 
 async function checkOnyxReachable(profile: { mcp_bridge_url?: string }): Promise<CheckResult> {
-  const onyxUrl = process.env.ONYX_API_URL ?? "http://100.89.114.31:8085";
+  const onyxUrl = process.env.ONYX_API_URL;
+  if (!onyxUrl) {
+    return { name: "Onyx RAG", status: "warn", message: "not configured (set ONYX_API_URL)" };
+  }
   try {
     const res = await fetch(`${onyxUrl}/api/health`, { signal: AbortSignal.timeout(3_000) });
     if (res.ok) return { name: "Onyx RAG", status: "ok", message: `${onyxUrl} — healthy` };
@@ -306,7 +309,10 @@ async function checkGraphitiReachable(): Promise<CheckResult> {
 }
 
 async function checkTowerSSH(): Promise<CheckResult> {
-  const towerHost = process.env.ALGOCHAINS_TOWER_HOST ?? "100.89.114.31";
+  const towerHost = process.env.ALGOCHAINS_TOWER_HOST;
+  if (!towerHost) {
+    return { name: "Compute tower SSH", status: "warn", message: "not configured (set ALGOCHAINS_TOWER_HOST)" };
+  }
   try {
     const result = spawnSync("ssh", ["-o", "ConnectTimeout=3", "-o", "BatchMode=yes", towerHost, "echo ok"], {
       timeout: 4_000, encoding: "utf-8",

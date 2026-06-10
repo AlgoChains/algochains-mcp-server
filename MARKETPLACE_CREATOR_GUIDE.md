@@ -1,6 +1,6 @@
 # AlgoChains Marketplace — Bot Creator Guide
 **For:** Strategy creators who want to list their bots on algochains.ai
-**Version:** V22.4 | **Contact:** tyler@algochains.ai
+**Version:** V22.4 | **Contact:** support@algochains.ai
 
 ---
 

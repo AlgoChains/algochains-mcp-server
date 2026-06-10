@@ -97,13 +97,13 @@ A full git-history audit was run 2026-06-09 ahead of making the repo public.
 
 ### 📋 KNOWN-ACCEPTABLE | P2 | 2026-04-08 | `cc.algochains.io` returns 403 from `curl`
 **Situation:** Cloudflare Access (Zero Trust) requires browser authentication. `curl` and API health checks without cookies return 403.  
-**This is INTENTIONAL security.** The tunnel is working; authenticate in browser with `tyler@algochains.io`.  
+**This is INTENTIONAL security.** The tunnel is working; authenticate in the browser with your authorized SSO account.  
 **Do NOT remove Cloudflare Access** — this prevents unauthorized access to the command center.
 
 ---
 
 ### 📋 KNOWN-ACCEPTABLE | P2 | 2026-04-08 | Desktop tower SSH on port 2222
-**Situation:** Desktop Windows machine (100.89.114.31) pingable but WSL SSH (port 2222) fails.  
+**Situation:** Compute node (configured via `ALGOCHAINS_TOWER_HOST`) pingable but WSL SSH fails.  
 **Recovery:** Start WSL2 on Windows, ensure `sshd` is running in WSL, or use Windows SSH on port 22.  
 **rsync workaround:** Push to GitHub from Mac; pull on desktop.
 
@@ -189,12 +189,13 @@ print(c.get_positions())
 
 ---
 
-### Cloudflare Tunnel Must Be Running for cc.algochains.io
-The tunnel process must be started after every Mac restart:
+### Cloudflare Tunnel Must Be Running for the Command Center
+The tunnel process must be started after every host restart:
 ```bash
-cloudflared tunnel run def269f2-6c52-471a-9648-c2fe631bc9bf >> logs/cloudflared_cc.log 2>&1 &
+# Tunnel name/ID lives in your local ~/.cloudflared/config.yml (never commit it)
+cloudflared tunnel run "$CF_TUNNEL_NAME" >> logs/cloudflared_cc.log 2>&1 &
 ```
-Add to launchd (macOS) or `~/.bash_profile` for persistence. The tunnel ID is in `~/.cloudflared/config.yml`.
+Add to launchd (macOS) or your shell profile for persistence.
 
 **onyx.algochains.io** requires the desktop tower to be running (onyx-tower tunnel). Desktop must be online and cloudflared running in Windows.
 
