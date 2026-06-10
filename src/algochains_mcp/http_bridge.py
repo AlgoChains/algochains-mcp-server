@@ -774,10 +774,23 @@ def create_fastapi_app():
     # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
     # Subscribers receive a sanitised view — no raw P&L, no account numbers.
 
-    _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
-    if not _CT:
-        # resolve relative to this file's location
-        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+    def _resolve_control_tower_path() -> str:
+        configured = os.environ.get("ALGOCHAINS_CONTROL_TOWER") or os.environ.get(
+            "ALGOCHAINS_CONTROL_TOWER_PATH"
+        )
+        if configured:
+            return configured
+
+        here = _PathGlobal(__file__).resolve()
+        for parent in here.parents:
+            candidate = parent / "algochains-control-tower"
+            if candidate.exists():
+                return str(candidate)
+
+        repo_root = here.parents[2] if len(here.parents) > 2 else here.parent
+        return str(repo_root / "algochains-control-tower")
+
+    _CT = _resolve_control_tower_path()
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
