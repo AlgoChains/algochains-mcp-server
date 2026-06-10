@@ -65,6 +65,22 @@ from .otel_tracing import redacted_argument_hash, trace_span
 
 log = logging.getLogger(__name__)
 
+
+def _default_control_tower_root() -> str:
+    """Resolve the optional control-tower checkout without assuming path depth."""
+    for var in ("ALGOCHAINS_CONTROL_TOWER", "ALGOCHAINS_CONTROL_TOWER_PATH"):
+        val = os.environ.get(var)
+        if val:
+            return val
+    try:
+        candidate = _PathGlobal(__file__).resolve().parents[3] / "algochains-control-tower"
+        if candidate.exists():
+            return str(candidate)
+    except Exception:
+        pass
+    return "/Users/treycsa/CascadeProjects/algochains-control-tower"
+
+
 # Single source of truth: read version from pyproject.toml at startup.
 # Prevents version drift between FastAPI /docs and package metadata
 # (hidden-killers v8 Phase J fix — previously hardcoded "22.0.0").
@@ -770,10 +786,7 @@ def create_fastapi_app():
     # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
     # Subscribers receive a sanitised view — no raw P&L, no account numbers.
 
-    _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
-    if not _CT:
-        # resolve relative to this file's location
-        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+    _CT = _default_control_tower_root()
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
