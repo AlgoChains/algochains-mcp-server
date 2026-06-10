@@ -109,34 +109,81 @@ authCmd.command("test <service>")
 // ── paper (subscriber portfolio) ───────────────────────────────────────────────
 const paperCmd = program.command("paper").description("AlgoChains Paper subscriber portfolio (sub_live_ key)");
 
+async function callPaperTool(
+  tool: string,
+  args: Record<string, unknown>,
+  json?: boolean,
+): Promise<never> {
+  const config = loadConfig();
+  const bridgeUrl =
+    process.env.ALGOCHAINS_BRIDGE_URL
+    ?? config.mcp?.bridge_url
+    ?? "https://api.algochains.ai";
+  if (!process.env.ALGOCHAINS_SUB_KEY) {
+    console.error("  Set ALGOCHAINS_SUB_KEY (sub_live_… from algochains.ai → Account → API Keys)");
+    process.exit(1);
+  }
+  const mcp = createMcpClient(bridgeUrl, config.mcp?.timeout_ms ?? 30_000);
+  try {
+    const result = await mcp.callTool(tool, args);
+    if (json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(extractText(result));
+    }
+    process.exit(result.isError ? 1 : 0);
+  } catch (e) {
+    console.error(`Error: ${e}`);
+    process.exit(1);
+  }
+}
+
 paperCmd
   .command("status")
   .description("Show paper balance, assignments, and recent P&L via get_my_portfolio")
   .option("--json", "output structured JSON")
-  .action(async (opts: { json?: boolean }) => {
-    const config = loadConfig();
-    const bridgeUrl =
-      process.env.ALGOCHAINS_BRIDGE_URL
-      ?? config.mcp?.bridge_url
-      ?? "https://api.algochains.ai";
-    if (!process.env.ALGOCHAINS_SUB_KEY) {
-      console.error("  Set ALGOCHAINS_SUB_KEY (sub_live_… from algochains.ai → Account → API Keys)");
+  .action((opts: { json?: boolean }) => callPaperTool("get_my_portfolio", {}, opts.json));
+
+paperCmd
+  .command("positions")
+  .description("Show pending and recently-filled self-directed paper orders")
+  .option("--json", "output structured JSON")
+  .action((opts: { json?: boolean }) => callPaperTool("get_my_paper_positions", {}, opts.json));
+
+paperCmd
+  .command("order <side> <symbol> <qty>")
+  .description("Place a self-directed paper order (filled at real quotes), e.g. paper order buy MNQ 1")
+  .option("--limit <price>", "limit price (default: market order)")
+  .option("--json", "output structured JSON")
+  .action((side: string, symbol: string, qty: string, opts: { limit?: string; json?: boolean }) => {
+    const parsedQty = parseInt(qty, 10);
+    if (!Number.isFinite(parsedQty) || parsedQty <= 0) {
+      console.error(`  Invalid qty: ${qty}`);
       process.exit(1);
     }
-    const mcp = createMcpClient(bridgeUrl, config.mcp?.timeout_ms ?? 30_000);
-    try {
-      const result = await mcp.callTool("get_my_portfolio", {});
-      if (opts.json) {
-        console.log(JSON.stringify(result, null, 2));
-      } else {
-        console.log(extractText(result));
+    const args: Record<string, unknown> = {
+      side: side.toUpperCase(),
+      symbol: symbol.toUpperCase(),
+      qty: parsedQty,
+    };
+    if (opts.limit !== undefined) {
+      const limitPrice = parseFloat(opts.limit);
+      if (!Number.isFinite(limitPrice) || limitPrice <= 0) {
+        console.error(`  Invalid --limit price: ${opts.limit}`);
+        process.exit(1);
       }
-      process.exit(result.isError ? 1 : 0);
-    } catch (e) {
-      console.error(`Error: ${e}`);
-      process.exit(1);
+      args.order_type = "limit";
+      args.limit_price = limitPrice;
     }
+    return callPaperTool("place_paper_order", args, opts.json);
   });
+
+paperCmd
+  .command("cancel <orderId>")
+  .description("Cancel a pending self-directed paper order")
+  .option("--json", "output structured JSON")
+  .action((orderId: string, opts: { json?: boolean }) =>
+    callPaperTool("cancel_paper_order", { order_id: orderId }, opts.json));
 
 // ── daemon ─────────────────────────────────────────────────────────────────────
 const daemonCmd = program.command("daemon").description("Background daemon with SSE streaming");
