@@ -1,7 +1,7 @@
 """
-AlgoChains MCP Server v22.4 — institutional-grade trading platform.
+AlgoChains MCP Server v22.5 — institutional-grade trading platform.
 
-478 tools across the full owner surface, with smart tiered exposure:
+485 tools across the full owner surface, with smart tiered exposure:
 
   SMART MODE (default, ALGOCHAINS_TOOL_MODE=smart):
     148 curated tools exposed directly — trading, data, strategy, intent, meta-tools.
@@ -9,7 +9,7 @@ AlgoChains MCP Server v22.4 — institutional-grade trading platform.
     ~4K tokens vs ~40K+. Works within Cursor (80-tool limit) and Windsurf.
 
   FULL MODE (ALGOCHAINS_TOOL_MODE=full):
-    All 478 tools exposed. For clients with their own lazy loading (Claude Code).
+    All 485 tools exposed. For clients with their own lazy loading (Claude Code).
 
 V20.0 additions: Account Protection (13 pre-trade guards), Builder SDK (3.09B+ row
 data warehouse, 7-gate MCPT validation pipeline), memory-safe architecture (OOM
@@ -414,7 +414,7 @@ SERVER_INSTRUCTIONS = (
     "graphiti_health read-only Tier-1, graphiti_add_episode WRITE_LOCAL discover-only) — advisory "
     "agent_memory authority over Neo4j, NEVER broker truth, fails closed graphiti_unavailable. "
     "Real data only — all tools connect to live brokers, real tick feeds, and real APIs. "
-    "In smart mode (default), ~54 Tier-1 tools exposed. "
+    "In smart mode (default), ~52 Tier-1 tools exposed (SEC-2026: send_waitlist_invite + upsert_bot_performance moved to ORDER_EXEC). "
     "Use 'discover_tools' to find 280+ additional tools on demand. "
     "V22.4: get_bot_health now includes e2e_sentinel lifecycle state for MNQ signal→order→bracket→fill traceability. "
     "V22.2: get_bot_health now includes ml_env_flags (MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, "
@@ -2148,12 +2148,14 @@ TOOLS = [
     ),
     Tool(
         name="export_config",
-        description="Export your validated key configuration in various formats: env, json, mcp_windsurf, mcp_cursor, mcp_vscode.",
+        description="Export your validated key configuration in various formats: env, json, mcp_windsurf, mcp_cursor, mcp_vscode. REQUIRES owner_token matching OWNER_API_TOKEN — MCP callers receive masked values only without it.",
         inputSchema={
             "type": "object",
             "properties": {
                 "format": {"type": "string", "enum": ["env", "json", "mcp_windsurf", "mcp_cursor", "mcp_vscode"], "default": "env"},
+                "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required to export key values."},
             },
+            "required": ["owner_token"],
         },
     
         annotations=ANNOT_WRITE_SAFE,
@@ -3805,15 +3807,15 @@ TOOLS = [
          annotations=ANNOT_READ_ONLY),
     Tool(name="deliver_strategy_to_subscriber",
          description="Deliver an approved marketplace strategy config to a subscriber's bot endpoint. "
-                     "Signs a time-limited config token with HMAC-SHA256 using ALGOCHAINS_SIGNAL_SECRET, "
-                     "POSTs it to the subscriber's webhook URL, and logs the delivery to Supabase "
-                     "marketplace_deliveries. Requires SUPABASE_SERVICE_ROLE_KEY + ALGOCHAINS_SIGNAL_SECRET.",
+                     "Verifies active subscription ownership, SSRF-checks webhook URL, signs token, POSTs to webhook. "
+                     "REQUIRES owner_token — SEC-2026-C2. Signed token is NOT returned in MCP response.",
          inputSchema={"type": "object", "properties": {
              "subscriber_id": {"type": "string", "description": "Subscriber Supabase user ID (auth.uid())"},
              "strategy_id": {"type": "string", "description": "Supabase marketplace_listing.id to deliver"},
-             "webhook_url": {"type": "string", "description": "Override webhook URL (optional — uses subscription record if not provided)"},
+             "webhook_url": {"type": "string", "description": "Override webhook URL (optional, SSRF-checked; private/link-local targets blocked)"},
              "token_ttl_seconds": {"type": "integer", "default": 86400, "description": "Config token lifetime in seconds (default 24h)"},
-         }, "required": ["subscriber_id", "strategy_id"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+         }, "required": ["subscriber_id", "strategy_id", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the self-hosted Onyx RAG host (ONYX_API_URL).",
          inputSchema={"type": "object", "properties": {
@@ -4124,8 +4126,11 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="send_waitlist_invite",
-         description="Send an invite code to a waitlist user. Generates a unique code and emails it. Updates status to 'invited'.",
-         inputSchema={"type": "object", "properties": {"email": {"type": "string"}}, "required": ["email"]},
+         description="Send an invite to a waitlist user. Generates a unique code and emails it. Updates status to 'invited'. REQUIRES owner_token matching OWNER_API_TOKEN — invite codes are delivered by email only, never returned in MCP response.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+         }, "required": ["email", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
 
     # ── Email/SMS Verification ────────────────────────────────────────────
@@ -4215,7 +4220,7 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="upsert_bot_performance",
-         description="Record real performance data for a managed bot subscription. Called by the metrics streaming daemon. All values must come from actual execution.",
+         description="[DEPRECATED for autonomous callers] Record real performance data for a managed bot subscription. Use metrics_streaming_daemon.py instead. Requires owner_token — SEC-2026-C4.",
          inputSchema={"type": "object", "properties": {
              "subscription_id": {"type": "string"},
              "bot_id": {"type": "string"},
@@ -4228,7 +4233,8 @@ TOOLS = [
              "max_drawdown": {"type": "number"},
              "weekly_pnl": {"type": "number"},
              "last_trade_at": {"type": "string"},
-         }, "required": ["subscription_id","bot_id","daily_pnl","win_rate","trade_count","is_running","broker"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+         }, "required": ["subscription_id","bot_id","daily_pnl","win_rate","trade_count","is_running","broker","owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
 
     # ── Kronos Foundation Model (shadow mode observer) ────────────────────────
@@ -4517,7 +4523,7 @@ TOOLS = [
 #   - Cursor hard limit: 80 tools. Windsurf: context-bound.
 #
 # Modes (ALGOCHAINS_TOOL_MODE env var):
-#   "smart"  — Tier 1 only (38 core tools). 189 discoverable via meta-tools. DEFAULT.
+#   "smart"  — Tier 1 only (~52 core tools after SEC-2026 audit). Discoverable via meta-tools. DEFAULT.
 #   "full"   — All 227 tools exposed. For clients that manage their own filtering.
 #
 # Tier 1 tools are the minimum set to be productive:
@@ -4688,7 +4694,8 @@ TIER1_TOOL_NAMES = {
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
-    "send_waitlist_invite",
+    # "send_waitlist_invite" removed from Tier-1: SEC-2026-C3 FIX — invite minting
+    # requires owner_token (ORDER_EXEC tier). See tool_danger_tiers.py.
     # Verification
     "send_email_verification_code",
     "send_sms_verification_code",
@@ -4704,7 +4711,8 @@ TIER1_TOOL_NAMES = {
     # Multi-Bot Metrics
     "get_user_bot_metrics",
     "get_all_user_bots",
-    "upsert_bot_performance",
+    # "upsert_bot_performance" removed from Tier-1: SEC-2026-C4 FIX — metric writes
+    # go through metrics_streaming_daemon.py; MCP path requires owner_token (ORDER_EXEC).
     # V22.9 — PAI Integration (always Tier 1 — business context + macro data)
     "get_algochains_telos",
     "get_us_economic_indicators",
@@ -6261,6 +6269,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(result)
 
     elif name == "export_config":
+        # SEC-2026-C1 FIX: export_config reads plaintext env secrets.
+        # Require owner_token before returning any key data.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "export_config requires owner_token matching OWNER_API_TOKEN. "
+                         "MCP output returns masked keys only — full export requires "
+                         "owner confirmation via OWNER_API_TOKEN.",
+                "masked_preview": "Set owner_token to your OWNER_API_TOKEN value to proceed.",
+            })
         orch = _get_key_orchestrator()
         if not orch._discovered:
             await orch.discover_keys()
@@ -8895,6 +8914,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Subscriber bots error: {exc}"})
 
     elif name == "deliver_strategy_to_subscriber":
+        # SEC-2026-C2 FIX: require owner_token; subscription verification + SSRF guard
+        # are enforced inside deliver_strategy_to_subscriber (supabase_tools.py).
+        _owner_token_provided = args.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "deliver_strategy_to_subscriber requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .marketplace.supabase_tools import deliver_strategy_to_subscriber as _deliver
             return _text(_deliver(
@@ -9358,6 +9383,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "send_waitlist_invite":
+        # SEC-2026-C3 FIX: invite minting must not be available to unauthenticated callers.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "send_waitlist_invite requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .waitlist import send_invite as _send_invite
             return _text(await _send_invite(arguments["email"]))
@@ -9478,6 +9508,15 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "upsert_bot_performance":
+        # SEC-2026-C4 FIX: metrics_streaming_daemon.py is the canonical writer.
+        # This MCP path is deprecated for autonomous callers; require owner_token.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "upsert_bot_performance requires owner_token matching OWNER_API_TOKEN. "
+                         "Autonomous metric writes go through metrics_streaming_daemon.py, not MCP.",
+            })
         try:
             from .live_bot_intelligence.multi_account_metrics import upsert_managed_bot_performance as _upsert_perf
             return _text(await _upsert_perf(

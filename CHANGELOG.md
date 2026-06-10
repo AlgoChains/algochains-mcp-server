@@ -8,6 +8,74 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [22.5.0] — 2026-06-10
+
+### Security
+
+- **SEC-2026-C1: `export_config` now requires `owner_token` (OWNER_API_TOKEN)**
+  (`byok/key_orchestrator.py`, `tool_danger_tiers.py`, `server.py`)
+  Previously `export_config` was callable from any smart-mode MCP client and returned
+  plaintext environment API keys in JSON/env/mcp-config format. Escalated to
+  `TIER_ORDER_EXEC`; handler now verifies `owner_token` matches `OWNER_API_TOKEN`.
+  MCP output without owner token returns a masked-values-only error message.
+
+- **SEC-2026-C2: `deliver_strategy_to_subscriber` hardened against config theft + SSRF**
+  (`marketplace/supabase_tools.py`, `tool_danger_tiers.py`, `server.py`)
+  Tool now: (a) requires `owner_token`; (b) verifies active subscription ownership
+  before accessing any listing data; (c) SSRF-blocks private/link-local webhook URLs;
+  (d) no longer returns `signed_token` in the MCP response — delivery receipt only.
+  Escalated to `TIER_ORDER_EXEC`.
+
+- **SEC-2026-C3: `send_waitlist_invite` removed from Tier-1; invite codes email-only**
+  (`waitlist.py`, `server.py`, `tool_danger_tiers.py`)
+  Invite minting was available to any smart-mode caller without auth. Tool now
+  requires `owner_token`. `send_invite()` no longer returns `invite_code` or
+  `invite_url` in the MCP response — codes are delivered by email only.
+
+- **SEC-2026-C4: `upsert_bot_performance` removed from Tier-1; requires owner_token**
+  (`live_bot_intelligence/multi_account_metrics.py`, `server.py`, `tool_danger_tiers.py`)
+  Metric forgery on marketplace/subscriber dashboards was possible. Tool now requires
+  `owner_token`. Removed from `TIER1_TOOL_NAMES`. Callers must supply a valid owner
+  token; service-role write path is unchanged.
+
+### Changed
+
+- Tool count: 478 → 485 (7 new tools added in marketplace and subscriber surfaces)
+- `server.py` module docstring updated to v22.5 / 485 tools
+
+---
+
+## [Unreleased] — prior to 22.5.0
+
+### Security
+
+- **SEC-2026-C1: `export_config` now requires `owner_token` (OWNER_API_TOKEN)**
+  (`byok/key_orchestrator.py`, `tool_danger_tiers.py`, `server.py`)
+  Previously `export_config` was callable from any smart-mode MCP client and returned
+  plaintext environment API keys in JSON/env/mcp-config format. Escalated to
+  `TIER_ORDER_EXEC`; handler now verifies `owner_token` matches `OWNER_API_TOKEN`.
+  MCP output without owner token returns a masked-values-only error message.
+
+- **SEC-2026-C2: `deliver_strategy_to_subscriber` hardened against config theft + SSRF**
+  (`marketplace/supabase_tools.py`, `tool_danger_tiers.py`, `server.py`)
+  Tool now: (a) requires `owner_token`; (b) verifies active subscription ownership
+  before accessing any listing data; (c) SSRF-blocks private/link-local webhook URLs;
+  (d) no longer returns `signed_token` in the MCP response — delivery receipt only.
+  Escalated to `TIER_ORDER_EXEC`.
+
+- **SEC-2026-C3: `send_waitlist_invite` removed from Tier-1; invite codes email-only**
+  (`waitlist.py`, `server.py`, `tool_danger_tiers.py`)
+  Invite minting was available to any smart-mode caller without auth. Tool now
+  requires `owner_token`. `send_invite()` no longer returns `invite_code` or
+  `invite_url` in the MCP response — codes are delivered by email only.
+
+- **SEC-2026-C4: `upsert_bot_performance` removed from Tier-1; requires owner_token**
+  (`live_bot_intelligence/multi_account_metrics.py`, `server.py`, `tool_danger_tiers.py`)
+  Metric forgery on marketplace/subscriber dashboards was possible. Tool now requires
+  `owner_token`. Canonical metric writes go through `metrics_streaming_daemon.py`.
+
 ### Fixed
 
 - **Circuit breakers now survive restarts correctly** (`trading_guardrails.py`).
