@@ -184,6 +184,191 @@ def get_my_fills(
     return {"fills": list(getattr(resp, "data", None) or [])}
 
 
+def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
+    """Paper balance, bot assignments, open entries, and 7-day P&L in one call."""
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+
+    pnl = get_my_pnl(subscriber_id)
+    if pnl.get("error"):
+        return pnl
+
+    assignments_payload = get_my_assignments(subscriber_id)
+    assignments = assignments_payload.get("assignments") or []
+
+    paper_account = None
+    try:
+        pa = (
+            sb.table("subscriber_paper_accounts")
+            .select(
+                "starting_balance_usd,current_balance_usd,realized_pnl_usd,"
+                "fills_count,last_reset_at,updated_at"
+            )
+            .eq("subscriber_id", subscriber_id)
+            .maybe_single()
+            .execute()
+        )
+        paper_account = getattr(pa, "data", None)
+    except Exception as exc:
+        log.warning("get_my_portfolio paper account: %s", exc)
+
+    open_entries: list[dict[str, Any]] = []
+    bots = [a["bot"] for a in assignments if not a.get("paused")]
+    if bots:
+        try:
+            sig = (
+                sb.table("copy_trade_signals")
+                .select("id,bot,symbol,side,qty,entry_price,stop_price,tp_price,emitted_at")
+                .in_("bot", bots)
+                .gt("expires_at", datetime.now(timezone.utc).isoformat())
+                .order("emitted_at", desc=True)
+                .limit(5)
+                .execute()
+            )
+            open_entries = list(getattr(sig, "data", None) or [])
+        except Exception as exc:
+            log.warning("get_my_portfolio open entries: %s", exc)
+
+    return {
+        "subscriber_id": subscriber_id,
+        "paper_account": paper_account,
+        "assignments": assignments,
+        "open_signals": open_entries,
+        "pnl_today_usd": pnl.get("pnl_today_usd"),
+        "pnl_7d_usd": pnl.get("pnl_7d_usd"),
+        "fills_today": pnl.get("fills_today"),
+        "as_of": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def place_paper_order(
+    subscriber_id: str,
+    *,
+    symbol: str,
+    side: str,
+    qty: int,
+    order_type: str = "market",
+    limit_price: float | None = None,
+) -> dict[str, Any]:
+    """Queue a self-directed paper order (filled at real quotes by paper_trade_executor)."""
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+    sym = (symbol or "").strip().upper()
+    sd = (side or "").strip().upper()
+    if sd not in ("BUY", "SELL"):
+        return _err("invalid_side", got=side)
+    if int(qty) <= 0:
+        return _err("invalid_qty", got=qty)
+    ot = (order_type or "market").strip().lower()
+    if ot not in ("market", "limit"):
+        return _err("invalid_order_type", got=order_type)
+    if ot == "limit" and limit_price is None:
+        return _err("limit_price_required")
+    try:
+        acct = (
+            sb.table("subscriber_paper_accounts")
+            .select("subscriber_id")
+            .eq("subscriber_id", subscriber_id)
+            .maybe_single()
+            .execute()
+        )
+        if not getattr(acct, "data", None):
+            return _err("paper_account_missing", hint="Activate AlgoChains Paper first")
+    except Exception as exc:
+        return _err("account_lookup_failed", detail=str(exc))
+    payload = {
+        "subscriber_id": subscriber_id,
+        "symbol": sym,
+        "side": sd,
+        "qty": int(qty),
+        "order_type": ot,
+        "limit_price": limit_price,
+        "status": "pending",
+    }
+    try:
+        resp = sb.table("subscriber_paper_orders").insert(payload).execute()
+    except Exception as exc:
+        return _err("insert_failed", detail=str(exc))
+    rows = list(getattr(resp, "data", None) or [])
+    return {"ok": True, "order": rows[0] if rows else None}
+
+
+def cancel_paper_order(subscriber_id: str, *, order_id: str) -> dict[str, Any]:
+    """Cancel a pending self-directed paper order."""
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+    if not order_id:
+        return _err("order_id_required")
+    try:
+        existing = (
+            sb.table("subscriber_paper_orders")
+            .select("id,status")
+            .eq("id", order_id)
+            .eq("subscriber_id", subscriber_id)
+            .maybe_single()
+            .execute()
+        )
+        row = getattr(existing, "data", None)
+        if not row:
+            return _err("order_not_found", order_id=order_id)
+        if row.get("status") != "pending":
+            return _err("not_cancellable", status=row.get("status"))
+        sb.table("subscriber_paper_orders").update(
+            {"status": "cancelled", "updated_at": datetime.now(timezone.utc).isoformat()}
+        ).eq("id", order_id).eq("subscriber_id", subscriber_id).execute()
+    except Exception as exc:
+        return _err("cancel_failed", detail=str(exc))
+    return {"ok": True, "order_id": order_id, "status": "cancelled"}
+
+
+def get_my_paper_positions(subscriber_id: str) -> dict[str, Any]:
+    """Pending self-directed orders and recent filled paper orders."""
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+    pending: list[dict[str, Any]] = []
+    recent: list[dict[str, Any]] = []
+    try:
+        pend = (
+            sb.table("subscriber_paper_orders")
+            .select("*")
+            .eq("subscriber_id", subscriber_id)
+            .in_("status", ["pending", "filled"])
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        rows = list(getattr(pend, "data", None) or [])
+        pending = [r for r in rows if r.get("status") == "pending"]
+        recent = [r for r in rows if r.get("status") == "filled"][:20]
+    except Exception as exc:
+        return _err("query_failed", detail=str(exc))
+    return {
+        "pending_orders": pending,
+        "recent_filled_orders": recent,
+        "as_of": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def get_marketplace_listings(
+    subscriber_id: str,
+    *,
+    asset_class: str = "all",
+    status: str = "all",
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Approved marketplace listings (public data) for subscriber discovery."""
+    del subscriber_id  # scope enforced by bridge; listings are not per-subscriber
+    try:
+        from .marketplace.supabase_tools import get_marketplace_listings as _listings
+    except Exception as exc:
+        return _err("marketplace_unavailable", detail=str(exc))
+    return _listings(status=status, asset_class=asset_class, limit=limit)
+
+
 def get_my_assignments(subscriber_id: str) -> dict[str, Any]:
     sb = _service_client()
     if sb is None:
@@ -341,6 +526,11 @@ SUBSCRIBER_TOOL_HANDLERS = {
     "get_my_pnl": get_my_pnl,
     "get_my_fills": get_my_fills,
     "get_my_assignments": get_my_assignments,
+    "get_my_portfolio": get_my_portfolio,
+    "get_marketplace_listings": get_marketplace_listings,
+    "place_paper_order": place_paper_order,
+    "cancel_paper_order": cancel_paper_order,
+    "get_my_paper_positions": get_my_paper_positions,
     "report_fill": report_fill,
     "heartbeat": heartbeat,
     "ack_signal": ack_signal,
@@ -353,6 +543,11 @@ SUBSCRIBER_TOOL_SCOPES = {
     "get_my_pnl": "my_pnl",
     "get_my_fills": "my_fills",
     "get_my_assignments": "my_assignments",
+    "get_my_portfolio": "my_pnl",
+    "get_marketplace_listings": "my_assignments",
+    "place_paper_order": "paper_trade",
+    "cancel_paper_order": "paper_trade",
+    "get_my_paper_positions": "paper_trade",
     "report_fill": "report_fill",
     "heartbeat": "heartbeat",
     "ack_signal": "report_fill",

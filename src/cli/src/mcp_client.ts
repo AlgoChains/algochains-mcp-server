@@ -21,9 +21,17 @@ export function createMcpClient(bridgeUrl: string, timeoutMs = 30_000): McpClien
     "User-Agent": "algochains-cli/22.4.1",
   };
 
-  // Attach developer key if configured
-  const devKey = process.env.ALGOCHAINS_BRIDGE_KEY ?? process.env.ALGOCHAINS_DEVELOPER_KEY;
-  if (devKey) headers["X-Developer-Key"] = devKey;
+  // Subscriber keys (sub_live_*) use X-Api-Key on the HTTP bridge.
+  const subKey = process.env.ALGOCHAINS_SUB_KEY;
+  if (subKey) {
+    headers["X-Api-Key"] = subKey;
+  } else {
+    const devKey =
+      process.env.ALGOCHAINS_BRIDGE_KEY
+      ?? process.env.ALGOCHAINS_DEVELOPER_KEY
+      ?? process.env.ALGOCHAINS_API_KEY;
+    if (devKey) headers["X-Api-Key"] = devKey;
+  }
 
   async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
     const controller = new AbortController();

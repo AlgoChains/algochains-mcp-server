@@ -106,6 +106,38 @@ authCmd.command("test <service>")
   .description("Verify credentials are valid")
   .action(authTest);
 
+// ── paper (subscriber portfolio) ───────────────────────────────────────────────
+const paperCmd = program.command("paper").description("AlgoChains Paper subscriber portfolio (sub_live_ key)");
+
+paperCmd
+  .command("status")
+  .description("Show paper balance, assignments, and recent P&L via get_my_portfolio")
+  .option("--json", "output structured JSON")
+  .action(async (opts: { json?: boolean }) => {
+    const config = loadConfig();
+    const bridgeUrl =
+      process.env.ALGOCHAINS_BRIDGE_URL
+      ?? config.mcp?.bridge_url
+      ?? "https://api.algochains.ai";
+    if (!process.env.ALGOCHAINS_SUB_KEY) {
+      console.error("  Set ALGOCHAINS_SUB_KEY (sub_live_… from algochains.ai → Account → API Keys)");
+      process.exit(1);
+    }
+    const mcp = createMcpClient(bridgeUrl, config.mcp?.timeout_ms ?? 30_000);
+    try {
+      const result = await mcp.callTool("get_my_portfolio", {});
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(extractText(result));
+      }
+      process.exit(result.isError ? 1 : 0);
+    } catch (e) {
+      console.error(`Error: ${e}`);
+      process.exit(1);
+    }
+  });
+
 // ── daemon ─────────────────────────────────────────────────────────────────────
 const daemonCmd = program.command("daemon").description("Background daemon with SSE streaming");
 

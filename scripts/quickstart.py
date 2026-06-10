@@ -352,11 +352,40 @@ def check_onyx_connectivity() -> bool:
 
 def _mcp_server_args() -> dict:
     src = Path(__file__).resolve().parent.parent / "src"
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k.startswith(
+            (
+                "ALGOCHAINS_",
+                "TRADOVATE_",
+                "ALPACA_",
+                "OANDA_",
+                "POLYGON_",
+                "DATABENTO_",
+                "OPENAI_",
+                "ANTHROPIC_",
+                "ONYX_",
+            )
+        )
+    }
+    # Subscriber paper portfolio: paste sub_live_* from algochains.ai account → API keys.
+    if os.getenv("ALGOCHAINS_SUB_KEY"):
+        env["ALGOCHAINS_SUB_KEY"] = os.environ["ALGOCHAINS_SUB_KEY"]
+    else:
+        env.setdefault(
+            "ALGOCHAINS_SUB_KEY",
+            "sub_live_PASTE_YOUR_KEY_FROM_ALGOCHAINS_AI",
+        )
+    env.setdefault(
+        "ALGOCHAINS_BRIDGE_URL",
+        os.getenv("ALGOCHAINS_BRIDGE_URL", "https://api.algochains.ai"),
+    )
     return {
         "command": sys.executable,
         "args": ["-m", "algochains_mcp"],
         "cwd": str(src.parent),
-        "env": {k: v for k, v in os.environ.items() if k.startswith(("ALGOCHAINS_", "TRADOVATE_", "ALPACA_", "OANDA_", "POLYGON_", "DATABENTO_", "OPENAI_", "ANTHROPIC_", "ONYX_"))},
+        "env": env,
     }
 
 

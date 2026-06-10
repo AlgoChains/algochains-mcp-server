@@ -41,6 +41,7 @@ DEFAULT_SUBSCRIBER_SCOPES = (
     "my_assignments",
     "heartbeat",
     "report_fill",
+    "paper_trade",
 )
 
 # Cache: key_hash -> (resolved_at, ResolvedSubscriber)
