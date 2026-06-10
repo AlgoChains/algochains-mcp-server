@@ -142,8 +142,10 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
         if not _verify_bearer_token(request.headers.get("Authorization")):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
+    @http_app.get("/status")
     @http_app.get("/health")
     async def health() -> dict:
+        """/status is a legacy alias for watchdogs that predate /health."""
         return {
             "status": "ok",
             "server": "algochains-mcp",

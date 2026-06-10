@@ -403,11 +403,15 @@ def create_fastapi_app():
         arguments: dict = {}
         user_email: str | None = None
 
+    @app_http.get("/status")
     @app_http.get("/health")
     async def health():
         """
         Bridge health — includes version, auth mode, and server import check.
         Phase J observability: richer /health for incident triage.
+
+        /status is a legacy alias used by local watchdogs and broker-specific
+        health probes; keep the payload identical to /health.
         """
         auth_mode = "owner" if BRIDGE_API_KEY else ("dev_open" if _DEV_MODE else "no_key_locked")
         server_ok = True
