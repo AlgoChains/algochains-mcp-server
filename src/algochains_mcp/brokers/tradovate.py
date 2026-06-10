@@ -87,6 +87,19 @@ class TradovateConnector(BrokerConnector):
       2. Full OAuth username/password flow (fallback when no guardian token)
       3. Legacy CID+secret fallback (backwards compat)
 
+    F3 ASSESSMENT (2026-06-10): This connector intentionally does NOT delegate to
+    algochains-control-tower/tradovate_client.py (the canonical sync client used
+    by live bots).  Reasons:
+      - tradovate_client.py is synchronous; this connector is async (httpx).
+        Wrapping sync calls via asyncio.to_thread() would lose the persistent
+        httpx connection pool and async retry logic implemented here.
+      - Token Guardian priority (TRADOVATE_ACCESS_TOKEN) is already handled in
+        connect() (Priority 1 above), so no competing OAuth session is created.
+      - This connector has better retry logic (Retry-After header, expo backoff)
+        and contract-level TTL caching not present in the canonical client.
+      - brokerage-gateway/adapters/tradovate_adapter.py (the gateway adapter that
+        IS used on the live Mac) now fully delegates to tradovate_client.py.
+
     NEVER run github.com/0xjmp/mcp-tradovate alongside this connector for live
     trading — it creates a competing OAuth session.  See docs/TRADOVATE_PARITY.md.
     """
