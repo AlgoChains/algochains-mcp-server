@@ -84,7 +84,12 @@ def test_status_alias_matches_health():
     health = client.get("/health")
     status = client.get("/status")
     assert status.status_code == 200
-    assert status.json() == health.json()
+    health_body = health.json()
+    status_body = status.json()
+    assert status_body["timestamp"]
+    assert {k: v for k, v in status_body.items() if k != "timestamp"} == {
+        k: v for k, v in health_body.items() if k != "timestamp"
+    }
 
 
 # ── Anonymous access ─────────────────────────────────────────────────────────
