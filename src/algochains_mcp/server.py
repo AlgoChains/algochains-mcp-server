@@ -56,6 +56,8 @@ import os
 import sys
 from pathlib import Path as _PathGlobal
 
+from .e2e_sentinel import apply_effective_sentinel_resolution
+
 
 def _default_control_tower() -> str:
     """
@@ -5686,6 +5688,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     "last_memory_at": _e2e_rate.get("last_memory_at"),
                     "last_slack_at": _e2e_rate.get("last_slack_at"),
                 }
+                e2e_sentinel = apply_effective_sentinel_resolution(e2e_sentinel, _e2e_raw)
             except Exception as _e2e_err:
                 e2e_sentinel = {"status": "error", "detail": f"e2e_execution_sentinel.json parse failure: {_e2e_err}"}
 

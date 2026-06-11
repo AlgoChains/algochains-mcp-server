@@ -57,6 +57,7 @@ from .developer_tools import (
     DEVELOPER_TOOL_SCOPES,
     check_developer_tool_access,
 )
+from .e2e_sentinel import apply_effective_sentinel_resolution
 from .tool_policy import (
     evaluate_bridge_tool,
     visible_tools_for_bridge,
@@ -841,6 +842,11 @@ def create_fastapi_app():
             "description": sentinel_class.get("description"),
             "ts": sentinel.get("last_check"),
         }
+        sentinel_summary = apply_effective_sentinel_resolution(
+            sentinel_summary,
+            sentinel,
+            state_key="outcome",
+        )
 
         # Signal health summary per bot
         signal_summaries: dict = {}
