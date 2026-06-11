@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -120,6 +121,20 @@ def _ps_aux() -> str:
     return proc.stdout or ""
 
 
+def _command_runs_script(command: str, script_name: str) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    if not tokens:
+        return False
+
+    executable = Path(tokens[0]).name
+    if executable.startswith("python"):
+        return any(Path(token).name == script_name for token in tokens[1:])
+    return executable == script_name
+
+
 def _process_matches(ps_output: str, script_name: str = SCRIPT_NAME) -> list[dict[str, Any]]:
     matches: list[dict[str, Any]] = []
     for line in ps_output.splitlines():
@@ -132,7 +147,10 @@ def _process_matches(ps_output: str, script_name: str = SCRIPT_NAME) -> list[dic
             pid = int(parts[1])
         except ValueError:
             continue
-        matches.append({"pid": pid, "command": parts[10][:300]})
+        command = parts[10]
+        if not _command_runs_script(command, script_name):
+            continue
+        matches.append({"pid": pid, "command": command[:300]})
     return matches
 
 

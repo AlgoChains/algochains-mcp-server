@@ -70,6 +70,29 @@ def test_status_probe_degrades_without_fabricating_health(tmp_path):
     assert data["evidence"] == []
 
 
+def test_status_probe_ignores_shell_commands_that_only_mention_script(tmp_path):
+    from algochains_mcp.adaptive_brain_status import get_adaptive_brain_status
+
+    script = tmp_path / "autonomous" / "adaptive_brain.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# daemon entrypoint\n")
+    ps_output = (
+        "ubuntu 9876 0.0 0.1 100 200 ? S 17:32 0:00 "
+        f"bash -lc printf '# daemon' > {script}\n"
+    )
+
+    data = get_adaptive_brain_status(
+        control_tower=tmp_path,
+        ps_output=ps_output,
+        now=1_800_000_000,
+    )
+
+    assert data["status"] == "not_running"
+    assert data["running"] is False
+    assert data["processes"] == []
+    assert "process_match" not in data["evidence"]
+
+
 def test_adaptive_brain_status_tool_is_registered_tier1_and_read_only():
     import algochains_mcp.server as srv
     from algochains_mcp.tool_danger_tiers import TIER_READ_ONLY, get_tool_tier
