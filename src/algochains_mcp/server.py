@@ -10259,17 +10259,53 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
-            if _proc.returncode != 0:
-                return _text({
-                    "error": "correlation audit failed",
-                    "returncode": _proc.returncode,
-                    "stderr": (_proc.stderr or "")[:500],
-                })
-            try:
-                return _text(_json.loads(_proc.stdout))
-            except Exception:
-                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+
+            _transient_markers = (
+                "ConnectError",
+                "Connection reset by peer",
+                "RemoteProtocolError",
+                "ReadError",
+                "ReadTimeout",
+                "WriteError",
+                "WriteTimeout",
+                "Server disconnected",
+                "temporarily unavailable",
+            )
+
+            def _is_transient_output(*parts: object) -> bool:
+                _body = " ".join(str(part or "") for part in parts)
+                return any(marker.lower() in _body.lower() for marker in _transient_markers)
+
+            _max_attempts = 3
+            for _attempt in range(1, _max_attempts + 1):
+                _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+                if _proc.returncode != 0:
+                    if _attempt < _max_attempts and _is_transient_output(_proc.stdout, _proc.stderr):
+                        await asyncio.sleep(0.25 * _attempt)
+                        continue
+                    return _text({
+                        "error": "correlation audit failed",
+                        "returncode": _proc.returncode,
+                        "stderr": (_proc.stderr or "")[:500],
+                        "transient_retry_attempts": _attempt - 1,
+                    })
+                try:
+                    _report = _json.loads(_proc.stdout)
+                except Exception:
+                    if _attempt < _max_attempts and _is_transient_output(_proc.stdout, _proc.stderr):
+                        await asyncio.sleep(0.25 * _attempt)
+                        continue
+                    return _text({
+                        "error": "could not parse audit JSON",
+                        "stdout": (_proc.stdout or "")[:500],
+                        "transient_retry_attempts": _attempt - 1,
+                    })
+                if _attempt < _max_attempts and _is_transient_output(_report):
+                    await asyncio.sleep(0.25 * _attempt)
+                    continue
+                if _attempt > 1 and isinstance(_report, dict):
+                    _report.setdefault("transient_retry_attempts", _attempt - 1)
+                return _text(_report)
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
