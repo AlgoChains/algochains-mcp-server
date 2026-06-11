@@ -778,8 +778,14 @@ def create_fastapi_app():
 
     _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
     if not _CT:
-        # resolve relative to this file's location
-        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+        # Resolve relative to the repo checkout when env vars are absent. The
+        # installed wheel path can be shallower than earlier dev layouts.
+        _http_bridge_path = _PathGlobal(__file__).resolve()
+        _repo_root = next(
+            (p for p in _http_bridge_path.parents if (p / "pyproject.toml").exists()),
+            _http_bridge_path.parent,
+        )
+        _CT = str(_repo_root.parent / "algochains-control-tower")
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
