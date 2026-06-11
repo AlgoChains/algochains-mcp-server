@@ -372,6 +372,10 @@ _LAZY_SPECS = {
     "reward_model":     (".evolution.reward_model",        ["RewardModel", "get_reward_model"]),
     "evolution_daemon": (".evolution.evolution_daemon",    ["EvolutionDaemon", "get_evolution_daemon"]),
     "lessons_injector": (".evolution.lessons_injector",    ["LessonsInjector", "get_lessons_injector"]),
+    "adaptive_brain": (
+        ".live_bot_intelligence.adaptive_brain",
+        ["get_adaptive_brain_status"],
+    ),
     # ── V21: Order Flow & Institutional ─────────────────────────────
     "footprint_engine": (".order_flow.footprint",          ["compute_footprint_chart", "analyze_footprint_signals"]),
     "cd_engine":        (".order_flow.cumulative_delta",   ["compute_cumulative_delta"]),
@@ -3205,6 +3209,21 @@ TOOLS = [
     Tool(name="get_evolution_status", description="Get current status of the AlphaLoop evolution daemon: last cycle time, active strategy, current phase, and cycle results.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_adaptive_brain_status",
+         description=("Get read-only liveness status for control-tower autonomous/adaptive_brain.py: "
+                      "process running state, bounded state-file metadata, log age, and stale/dead classification."),
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "stale_after_seconds": {
+                     "type": "integer",
+                     "default": 900,
+                     "description": "Telemetry age threshold before a running daemon is reported as stale",
+                 }
+             },
+             "required": [],
+         },
+         annotations=ANNOT_READ_ONLY),
     Tool(name="list_evolved_strategies", description="List all strategies that have been evolved by AlphaLoop, with before/after performance metrics.",
          inputSchema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}, "required": []},
          annotations=ANNOT_READ_ONLY),
@@ -4578,6 +4597,7 @@ TIER1_TOOL_NAMES = {
     "mcp_tool_manifest",
     # V21 — Most-used new tools in Tier 1
     "run_evolution_cycle",
+    "get_adaptive_brain_status",
     "get_footprint_chart",
     "get_dark_pool_volume_v21",
     "get_macro_signals",
@@ -7631,6 +7651,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         if not get_evolution_daemon:
             return _text({"status": "unavailable"})
         return _text(get_evolution_daemon().get_status())
+
+    elif name == "get_adaptive_brain_status":
+        get_status = _lazy_import("adaptive_brain", "get_adaptive_brain_status")
+        if not get_status:
+            return _text({
+                "status": "unavailable",
+                "detail": "Adaptive brain status helper not available",
+            })
+        return _text(get_status(
+            stale_after_seconds=int(args.get("stale_after_seconds", 900)),
+        ))
 
     elif name == "list_evolved_strategies":
         get_evolution_daemon = _lazy_import("evolution_daemon", "get_evolution_daemon")
