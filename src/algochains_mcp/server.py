@@ -81,6 +81,49 @@ def _default_control_tower() -> str:
     return "/Users/treycsa/CascadeProjects/algochains-control-tower"
 
 
+_TRACEABILITY_AUDIT_TRANSIENT_MARKERS = (
+    "ConnectError",
+    "ConnectTimeout",
+    "Connection reset by peer",
+    "Errno 54",
+    "Errno 60",
+    "Operation timed out",
+    "ReadTimeout",
+    "RemoteProtocolError",
+    "Server disconnected",
+    "TimeoutExpired",
+    "WriteTimeout",
+)
+
+
+def _traceability_audit_attempts() -> int:
+    """Bound retries for transient traceability audit transport failures."""
+    try:
+        attempts = int(os.environ.get("ALGOCHAINS_TRACEABILITY_AUDIT_ATTEMPTS", "3"))
+    except (TypeError, ValueError):
+        attempts = 3
+    return max(1, min(attempts, 5))
+
+
+def _traceability_transient_markers(*parts: str) -> list[str]:
+    text = "\n".join(part for part in parts if part).lower()
+    return [
+        marker
+        for marker in _TRACEABILITY_AUDIT_TRANSIENT_MARKERS
+        if marker.lower() in text
+    ]
+
+
+async def _traceability_retry_backoff(attempt: int) -> None:
+    try:
+        base_delay = float(os.environ.get("ALGOCHAINS_TRACEABILITY_AUDIT_RETRY_DELAY_SEC", "0.25"))
+    except (TypeError, ValueError):
+        base_delay = 0.25
+    delay = max(0.0, min(base_delay, 2.0)) * max(1, attempt)
+    if delay > 0:
+        await asyncio.sleep(delay)
+
+
 def _tail_jsonl(path: _PathGlobal, limit: int = 200) -> list[dict[str, Any]]:
     """Read the last JSONL rows from a control-tower telemetry file."""
     if not path.exists():
@@ -10259,17 +10302,93 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
-            if _proc.returncode != 0:
-                return _text({
+            _max_attempts = _traceability_audit_attempts()
+            _transient_failures: list[dict[str, Any]] = []
+            for _attempt in range(1, _max_attempts + 1):
+                try:
+                    _proc = _subp.run(
+                        _cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        cwd=str(_ct),
+                    )
+                except _subp.TimeoutExpired as _exc:
+                    _stdout = str(
+                        getattr(_exc, "stdout", None)
+                        or getattr(_exc, "output", "")
+                        or ""
+                    )
+                    _stderr = str(getattr(_exc, "stderr", "") or "")
+                    _markers = _traceability_transient_markers(
+                        "TimeoutExpired",
+                        _stdout,
+                        _stderr,
+                    )
+                    if _attempt < _max_attempts:
+                        _transient_failures.append({
+                            "attempt": _attempt,
+                            "returncode": None,
+                            "markers": _markers,
+                            "stderr": _stderr[:300],
+                        })
+                        await _traceability_retry_backoff(_attempt)
+                        continue
+                    return _text({
+                        "error": "correlation audit failed",
+                        "error_type": "TimeoutExpired",
+                        "transient": True,
+                        "attempts": _attempt,
+                        "retryable_markers": _markers,
+                        "stderr": _stderr[:500],
+                    })
+
+                if _proc.returncode == 0:
+                    try:
+                        _report = _json.loads(_proc.stdout)
+                    except Exception:
+                        return _text({
+                            "error": "could not parse audit JSON",
+                            "stdout": (_proc.stdout or "")[:500],
+                        })
+                    if _transient_failures:
+                        _retry = {
+                            "attempts": _attempt,
+                            "transient_failures": _transient_failures,
+                        }
+                        if isinstance(_report, dict):
+                            _report.setdefault("_mcp_retry", _retry)
+                            return _text(_report)
+                        return _text({"report": _report, "_mcp_retry": _retry})
+                    return _text(_report)
+
+                _markers = _traceability_transient_markers(
+                    _proc.stdout or "",
+                    _proc.stderr or "",
+                )
+                if _markers and _attempt < _max_attempts:
+                    _transient_failures.append({
+                        "attempt": _attempt,
+                        "returncode": _proc.returncode,
+                        "markers": _markers,
+                        "stderr": (_proc.stderr or "")[:300],
+                    })
+                    await _traceability_retry_backoff(_attempt)
+                    continue
+
+                _payload = {
                     "error": "correlation audit failed",
                     "returncode": _proc.returncode,
                     "stderr": (_proc.stderr or "")[:500],
-                })
-            try:
-                return _text(_json.loads(_proc.stdout))
-            except Exception:
-                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+                }
+                if _markers:
+                    _payload.update({
+                        "transient": True,
+                        "attempts": _attempt,
+                        "retryable_markers": _markers,
+                        "transient_failures": _transient_failures,
+                    })
+                return _text(_payload)
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 

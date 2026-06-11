@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import subprocess
 
 import pytest
 
@@ -114,3 +115,46 @@ def test_place_order_echoes_client_trace_id(monkeypatch):
     assert data.get("blocked") is True or "blocked" in text.lower() or "authorization" in text.lower(), (
         f"Expected danger-tier block, got: {text[:200]}"
     )
+
+
+def test_signal_trade_correlation_retries_connect_timeout(monkeypatch, tmp_path):
+    """Traceability audit retries Supabase transport timeout signatures."""
+    import asyncio
+    import algochains_mcp.server as srv
+
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "signal_trade_correlation_audit.py").write_text(
+        "print('{\"ok\": true}')\n"
+    )
+    monkeypatch.setattr(srv, "_default_control_tower", lambda: str(tmp_path))
+    monkeypatch.setenv("ALGOCHAINS_TRACEABILITY_AUDIT_ATTEMPTS", "3")
+    monkeypatch.setenv("ALGOCHAINS_TRACEABILITY_AUDIT_RETRY_DELAY_SEC", "0")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if len(calls) < 3:
+            return subprocess.CompletedProcess(
+                cmd,
+                1,
+                stdout="",
+                stderr="signals_trace:ConnectTimeout:[Errno 60] Operation timed out",
+            )
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout=json.dumps({"ok": True}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    data = json.loads(result[0].text)
+
+    assert len(calls) == 3
+    assert data["ok"] is True
+    assert data["_mcp_retry"]["attempts"] == 3
+    assert "ConnectTimeout" in data["_mcp_retry"]["transient_failures"][0]["markers"]
