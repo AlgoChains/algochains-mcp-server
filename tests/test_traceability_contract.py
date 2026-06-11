@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -114,3 +115,54 @@ def test_place_order_echoes_client_trace_id(monkeypatch):
     assert data.get("blocked") is True or "blocked" in text.lower() or "authorization" in text.lower(), (
         f"Expected danger-tier block, got: {text[:200]}"
     )
+
+
+def test_signal_trade_correlation_retries_transient_supabase_degradation(
+    monkeypatch, tmp_path
+):
+    """A single Supabase connection reset should not surface as degraded evidence."""
+    import asyncio
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# test placeholder\n")
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+    monkeypatch.setattr(srv.time, "sleep", lambda _seconds: None)
+
+    calls = []
+
+    def _fake_run(*_args, **_kwargs):
+        calls.append((_args, _kwargs))
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "status": "data_degraded",
+                    "why": (
+                        "Supabase traceability evidence unavailable/degraded: "
+                        "signals_trace:ConnectError:[Errno 54] Connection reset by peer"
+                    ),
+                }),
+                stderr="",
+            )
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"status": "ok", "rows": 3}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", _fake_run)
+
+    result = asyncio.run(
+        srv._dispatch_tool(
+            "get_signal_trade_correlation",
+            {"limit": 10, "action": "submitted", "filled_only": True},
+            object(),
+        )
+    )
+    data = json.loads(result[0].text)
+
+    assert len(calls) == 2
+    assert data["status"] == "ok"
+    assert data["_mcp_retry_attempts"] == 2

@@ -1286,6 +1286,44 @@ def _text(data: Any) -> list[TextContent]:
     return [TextContent(type="text", text=str(data))]
 
 
+_TRACEABILITY_TRANSIENT_MARKERS = (
+    "ConnectError",
+    "Connection reset by peer",
+    "RemoteProtocolError",
+    "ReadError",
+    "ReadTimeout",
+    "PoolTimeout",
+    "Server disconnected",
+    "Connection aborted",
+)
+
+
+_TRACEABILITY_EVIDENCE_MARKERS = (
+    "signals_trace",
+    "trade_log",
+    "trade_log_pending",
+    "Supabase traceability evidence",
+    "data_degraded",
+)
+
+
+def _is_transient_traceability_degradation(payload: Any) -> bool:
+    """Detect incident-style transient Supabase failures from audit JSON/stderr."""
+    if payload is None:
+        return False
+    if isinstance(payload, str):
+        blob = payload
+    else:
+        try:
+            blob = json.dumps(payload, default=str)
+        except Exception:
+            blob = str(payload)
+
+    return any(marker in blob for marker in _TRACEABILITY_TRANSIENT_MARKERS) and any(
+        marker in blob for marker in _TRACEABILITY_EVIDENCE_MARKERS
+    )
+
+
 def _error_text(exc: Exception) -> list[TextContent]:
     """Structured error response for tool failures."""
     if isinstance(exc, AlgoChainsError):
@@ -10259,17 +10297,45 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
-            if _proc.returncode != 0:
-                return _text({
-                    "error": "correlation audit failed",
-                    "returncode": _proc.returncode,
-                    "stderr": (_proc.stderr or "")[:500],
-                })
-            try:
-                return _text(_json.loads(_proc.stdout))
-            except Exception:
-                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+            _max_attempts = 3
+            _last_failure: dict[str, Any] | None = None
+            for _attempt in range(1, _max_attempts + 1):
+                _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+                if _proc.returncode != 0:
+                    _last_failure = {
+                        "error": "correlation audit failed",
+                        "returncode": _proc.returncode,
+                        "stderr": (_proc.stderr or "")[:500],
+                    }
+                    if (
+                        _attempt < _max_attempts
+                        and _is_transient_traceability_degradation(_proc.stderr)
+                    ):
+                        time.sleep(0.5 * _attempt)
+                        continue
+                    return _text(_last_failure)
+                try:
+                    _report = _json.loads(_proc.stdout)
+                except Exception:
+                    return _text({
+                        "error": "could not parse audit JSON",
+                        "stdout": (_proc.stdout or "")[:500],
+                    })
+                if (
+                    _attempt < _max_attempts
+                    and _is_transient_traceability_degradation(_report)
+                ):
+                    _last_failure = {
+                        "error": "correlation audit transient degradation",
+                        "attempt": _attempt,
+                        "report": _report,
+                    }
+                    time.sleep(0.5 * _attempt)
+                    continue
+                if _attempt > 1 and isinstance(_report, dict):
+                    _report = {**_report, "_mcp_retry_attempts": _attempt}
+                return _text(_report)
+            return _text(_last_failure or {"error": "correlation audit failed after retries"})
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
