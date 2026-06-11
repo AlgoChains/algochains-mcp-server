@@ -644,7 +644,177 @@ def create_fastapi_app():
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
 
-    # SECURITY FIX (V22 audit): All GET convenience endpoints now require API key.
+    @app_http.get("/api/marketplace")
+    async def marketplace_listings(
+        asset_class: str = "all",
+        status: str = "all",
+        limit: int = 50,
+    ):
+        """Compatibility endpoint for Command Center marketplace health/cards."""
+        safe_limit = max(1, min(int(limit), 100))
+        return await handle_mcp_request(
+            "get_marketplace_listings",
+            {"asset_class": asset_class, "status": status, "limit": safe_limit},
+            is_owner=False,
+        )
+
+    @app_http.get("/api/subscribers")
+    async def subscribers_snapshot(
+        limit: int = 250,
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """
+        Compatibility endpoint for Command Center subscriber health.
+
+        This endpoint intentionally requires owner auth: it aggregates subscriber
+        assignments, paper balances, heartbeats, and marketplace subscriptions.
+        """
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or not is_owner or subscriber is not None or developer is not None:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+
+        try:
+            from .marketplace.supabase_tools import _get_sb_client
+        except Exception as exc:  # pragma: no cover - import path safety
+            return {"error": f"Supabase tools unavailable: {exc}", "subscribers": [], "total": 0}
+
+        sb = _get_sb_client(use_service_role=True)
+        if sb is None:
+            return {
+                "error": "Supabase service_role not configured",
+                "subscribers": [],
+                "assignments": [],
+                "subscriptions": [],
+                "total": 0,
+                "source": "supabase_unavailable",
+            }
+
+        safe_limit = max(1, min(int(limit), 1000))
+
+        def _select_rows(table: str, columns: str) -> tuple[list[dict[str, Any]], str | None]:
+            try:
+                resp = sb.table(table).select(columns).limit(safe_limit).execute()
+                return list(getattr(resp, "data", None) or []), None
+            except Exception as exc:
+                log.warning("subscriber snapshot query failed for %s: %s", table, exc)
+                return [], str(exc)
+
+        assignments, assignments_error = _select_rows(
+            "subscriber_bot_assignments",
+            "subscriber_id,bot,size_multiplier,max_contracts,daily_loss_cap_usd,paused,updated_at",
+        )
+        paper_accounts, paper_error = _select_rows(
+            "subscriber_paper_accounts",
+            "subscriber_id,starting_balance_usd,current_balance_usd,realized_pnl_usd,fills_count,updated_at",
+        )
+        heartbeats, heartbeat_error = _select_rows(
+            "subscriber_heartbeats",
+            "subscriber_id,last_seen,daemon_version,tradovate_linked,fills_today,pnl_today_usd",
+        )
+        subscriptions, subscriptions_error = _select_rows(
+            "marketplace_botsubscription",
+            "id,subscriber_id,subscriber_email,requester_slack_id,status,created_at,listing_id_id",
+        )
+
+        subscribers: dict[str, dict[str, Any]] = {}
+
+        def _subscriber_key(row: dict[str, Any]) -> str | None:
+            sid = row.get("subscriber_id")
+            if sid:
+                return str(sid)
+            email = row.get("subscriber_email")
+            if email:
+                return str(email)
+            slack_id = row.get("requester_slack_id")
+            if slack_id:
+                return str(slack_id)
+            return None
+
+        def _ensure_subscriber(row: dict[str, Any]) -> dict[str, Any] | None:
+            key = _subscriber_key(row)
+            if not key:
+                return None
+            return subscribers.setdefault(
+                key,
+                {
+                    "subscriber_id": row.get("subscriber_id"),
+                    "subscriber_email": row.get("subscriber_email"),
+                    "requester_slack_id": row.get("requester_slack_id"),
+                    "assignments": [],
+                    "assignment_count": 0,
+                    "active_assignment_count": 0,
+                    "marketplace_subscription_count": 0,
+                    "active_marketplace_subscription_count": 0,
+                },
+            )
+
+        for row in assignments:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            sub["assignments"].append(row)
+            sub["assignment_count"] += 1
+            if not row.get("paused"):
+                sub["active_assignment_count"] += 1
+
+        for row in paper_accounts:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            sub["paper_account"] = row
+
+        for row in heartbeats:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            sub["heartbeat"] = row
+
+        for row in subscriptions:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            sub["marketplace_subscription_count"] += 1
+            if row.get("status") == "active":
+                sub["active_marketplace_subscription_count"] += 1
+
+        return {
+            "subscribers": list(subscribers.values()),
+            "total": len(subscribers),
+            "active": sum(
+                1
+                for row in subscribers.values()
+                if row.get("active_assignment_count", 0) > 0
+                or row.get("active_marketplace_subscription_count", 0) > 0
+            ),
+            "assignments": assignments,
+            "assignment_count": len(assignments),
+            "active_assignments": sum(1 for row in assignments if not row.get("paused")),
+            "subscriptions": subscriptions,
+            "subscription_count": len(subscriptions),
+            "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
+            "paper_account_count": len(paper_accounts),
+            "heartbeat_count": len(heartbeats),
+            "query_errors": {
+                key: value
+                for key, value in {
+                    "assignments": assignments_error,
+                    "paper_accounts": paper_error,
+                    "heartbeats": heartbeat_error,
+                    "subscriptions": subscriptions_error,
+                }.items()
+                if value
+            },
+            "source": "supabase",
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # SECURITY FIX (V22 audit): Sensitive GET convenience endpoints require API key.
     # Previously these called handle_mcp_request(is_owner=True) with no auth check —
     # any unauthenticated client could scrape live bot metrics and heartbeat status.
 
