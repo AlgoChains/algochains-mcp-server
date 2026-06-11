@@ -81,6 +81,36 @@ def _default_control_tower() -> str:
     return "/Users/treycsa/CascadeProjects/algochains-control-tower"
 
 
+_TRACEABILITY_TRANSIENT_MARKERS = (
+    "connecterror",
+    "connection reset",
+    "connection reset by peer",
+    "remoteprotocolerror",
+    "readtimeout",
+    "writetimeout",
+    "connecttimeout",
+    "pooltimeout",
+    "server disconnected",
+    "connection aborted",
+    "econnreset",
+    "temporarily unavailable",
+    "[errno 54]",
+    "[errno 104]",
+)
+
+
+def _looks_like_traceability_transient(value: Any) -> bool:
+    """Return true for incident-style transient transport failures."""
+    try:
+        if isinstance(value, (dict, list, tuple)):
+            haystack = json.dumps(value, default=str).lower()
+        else:
+            haystack = str(value or "").lower()
+    except Exception:
+        haystack = str(value or "").lower()
+    return any(marker in haystack for marker in _TRACEABILITY_TRANSIENT_MARKERS)
+
+
 def _tail_jsonl(path: _PathGlobal, limit: int = 200) -> list[dict[str, Any]]:
     """Read the last JSONL rows from a control-tower telemetry file."""
     if not path.exists():
@@ -10259,17 +10289,41 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
-            if _proc.returncode != 0:
-                return _text({
-                    "error": "correlation audit failed",
-                    "returncode": _proc.returncode,
-                    "stderr": (_proc.stderr or "")[:500],
-                })
-            try:
-                return _text(_json.loads(_proc.stdout))
-            except Exception:
-                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+            _attempts = 3
+            _delays = (0.5, 1.5)
+            for _attempt in range(1, _attempts + 1):
+                _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+                _stdout = _proc.stdout or ""
+                _stderr = _proc.stderr or ""
+                _transient_output = _looks_like_traceability_transient(f"{_stdout}\n{_stderr}")
+
+                if _proc.returncode != 0:
+                    if _transient_output and _attempt < _attempts:
+                        time.sleep(_delays[_attempt - 1])
+                        continue
+                    return _text({
+                        "error": "correlation audit failed",
+                        "returncode": _proc.returncode,
+                        "stderr": _stderr[:500],
+                        "transient_retry_attempts": _attempt - 1,
+                    })
+
+                try:
+                    _payload = _json.loads(_stdout)
+                except Exception:
+                    if _transient_output and _attempt < _attempts:
+                        time.sleep(_delays[_attempt - 1])
+                        continue
+                    return _text({
+                        "error": "could not parse audit JSON",
+                        "stdout": _stdout[:500],
+                        "transient_retry_attempts": _attempt - 1,
+                    })
+
+                if _looks_like_traceability_transient(_payload) and _attempt < _attempts:
+                    time.sleep(_delays[_attempt - 1])
+                    continue
+                return _text(_payload)
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 

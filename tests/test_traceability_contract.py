@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -114,3 +115,63 @@ def test_place_order_echoes_client_trace_id(monkeypatch):
     assert data.get("blocked") is True or "blocked" in text.lower() or "authorization" in text.lower(), (
         f"Expected danger-tier block, got: {text[:200]}"
     )
+
+
+def test_signal_trade_correlation_retries_transient_json(monkeypatch, tmp_path):
+    """Supabase transport blips from the audit script should get retried."""
+    import asyncio
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# placeholder\n")
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+    monkeypatch.setattr(srv.time, "sleep", lambda _seconds: None)
+
+    calls = []
+
+    def fake_run(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "status": "data_degraded",
+                    "why": "signals_trace:ConnectError:[Errno 54] Connection reset by peer",
+                }),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"status": "ok"}), stderr="")
+
+    monkeypatch.setattr(srv.importlib.import_module("subprocess"), "run", fake_run)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    assert json.loads(text)["status"] == "ok"
+    assert len(calls) == 2
+
+
+def test_signal_trade_correlation_does_not_retry_non_transient_failure(monkeypatch, tmp_path):
+    """Permanent audit failures should still fail fast with the original error."""
+    import asyncio
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# placeholder\n")
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+
+    calls = []
+
+    def fake_run(*_args, **_kwargs):
+        calls.append(1)
+        return SimpleNamespace(returncode=2, stdout="", stderr="invalid argument")
+
+    monkeypatch.setattr(srv.importlib.import_module("subprocess"), "run", fake_run)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    data = json.loads(text)
+    assert data["error"] == "correlation audit failed"
+    assert data["returncode"] == 2
+    assert len(calls) == 1
