@@ -19,6 +19,7 @@ import re
 import signal
 import subprocess
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -40,6 +41,159 @@ BOT_MAP = {
 }
 
 SYMBOL_MAP = {"mnq": "MNQ", "cl": "CL", "mes": "MES", "nq": "NQ"}
+
+
+def _read_control_tower_env(control_tower: Path, key: str) -> str | None:
+    """Read one non-secret setting from the control-tower .env file."""
+    env_path = control_tower / ".env"
+    if not env_path.exists():
+        return None
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            env_key, env_value = line.split("=", 1)
+            if env_key.strip() == key:
+                return env_value.strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+
+
+def _pipeline_timeout_config(control_tower: Path) -> tuple[float, str]:
+    """Return the live bot pipeline timeout and the source used."""
+    ct_value = _read_control_tower_env(control_tower, "PIPELINE_TIMEOUT_SECONDS")
+    if ct_value:
+        try:
+            return float(ct_value), "control_tower_.env"
+        except ValueError:
+            pass
+    env_value = os.getenv("PIPELINE_TIMEOUT_SECONDS")
+    if env_value:
+        try:
+            return float(env_value), "mcp_process_env"
+        except ValueError:
+            pass
+    return 8.0, "default"
+
+
+def _tail_jsonl(path: Path, limit: int) -> list[dict]:
+    """Read recent JSONL telemetry rows without loading the whole file."""
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in deque(handle, maxlen=max(1, limit)):
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except Exception:
+        return []
+    return rows
+
+
+def _pctl(values: list[float], pct: float) -> float:
+    vals = sorted(v for v in values if isinstance(v, (int, float)))
+    if not vals:
+        return 0.0
+    idx = min(len(vals) - 1, max(0, int(round((pct / 100.0) * (len(vals) - 1)))))
+    return round(float(vals[idx]), 3)
+
+
+def _rate(count: int, total: int) -> float:
+    return round(count / max(total, 1), 4)
+
+
+def _summarize_decision_latency(control_tower: Path, timeout_s: float) -> dict:
+    rows = _tail_jsonl(control_tower / "logs" / "decision_latency.jsonl", 500)
+    if not rows:
+        return {"status": "missing_or_empty", "count": 0}
+
+    event_counts: dict[str, int] = {}
+    for row in rows:
+        event = str(row.get("event", "unknown"))
+        event_counts[event] = event_counts.get(event, 0) + 1
+
+    multi_agent_values = [
+        float(row["multi_agent_ms"])
+        for row in rows
+        if isinstance(row.get("multi_agent_ms"), (int, float))
+    ]
+    timeout_ms = timeout_s * 1000.0
+    timeout_events = [
+        row
+        for row in rows
+        if "timeout" in str(row.get("event", "")).lower()
+        or (
+            isinstance(row.get("multi_agent_ms"), (int, float))
+            and float(row["multi_agent_ms"]) >= timeout_ms
+        )
+    ]
+
+    metrics: dict[str, dict[str, float | int]] = {}
+    if multi_agent_values:
+        metrics["multi_agent_ms"] = {
+            "count": len(multi_agent_values),
+            "p50_ms": _pctl(multi_agent_values, 50),
+            "p95_ms": _pctl(multi_agent_values, 95),
+            "max_ms": round(max(multi_agent_values), 3),
+            "over_timeout_count": sum(1 for value in multi_agent_values if value >= timeout_ms),
+            "over_timeout_rate": _rate(
+                sum(1 for value in multi_agent_values if value >= timeout_ms),
+                len(multi_agent_values),
+            ),
+        }
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "events": event_counts,
+        "timeout_event_count": len(timeout_events),
+        "timeout_event_rate": _rate(len(timeout_events), len(rows)),
+        "metrics": metrics,
+    }
+
+
+def _summarize_desktop_inference(control_tower: Path) -> dict:
+    rows = _tail_jsonl(control_tower / "logs" / "desktop_inference_latency.jsonl", 200)
+    if not rows:
+        return {"status": "missing_or_empty", "count": 0}
+
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        key = (
+            f"{row.get('model_id', 'unknown')}|"
+            f"{row.get('runtime', 'unknown')}|"
+            f"{row.get('prompt_class', 'unknown')}"
+        )
+        groups.setdefault(key, []).append(row)
+
+    summary: dict[str, dict] = {}
+    for key, group_rows in groups.items():
+        latencies = [
+            float(row.get("latency_s") or 0.0)
+            for row in group_rows
+            if row.get("latency_s") is not None
+        ]
+        failures = [row for row in group_rows if not row.get("ok")]
+        fallback_reasons = sorted(
+            {str(row.get("fallback_reason")) for row in failures if row.get("fallback_reason")}
+        )
+        summary[key] = {
+            "count": len(group_rows),
+            "p50_s": _pctl(latencies, 50),
+            "p95_s": _pctl(latencies, 95),
+            "max_s": round(max(latencies), 3) if latencies else 0.0,
+            "failure_rate": _rate(len(failures), len(group_rows)),
+            "fallback_reasons": fallback_reasons[:10],
+        }
+
+    return {"status": "ok", "count": len(rows), "groups": summary}
 
 
 def _verify_owner(owner_token: str) -> tuple[bool, str]:
@@ -143,10 +297,19 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     if bot_id not in BOT_MAP:
         return {"error": f"Unknown bot_id. Valid: {list(BOT_MAP)}"}
 
+    timeout_s, timeout_source = _pipeline_timeout_config(CONTROL_TOWER)
     cfg = BOT_MAP[bot_id]
     log_path = CONTROL_TOWER / cfg["log"]
     if not log_path.exists():
-        return {"bot": bot_id, "status": "unknown", "detail": "Log file not found"}
+        return {
+            "bot": bot_id,
+            "status": "unknown",
+            "detail": "Log file not found",
+            "pipeline_timeout_config_s": timeout_s,
+            "pipeline_timeout_config_source": timeout_source,
+            "decision_latency": _summarize_decision_latency(CONTROL_TOWER, timeout_s),
+            "desktop_inference": _summarize_desktop_inference(CONTROL_TOWER),
+        }
 
     try:
         size = log_path.stat().st_size
@@ -164,6 +327,14 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     ensemble_active = bool(re.search(r"AI APPROVED|Multi-agent APPROVED", tail))
     ensemble_reject = bool(re.search(r"AI REJECTED|advisory REJECTED", tail))
     debate_timeout  = re.findall(r"(\d+\.?\d*)s[).] pipeline|pipeline.*?(\d+\.?\d*)s", tail)
+    timeout_samples = [
+        float(value)
+        for match in debate_timeout
+        for value in match
+        if value
+    ]
+    decision_latency = _summarize_decision_latency(CONTROL_TOWER, timeout_s)
+    desktop_inference = _summarize_desktop_inference(CONTROL_TOWER)
 
     mode = "unknown"
     if shadow_mode or timeout_event:
@@ -184,7 +355,11 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         "shadow_mode_active": shadow_mode,
         "last_ensemble_approved": ensemble_active,
         "last_ensemble_rejected": ensemble_reject,
-        "pipeline_timeout_config_s": float(os.getenv("PIPELINE_TIMEOUT_SECONDS", "8")),
+        "pipeline_timeout_config_s": timeout_s,
+        "pipeline_timeout_config_source": timeout_source,
+        "recent_timeout_samples_s": timeout_samples[-10:],
+        "decision_latency": decision_latency,
+        "desktop_inference": desktop_inference,
         "cerebras_model": "llama3.1-8b",
         "note": (
             "Anthropic credits zero — top up console.anthropic.com to restore 7-AI voting"
