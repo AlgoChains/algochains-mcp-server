@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from algochains_mcp.live_bot_intelligence import metrics_parser
 
 
+def _fixed_now() -> float:
+    return datetime(2026, 3, 31, 9, 0, tzinfo=timezone.utc).timestamp()
+
+
 def test_parse_errors_ignores_timestamped_errors_older_than_one_hour(monkeypatch):
-    monkeypatch.setattr(metrics_parser.time, "time", lambda: 1_775_000_000.0)
+    monkeypatch.setattr(metrics_parser.time, "time", _fixed_now)
 
     last_error, error_count = metrics_parser._parse_errors(
         [
@@ -18,7 +24,7 @@ def test_parse_errors_ignores_timestamped_errors_older_than_one_hour(monkeypatch
 
 
 def test_parse_errors_counts_fresh_timestamped_errors(monkeypatch):
-    monkeypatch.setattr(metrics_parser.time, "time", lambda: 1_775_000_000.0)
+    monkeypatch.setattr(metrics_parser.time, "time", _fixed_now)
 
     last_error, error_count = metrics_parser._parse_errors(
         [
@@ -33,7 +39,7 @@ def test_parse_errors_counts_fresh_timestamped_errors(monkeypatch):
 
 
 def test_parse_errors_counts_untimestamped_errors_for_legacy_logs(monkeypatch):
-    monkeypatch.setattr(metrics_parser.time, "time", lambda: 1_775_000_000.0)
+    monkeypatch.setattr(metrics_parser.time, "time", _fixed_now)
 
     last_error, error_count = metrics_parser._parse_errors(
         [
