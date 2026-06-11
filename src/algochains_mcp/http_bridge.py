@@ -270,6 +270,44 @@ async def handle_mcp_request(
         return {"error": str(e), "tool": tool_name}
 
 
+def _format_bots_alias_payload(payload: dict) -> dict:
+    """Preserve legacy per-bot keys while adding the list shape CC probes expect."""
+    if not isinstance(payload, dict):
+        return {"bots": [], "bot_count": 0, "result": payload}
+
+    formatted = dict(payload)
+    raw_bots = formatted.get("bots")
+    if isinstance(raw_bots, list):
+        bots = [bot for bot in raw_bots if isinstance(bot, dict)]
+    else:
+        bots = []
+        for bot_id, bot_payload in payload.items():
+            if bot_id in {"bots", "bot_count"} or bot_id.startswith("_"):
+                continue
+            if not isinstance(bot_payload, dict):
+                continue
+            bot = dict(bot_payload)
+            bot.setdefault("bot_id", bot_id)
+            bots.append(bot)
+
+    formatted["bots"] = bots
+    formatted["bot_count"] = len(bots)
+    return formatted
+
+
+def _format_system_alias_payload(payload: dict) -> dict:
+    """Wrap the heartbeat tool response under the legacy /api/system keys."""
+    if not isinstance(payload, dict):
+        return {"status": "error", "system": {}, "heartbeat": {}, "result": payload}
+
+    formatted = dict(payload)
+    status = "error" if "error" in payload else "ok"
+    formatted.setdefault("status", status)
+    formatted["system"] = dict(payload)
+    formatted["heartbeat"] = dict(payload)
+    return formatted
+
+
 def create_fastapi_app():
     """Create FastAPI app for standalone HTTP bridge. Install: pip install fastapi uvicorn"""
     try:
@@ -664,7 +702,15 @@ def create_fastapi_app():
         )
         if not key_valid or subscriber is not None:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner, caller_scope=caller_scope)
+        if not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+        payload = await handle_mcp_request(
+            "get_all_bot_metrics",
+            {},
+            is_owner=True,
+            caller_scope=caller_scope,
+        )
+        return _format_bots_alias_payload(payload)
 
     @app_http.get("/api/bots/{bot_id}")
     async def get_bot(
@@ -742,6 +788,28 @@ def create_fastapi_app():
         if not key_valid or subscriber is not None or not is_owner:
             raise HTTPException(status_code=401, detail="Owner API key required")
         return await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
+
+    @app_http.get("/api/system")
+    async def system_status(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """Compatibility endpoint for Command Center health probes."""
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+        payload = await handle_mcp_request(
+            "get_system_heartbeat",
+            {},
+            is_owner=True,
+            caller_scope=caller_scope,
+        )
+        return _format_system_alias_payload(payload)
 
     @app_http.get("/api/guardrails")
     async def guardrail_status(
