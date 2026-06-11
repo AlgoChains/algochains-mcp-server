@@ -648,6 +648,25 @@ def create_fastapi_app():
     # Previously these called handle_mcp_request(is_owner=True) with no auth check —
     # any unauthenticated client could scrape live bot metrics and heartbeat status.
 
+    def _normalize_bot_metrics_payload(payload: dict) -> dict:
+        """Keep legacy bot-id keys while adding the envelope health probes expect."""
+        if not isinstance(payload, dict) or payload.get("error"):
+            return payload
+        known_bot_ids = {"mnq", "cl", "mes", "nq"}
+        bots = []
+        for bot_id in sorted(known_bot_ids):
+            metrics = payload.get(bot_id)
+            if not isinstance(metrics, dict):
+                continue
+            bot_entry = {"bot_id": metrics.get("bot_id", bot_id), **metrics}
+            bots.append(bot_entry)
+        return {
+            **payload,
+            "bots": bots,
+            "bot_count": len(bots),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
     @app_http.get("/api/bots")
     async def get_all_bots(
         x_api_key: str | None = Header(default=None),
@@ -656,15 +675,21 @@ def create_fastapi_app():
         x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Convenience endpoint: get all 4 bot metrics. Owner key required."""
-        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
+        key_valid, is_owner, subscriber, _developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             user_email,
             x_algochains_caller_scope,
         )
-        if not key_valid or subscriber is not None:
+        if not key_valid or subscriber is not None or not is_owner:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner, caller_scope=caller_scope)
+        payload = await handle_mcp_request(
+            "get_all_bot_metrics",
+            {},
+            is_owner=is_owner,
+            caller_scope=caller_scope,
+        )
+        return _normalize_bot_metrics_payload(payload)
 
     @app_http.get("/api/bots/{bot_id}")
     async def get_bot(
@@ -703,7 +728,7 @@ def create_fastapi_app():
         """Get full bot card data. Public card data is unauthenticated; attachments require owner."""
         if bot_id not in {"mnq", "cl", "mes", "nq"}:
             raise HTTPException(status_code=400, detail="bot_id must be mnq | cl | mes | nq")
-        _key_valid, is_owner, _subscriber, caller_scope = _resolve_auth(
+        _key_valid, is_owner, _subscriber, _developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             user_email,
@@ -734,7 +759,7 @@ def create_fastapi_app():
         x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Get system heartbeat. Requires owner API key — reveals infrastructure topology."""
-        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
+        key_valid, is_owner, subscriber, _developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             caller_scope=x_algochains_caller_scope,
@@ -743,6 +768,34 @@ def create_fastapi_app():
             raise HTTPException(status_code=401, detail="Owner API key required")
         return await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
 
+    @app_http.get("/api/system")
+    async def system_status(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """Compatibility endpoint for Command Center system health probes."""
+        key_valid, is_owner, subscriber, _developer, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+        payload = await handle_mcp_request(
+            "get_system_heartbeat",
+            {},
+            is_owner=True,
+            caller_scope=caller_scope,
+        )
+        if not isinstance(payload, dict) or payload.get("error"):
+            return payload
+        return {
+            "system": payload,
+            "heartbeat": payload,
+            "timestamp": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+        }
+
     @app_http.get("/api/guardrails")
     async def guardrail_status(
         x_api_key: str | None = Header(default=None),
@@ -750,7 +803,7 @@ def create_fastapi_app():
         x_algochains_caller_scope: str | None = Header(default=None),
     ):
         """Get circuit breaker and guardrail status. Requires owner API key."""
-        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
+        key_valid, is_owner, subscriber, _developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             caller_scope=x_algochains_caller_scope,
@@ -795,6 +848,50 @@ def create_fastapi_app():
             return [l.rstrip() for l in all_lines[-lines:] if l.strip()]
         except Exception:
             return []
+
+    def _build_signal_health_payload(limit: int = 100) -> dict:
+        """Assemble the /api/signal-health payload from signal_health.json."""
+        sig = _read_json_state("state/signal_health.json")
+        entries = []
+        if isinstance(sig, dict):
+            for bot_key, bot_data in sig.items():
+                if not isinstance(bot_data, dict):
+                    continue
+                entries.append(
+                    {
+                        "bot": bot_key,
+                        "last_signal_ts": bot_data.get("last_signal_time"),
+                        "last_outcome": bot_data.get("last_trade_result"),
+                        "confidence": bot_data.get("last_confidence"),
+                        "regime": bot_data.get("last_regime"),
+                        "advisory_path": bot_data.get("advisory_path"),
+                    }
+                )
+        bounded_limit = max(1, min(int(limit), 100))
+        return {
+            "signal_health": sig if isinstance(sig, dict) else {},
+            "signals": entries[:bounded_limit],
+            "signal_count": len(entries),
+            "source": str(_ct_path("state/signal_health.json")),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app_http.get("/api/signal-health")
+    async def signal_health(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+        limit: int = 100,
+    ):
+        """Compatibility endpoint for Command Center signal-health probes."""
+        key_valid, is_owner, subscriber, _developer, _caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+        return await asyncio.to_thread(_build_signal_health_payload, limit)
 
     def _bot_process_alive(pattern: str) -> bool:
         """Check if a bot process matching the pattern is running (pgrep)."""
@@ -902,7 +999,7 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY (full view) or subscriber key (sanitised view).
         Latency: <150ms — reads from state files on disk.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, _developer, _caller_scope = _resolve_auth(x_api_key, authorization)
         if not key_valid:
             raise HTTPException(status_code=401, detail="Valid API key required (owner or subscriber)")
         snapshot = await asyncio.to_thread(_build_status_snapshot, is_owner)
@@ -920,7 +1017,7 @@ def create_fastapi_app():
 
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, _developer, _caller_scope = _resolve_auth(x_api_key, authorization)
         if not key_valid:
             raise HTTPException(status_code=401, detail="Valid API key required")
         limit = max(1, min(int(limit), 100))
@@ -962,7 +1059,7 @@ def create_fastapi_app():
 
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, _developer, _caller_scope = _resolve_auth(x_api_key, authorization)
         if not key_valid:
             raise HTTPException(status_code=401, detail="Valid API key required")
         hours = max(1, min(int(hours), 168))
@@ -1003,7 +1100,7 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY or subscriber key.
         Reconnect: standard SSE retry — client reconnects automatically on disconnect.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, _developer, _caller_scope = _resolve_auth(x_api_key, authorization)
         if not key_valid:
             raise HTTPException(status_code=401, detail="Valid API key required")
         interval = max(1.0, min(float(poll_interval), 30.0))
