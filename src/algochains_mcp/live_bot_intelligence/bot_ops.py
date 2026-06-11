@@ -326,13 +326,17 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     shadow_mode     = bool(re.search(r"shadow.?mode|shadow_mode.*True", tail, re.I))
     ensemble_active = bool(re.search(r"AI APPROVED|Multi-agent APPROVED", tail))
     ensemble_reject = bool(re.search(r"AI REJECTED|advisory REJECTED", tail))
-    debate_timeout  = re.findall(r"(\d+\.?\d*)s[).] pipeline|pipeline.*?(\d+\.?\d*)s", tail)
-    timeout_samples = [
-        float(value)
-        for match in debate_timeout
-        for value in match
-        if value
-    ]
+    timeout_samples: list[float] = []
+    for pattern in (
+        r"Pipeline timed out(?: after)?\s+(\d+\.?\d*)s",
+        r"(\d+\.?\d*)s[).]?\s+pipeline",
+        r"pipeline.*?(\d+\.?\d*)s",
+    ):
+        for value in re.findall(pattern, tail, re.I):
+            try:
+                timeout_samples.append(float(value))
+            except ValueError:
+                continue
     decision_latency = _summarize_decision_latency(CONTROL_TOWER, timeout_s)
     desktop_inference = _summarize_desktop_inference(CONTROL_TOWER)
 
