@@ -114,6 +114,7 @@ OWNER_TOOLS = {
     "get_live_bot_metrics",
     "get_all_bot_metrics",
     "get_bot_health",
+    "get_adaptive_brain_status",
     "get_quant_regime_state",
     "get_system_heartbeat",
     "get_account",

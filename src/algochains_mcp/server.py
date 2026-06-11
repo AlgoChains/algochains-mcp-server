@@ -3202,6 +3202,9 @@ TOOLS = [
     Tool(name="run_evolution_cycle", description="Trigger an AlphaLoop evolution cycle: SCAN underperformers → MUTATE parameters via Optuna → VALIDATE against real trade history → PROMOTE winner. Uses RL reward model. Requires real trade history (min 5 trades).",
          inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "generations": {"type": "integer", "default": 3}, "min_trades_required": {"type": "integer", "default": 10}, "promote_threshold": {"type": "number", "default": 0.1, "description": "Min reward improvement to promote"}}, "required": ["strategy_id"]},
          annotations=ANNOT_COMPUTE),
+    Tool(name="get_adaptive_brain_status", description="Read-only liveness snapshot for the control-tower adaptive_brain.py daemon. Reports process, script, state-file, and log evidence without restarting or fabricating health.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_evolution_status", description="Get current status of the AlphaLoop evolution daemon: last cycle time, active strategy, current phase, and cycle results.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
@@ -4615,6 +4618,7 @@ TIER1_TOOL_NAMES = {
     "graphiti_health",
     "get_bot_dashboard",
     "get_bot_health",
+    "get_adaptive_brain_status",
     "get_quant_regime_state",
     "subscribe_bot_metrics",
     "get_funding_rate",
@@ -7625,6 +7629,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             min_trades=args.get("min_trades_required", 10),
         )
         return _text(result)
+
+    elif name == "get_adaptive_brain_status":
+        from .adaptive_brain_status import get_adaptive_brain_status
+        return _text(get_adaptive_brain_status())
 
     elif name == "get_evolution_status":
         get_evolution_daemon = _lazy_import("evolution_daemon", "get_evolution_daemon")
