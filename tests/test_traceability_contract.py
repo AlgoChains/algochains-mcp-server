@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 
 import pytest
@@ -114,3 +115,75 @@ def test_place_order_echoes_client_trace_id(monkeypatch):
     assert data.get("blocked") is True or "blocked" in text.lower() or "authorization" in text.lower(), (
         f"Expected danger-tier block, got: {text[:200]}"
     )
+
+
+def test_signal_trade_correlation_retries_supabase_reset(monkeypatch, tmp_path):
+    """Transient Supabase/PostgREST resets should not immediately degrade evidence."""
+    import asyncio
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# test stub\n")
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                args=args[0],
+                returncode=0,
+                stdout=json.dumps({
+                    "error": "signals_trace:ConnectError:[Errno 54] Connection reset by peer"
+                }),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout=json.dumps({"ok": True, "fill_id_coverage": 1.0}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(srv.time, "sleep", lambda _seconds: None)
+
+    result = asyncio.run(srv._dispatch_tool("get_signal_trade_correlation", {}, None))
+    data = json.loads(result[0].text)
+
+    assert data == {"ok": True, "fill_id_coverage": 1.0}
+    assert len(calls) == 2
+
+
+def test_signal_trade_correlation_does_not_retry_regular_failure(monkeypatch, tmp_path):
+    """Non-transient script failures should surface without masking the root cause."""
+    import asyncio
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# test stub\n")
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=2,
+            stdout="",
+            stderr="bad arguments",
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = asyncio.run(srv._dispatch_tool("get_signal_trade_correlation", {}, None))
+    data = json.loads(result[0].text)
+
+    assert data["error"] == "correlation audit failed"
+    assert data["returncode"] == 2
+    assert data["transient_retries_exhausted"] is False
+    assert len(calls) == 1
