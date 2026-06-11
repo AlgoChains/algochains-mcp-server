@@ -337,6 +337,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
                 timeout_samples.append(float(value))
             except ValueError:
                 continue
+    timeout_samples = list(dict.fromkeys(timeout_samples))
     decision_latency = _summarize_decision_latency(CONTROL_TOWER, timeout_s)
     desktop_inference = _summarize_desktop_inference(CONTROL_TOWER)
 
