@@ -114,6 +114,27 @@ def _rate(count: int, total: int) -> float:
     return round(count / max(total, 1), 4)
 
 
+_TRACEABILITY_TRANSIENT_MARKERS = (
+    "connecterror",
+    "connection reset by peer",
+    "connectionreseterror",
+    "errno 54",
+    "readtimeout",
+    "read timeout",
+    "protocolerror",
+    "remoteprotocolerror",
+    "readerror",
+    "server disconnected",
+    "connection aborted",
+)
+
+
+def _is_traceability_transient_failure(*chunks: str | None) -> bool:
+    """Return true for traceability audit failures worth retrying locally."""
+    text = "\n".join(chunk for chunk in chunks if chunk).lower()
+    return any(marker in text for marker in _TRACEABILITY_TRANSIENT_MARKERS)
+
+
 def _summarize_desktop_inference_log(control_tower: _PathGlobal) -> dict[str, Any]:
     rows = _tail_jsonl(control_tower / "logs" / "desktop_inference_latency.jsonl", 200)
     if not rows:
@@ -10259,17 +10280,35 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
-            if _proc.returncode != 0:
-                return _text({
-                    "error": "correlation audit failed",
-                    "returncode": _proc.returncode,
-                    "stderr": (_proc.stderr or "")[:500],
-                })
-            try:
-                return _text(_json.loads(_proc.stdout))
-            except Exception:
-                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+            _max_attempts = max(
+                1,
+                min(int(os.getenv("ALGOCHAINS_TRACEABILITY_AUDIT_ATTEMPTS", "3")), 5),
+            )
+            for _attempt in range(1, _max_attempts + 1):
+                _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+                if _proc.returncode == 0:
+                    try:
+                        return _text(_json.loads(_proc.stdout))
+                    except Exception:
+                        return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+
+                _transient = _is_traceability_transient_failure(_proc.stderr, _proc.stdout)
+                if not _transient or _attempt == _max_attempts:
+                    payload = {
+                        "error": "correlation audit failed",
+                        "returncode": _proc.returncode,
+                        "stderr": (_proc.stderr or "")[:500],
+                    }
+                    if _transient:
+                        payload.update({
+                            "error": "correlation audit transient failure",
+                            "transient": True,
+                            "attempts": _attempt,
+                            "retry_attempts": _attempt - 1,
+                        })
+                    return _text(payload)
+
+                time.sleep(min(0.25 * _attempt, 1.0))
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
