@@ -81,6 +81,24 @@ def _default_control_tower() -> str:
     return "/Users/treycsa/CascadeProjects/algochains-control-tower"
 
 
+_TRACEABILITY_TRANSIENT_MARKERS = (
+    "connecterror",
+    "connection reset",
+    "connectionreseterror",
+    "readtimeout",
+    "read timeout",
+    "remoteprotocolerror",
+    "protocolerror",
+    "server disconnected",
+)
+
+
+def _is_traceability_transient_failure(output: str) -> bool:
+    """Return true for Supabase/PostgREST transport failures worth retrying."""
+    lower = output.lower()
+    return any(marker in lower for marker in _TRACEABILITY_TRANSIENT_MARKERS)
+
+
 def _tail_jsonl(path: _PathGlobal, limit: int = 200) -> list[dict[str, Any]]:
     """Read the last JSONL rows from a control-tower telemetry file."""
     if not path.exists():
@@ -10259,12 +10277,29 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+            _proc = None
+            _attempts = 3
+            _attempt = 0
+            _transient = False
+            for _attempt in range(1, _attempts + 1):
+                _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+                if _proc.returncode == 0:
+                    break
+                _combined = f"{_proc.stderr or ''}\n{_proc.stdout or ''}"
+                _transient = _is_traceability_transient_failure(_combined)
+                if not _transient or _attempt >= _attempts:
+                    break
+                # Supabase/PostgREST can reset traceability reads transiently; retry
+                # only those known transport signatures before surfacing degradation.
+                time.sleep(min(0.25 * _attempt, 1.0))
+            assert _proc is not None
             if _proc.returncode != 0:
                 return _text({
                     "error": "correlation audit failed",
                     "returncode": _proc.returncode,
                     "stderr": (_proc.stderr or "")[:500],
+                    "attempts": _attempt,
+                    "transient_transport": _transient,
                 })
             try:
                 return _text(_json.loads(_proc.stdout))

@@ -9,13 +9,27 @@ Verifies:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import subprocess
 import sys
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+
+class _FakeCompletedProcess:
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _decode_tool_result(result):
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    return json.loads(text)
 
 
 def test_place_order_schema_has_client_trace_id():
@@ -114,3 +128,97 @@ def test_place_order_echoes_client_trace_id(monkeypatch):
     assert data.get("blocked") is True or "blocked" in text.lower() or "authorization" in text.lower(), (
         f"Expected danger-tier block, got: {text[:200]}"
     )
+
+
+def test_signal_trade_correlation_retries_transient_supabase_reset(monkeypatch, tmp_path):
+    """Transient Supabase/PostgREST resets should be retried before degradation."""
+    import algochains_mcp.server as srv
+
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "signal_trade_correlation_audit.py").write_text("# test stub\n")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if len(calls) == 1:
+            return _FakeCompletedProcess(
+                1,
+                stderr="signals_trace:ConnectError:[Errno 54] Connection reset by peer",
+            )
+        return _FakeCompletedProcess(
+            0,
+            stdout=json.dumps({"status": "ok", "sample_size": 2}),
+        )
+
+    monkeypatch.setattr(srv, "_default_control_tower", lambda: str(tmp_path))
+    monkeypatch.setattr(srv.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = asyncio.run(srv.call_tool(
+        "get_signal_trade_correlation",
+        {"limit": 7, "action": "submitted"},
+    ))
+    data = _decode_tool_result(result)
+
+    assert data == {"status": "ok", "sample_size": 2}
+    assert len(calls) == 2
+    assert calls[0][0][-5:] == ["--limit", "7", "--action", "submitted", "--filled-only"]
+    assert calls[0][1]["cwd"] == str(tmp_path)
+
+
+def test_signal_trade_correlation_does_not_retry_permanent_failure(monkeypatch, tmp_path):
+    """Non-transport script failures should surface immediately."""
+    import algochains_mcp.server as srv
+
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "signal_trade_correlation_audit.py").write_text("# test stub\n")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _FakeCompletedProcess(1, stderr="ValueError: malformed audit config")
+
+    monkeypatch.setattr(srv, "_default_control_tower", lambda: str(tmp_path))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    data = _decode_tool_result(result)
+
+    assert data["error"] == "correlation audit failed"
+    assert data["attempts"] == 1
+    assert data["transient_transport"] is False
+    assert len(calls) == 1
+
+
+def test_signal_trade_correlation_reports_exhausted_transient_retries(monkeypatch, tmp_path):
+    """Repeated transient resets should include retry metadata in the error."""
+    import algochains_mcp.server as srv
+
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "signal_trade_correlation_audit.py").write_text("# test stub\n")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return _FakeCompletedProcess(
+            1,
+            stderr="httpx.RemoteProtocolError: server disconnected without sending a response",
+        )
+
+    monkeypatch.setattr(srv, "_default_control_tower", lambda: str(tmp_path))
+    monkeypatch.setattr(srv.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    data = _decode_tool_result(result)
+
+    assert data["error"] == "correlation audit failed"
+    assert data["attempts"] == 3
+    assert data["transient_transport"] is True
+    assert len(calls) == 3
