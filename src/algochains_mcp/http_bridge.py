@@ -54,7 +54,6 @@ from .developer_auth import (
 )
 from .developer_tools import (
     DEVELOPER_TOOLS,
-    DEVELOPER_TOOL_SCOPES,
     check_developer_tool_access,
 )
 from .tool_policy import (
@@ -329,7 +328,6 @@ def create_fastapi_app():
         log.warning("Request-ID middleware unavailable: %s", _mw_err)
 
     BRIDGE_API_KEY = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
-    OWNER_EMAIL = os.getenv("OWNER_EMAIL", "owner@algochains.ai")
     # K-8 fix: dev-mode escape hatch — set ALGOCHAINS_BRIDGE_DEV_MODE=true to
     # allow unauthenticated public-tool access on localhost during development.
     # In production (default) an empty key means the bridge refuses all requests.
@@ -969,7 +967,7 @@ def create_fastapi_app():
                 return []
             with p.open() as fh:
                 all_lines = fh.readlines()
-            return [l.rstrip() for l in all_lines[-lines:] if l.strip()]
+            return [line_text.rstrip() for line_text in all_lines[-lines:] if line_text.strip()]
         except Exception:
             return []
 
@@ -1195,7 +1193,6 @@ def create_fastapi_app():
                         "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2")
 
         def _classify_line(line: str) -> str | None:
-            l = line.lower()
             if any(k in line for k in ("FILL", "filled")):
                 return "fill"
             if any(k in line for k in ("SIGNAL", "signal_fired", "confidence")):
