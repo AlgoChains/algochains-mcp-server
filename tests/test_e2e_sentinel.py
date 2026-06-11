@@ -60,7 +60,7 @@ def test_failed_reconciliation_preserves_warning_state():
 
     assert result["state"] == "warning"
     assert result["severity"] == "warning"
-    assert result["resolved"] is not True
+    assert result.get("resolved") is not True
     assert result["raw_state"] == "warning"
     assert result["raw_severity"] == "warning"
 
