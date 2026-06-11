@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -109,6 +110,38 @@ def test_anon_blocked_from_get_account():
     client = _make_client()
     result = _call_tool(client, "get_account")
     assert result["status_code"] == 401
+
+
+def test_public_marketplace_route_returns_listings_without_key():
+    client = _make_client()
+    payload = {
+        "total": 3,
+        "live": 1,
+        "validated": 2,
+        "paper": 0,
+        "subscribable": 3,
+        "owner_only": 0,
+        "listings": [
+            {"id": "mnq", "name": "MNQ Scalper", "status": "live"},
+            {"id": "cl", "name": "CL Swing", "status": "validated"},
+            {"id": "mes", "name": "MES EMA", "status": "validated"},
+        ],
+        "source": "supabase",
+    }
+
+    with patch(
+        "algochains_mcp.server.call_tool",
+        new_callable=AsyncMock,
+        return_value=[SimpleNamespace(text=json.dumps(payload))],
+    ) as mock_call:
+        resp = client.get("/api/marketplace?asset_class=futures&status=live&limit=500")
+
+    assert resp.status_code == 200
+    assert resp.json() == payload
+    mock_call.assert_awaited_once_with(
+        "get_marketplace_listings",
+        {"asset_class": "futures", "status": "live", "limit": 100},
+    )
 
 
 # ── Owner access ─────────────────────────────────────────────────────────────
