@@ -56,6 +56,8 @@ import os
 import sys
 from pathlib import Path as _PathGlobal
 
+from .e2e_sentinel import summarize_e2e_sentinel_state
+
 
 def _default_control_tower() -> str:
     """
@@ -5656,36 +5658,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             try:
                 import json as _json_e2e
                 _e2e_raw = _json_e2e.loads(_e2e_state_path.read_text())
-                _e2e_class = _e2e_raw.get("classification", {}) or {}
-                _e2e_evidence = _e2e_raw.get("evidence", {}) or {}
-                _e2e_broker = _e2e_evidence.get("broker", {}) or {}
-                _e2e_process = _e2e_evidence.get("process", {}) or {}
-                _e2e_log = _e2e_evidence.get("log", {}) or {}
-                _e2e_rate = _e2e_raw.get("rate_limits", {}) or {}
-                e2e_sentinel = {
-                    "generated_at": _e2e_raw.get("generated_at"),
-                    "state": _e2e_class.get("state"),
-                    "severity": _e2e_class.get("severity"),
-                    "issue_class": _e2e_class.get("issue_class"),
-                    "incident_id": _e2e_class.get("incident_id"),
-                    "why": _e2e_class.get("why"),
-                    "needs_owner": _e2e_class.get("needs_owner"),
-                    "safe_auto_action": _e2e_class.get("safe_auto_action"),
-                    "skill_routes": _e2e_class.get("skill_routes", []),
-                    "broker_flat": (
-                        _e2e_broker.get("positions_count") == 0
-                        and _e2e_broker.get("working_orders_count") == 0
-                    ),
-                    "positions_count": _e2e_broker.get("positions_count"),
-                    "working_orders_count": _e2e_broker.get("working_orders_count"),
-                    "pids": _e2e_process.get("pids", []),
-                    "fd_count": _e2e_process.get("fd_count"),
-                    "last_scan_age_sec": _e2e_log.get("last_scan_age_sec"),
-                    "memory_status": (_e2e_raw.get("memory", {}) or {}).get("status"),
-                    "slack_status": (_e2e_raw.get("slack", {}) or {}).get("status"),
-                    "last_memory_at": _e2e_rate.get("last_memory_at"),
-                    "last_slack_at": _e2e_rate.get("last_slack_at"),
-                }
+                e2e_sentinel = summarize_e2e_sentinel_state(_e2e_raw)
             except Exception as _e2e_err:
                 e2e_sentinel = {"status": "error", "detail": f"e2e_execution_sentinel.json parse failure: {_e2e_err}"}
 

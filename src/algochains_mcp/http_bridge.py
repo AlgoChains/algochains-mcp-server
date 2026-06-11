@@ -62,6 +62,7 @@ from .tool_policy import (
     visible_tools_for_bridge,
 )
 from .otel_tracing import redacted_argument_hash, trace_span
+from .e2e_sentinel import summarize_e2e_sentinel_state
 
 log = logging.getLogger(__name__)
 
@@ -833,14 +834,7 @@ def create_fastapi_app():
         }
 
         # E2E sentinel summary
-        sentinel_class = sentinel.get("classification") or {}
-        sentinel_summary = {
-            "outcome": sentinel_class.get("outcome"),
-            "severity": sentinel_class.get("severity"),
-            "reason": sentinel_class.get("reason"),
-            "description": sentinel_class.get("description"),
-            "ts": sentinel.get("last_check"),
-        }
+        sentinel_summary = summarize_e2e_sentinel_state(sentinel)
 
         # Signal health summary per bot
         signal_summaries: dict = {}
