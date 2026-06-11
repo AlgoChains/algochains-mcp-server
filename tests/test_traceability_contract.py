@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import types
 
 import pytest
 
@@ -114,3 +115,86 @@ def test_place_order_echoes_client_trace_id(monkeypatch):
     assert data.get("blocked") is True or "blocked" in text.lower() or "authorization" in text.lower(), (
         f"Expected danger-tier block, got: {text[:200]}"
     )
+
+
+def test_signal_trade_correlation_retries_transient_supabase_reset(monkeypatch, tmp_path):
+    """Transient Supabase connection resets should be retried before surfacing degradation."""
+    import asyncio
+    import subprocess
+    import time
+
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# stub")
+    monkeypatch.setattr(srv, "_default_control_tower", lambda: str(tmp_path))
+    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            return types.SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({
+                    "status": "data_degraded",
+                    "why": (
+                        "Supabase traceability evidence unavailable/degraded: "
+                        "signals_trace:ConnectError:[Errno 54] Connection reset by peer"
+                    ),
+                }),
+                stderr="",
+            )
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps({"status": "ok"}), stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    data = json.loads(text)
+
+    assert data["status"] == "ok"
+    assert data["transport_retries"] == 1
+    assert len(calls) == 2
+
+
+def test_signal_trade_correlation_reports_attempts_after_transient_failures(monkeypatch, tmp_path):
+    """If Supabase resets persist, return bounded retry metadata with the failure."""
+    import asyncio
+    import subprocess
+    import time
+
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# stub")
+    monkeypatch.setattr(srv, "_default_control_tower", lambda: str(tmp_path))
+    monkeypatch.setattr(time, "sleep", lambda _delay: None)
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "Supabase traceability evidence unavailable/degraded: "
+                "signals_trace:ConnectError:[Errno 54] Connection reset by peer;"
+                "trade_log_pending:ConnectError:[Errno 54] Connection reset by peer"
+            ),
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    data = json.loads(text)
+
+    assert data["error"] == "correlation audit failed"
+    assert data["attempts"] == 3
+    assert len(data["transient_retry_reasons"]) == 2
+    assert len(calls) == 3

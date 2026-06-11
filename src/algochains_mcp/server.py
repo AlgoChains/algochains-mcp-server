@@ -81,6 +81,57 @@ def _default_control_tower() -> str:
     return "/Users/treycsa/CascadeProjects/algochains-control-tower"
 
 
+_TRACEABILITY_TRANSIENT_MARKERS = (
+    "connecterror",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "remoteprotocolerror",
+    "server disconnected",
+    "readerror",
+    "readtimeout",
+    "writeerror",
+    "writetimeout",
+    "temporarily unavailable",
+    "httpx.transporterror",
+    "httpcore.",
+)
+
+
+def _traceability_output_has_transient_supabase_error(text: str) -> bool:
+    """Detect transient Supabase/PostgREST transport failures in audit output."""
+    lower = (text or "").lower()
+    return (
+        ("supabase" in lower or "signals_trace" in lower or "trade_log" in lower)
+        and any(marker in lower for marker in _TRACEABILITY_TRANSIENT_MARKERS)
+    )
+
+
+def _run_traceability_audit_with_retries(
+    cmd: list[str],
+    cwd: str,
+    *,
+    timeout: int = 60,
+    max_attempts: int = 3,
+) -> tuple[Any, int, list[str]]:
+    """Run the control-tower traceability audit with bounded transient retries."""
+    import subprocess as _subp
+
+    attempts = max(1, max_attempts)
+    retry_reasons: list[str] = []
+    last_proc: Any = None
+    for attempt in range(1, attempts + 1):
+        proc = _subp.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        last_proc = proc
+        combined = f"{getattr(proc, 'stdout', '')}\n{getattr(proc, 'stderr', '')}"
+        transient = _traceability_output_has_transient_supabase_error(combined)
+        if not transient or attempt == attempts:
+            return proc, attempt, retry_reasons
+        retry_reasons.append((getattr(proc, "stderr", "") or getattr(proc, "stdout", ""))[:500])
+        time.sleep(min(0.25 * (2 ** (attempt - 1)), 1.0))
+    return last_proc, attempts, retry_reasons
+
+
 def _tail_jsonl(path: _PathGlobal, limit: int = 200) -> list[dict[str, Any]]:
     """Read the last JSONL rows from a control-tower telemetry file."""
     if not path.exists():
@@ -10239,7 +10290,6 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         # signal->trade NULL-rate / coverage KPIs without re-deriving the logic.
         try:
             import json as _json
-            import subprocess as _subp
             from pathlib import Path as _Path
 
             _ct = _Path(_default_control_tower())
@@ -10259,17 +10309,30 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+            _proc, _attempts, _retry_reasons = _run_traceability_audit_with_retries(
+                _cmd,
+                cwd=str(_ct),
+            )
             if _proc.returncode != 0:
                 return _text({
                     "error": "correlation audit failed",
                     "returncode": _proc.returncode,
                     "stderr": (_proc.stderr or "")[:500],
+                    "attempts": _attempts,
+                    "transient_retry_reasons": _retry_reasons,
                 })
             try:
-                return _text(_json.loads(_proc.stdout))
+                _payload = _json.loads(_proc.stdout)
+                if isinstance(_payload, dict) and _attempts > 1:
+                    _payload.setdefault("transport_retries", _attempts - 1)
+                return _text(_payload)
             except Exception:
-                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+                return _text({
+                    "error": "could not parse audit JSON",
+                    "stdout": (_proc.stdout or "")[:500],
+                    "attempts": _attempts,
+                    "transient_retry_reasons": _retry_reasons,
+                })
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
