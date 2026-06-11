@@ -938,8 +938,15 @@ def create_fastapi_app():
 
     _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
     if not _CT:
-        # resolve relative to this file's location
-        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+        # Resolve relative to this file without assuming a fixed checkout depth.
+        this_file = _PathGlobal(__file__).resolve()
+        for parent in this_file.parents:
+            candidate = parent / "algochains-control-tower"
+            if candidate.exists():
+                _CT = str(candidate)
+                break
+        else:
+            _CT = str(this_file.parent / "algochains-control-tower")
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
