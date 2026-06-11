@@ -180,13 +180,37 @@ def _parse_last_signal(lines: list[str]) -> tuple[str, float, str]:
     return signal, confidence, signal_time
 
 
+def _line_epoch_seconds(line: str) -> float | None:
+    """Extract a log-line timestamp when present; naive timestamps are treated as UTC."""
+    ts_match = re.search(
+        r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)",
+        line,
+    )
+    if not ts_match:
+        return None
+
+    raw_ts = ts_match.group(1).replace("Z", "+00:00").replace(",", ".")
+    if re.search(r"[+-]\d{4}$", raw_ts):
+        raw_ts = f"{raw_ts[:-2]}:{raw_ts[-2:]}"
+    try:
+        parsed = datetime.fromisoformat(raw_ts)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
 def _parse_errors(lines: list[str]) -> tuple[str, int]:
-    """Count errors in last hour and get most recent error."""
+    """Count fresh errors in the last hour and get the most recent fresh error."""
     one_hour_ago = time.time() - 3600
     error_count = 0
     last_error = ""
     for line in lines:
         if re.search(r'\bERROR\b|\bException\b|\bTraceback\b|\b401\b|\b422\b', line, re.IGNORECASE):
+            line_ts = _line_epoch_seconds(line)
+            if line_ts is not None and line_ts < one_hour_ago:
+                continue
             error_count += 1
             last_error = line.strip()[-200:]
     return last_error, error_count
