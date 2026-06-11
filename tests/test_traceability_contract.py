@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -114,3 +115,86 @@ def test_place_order_echoes_client_trace_id(monkeypatch):
     assert data.get("blocked") is True or "blocked" in text.lower() or "authorization" in text.lower(), (
         f"Expected danger-tier block, got: {text[:200]}"
     )
+
+
+def test_signal_trade_correlation_retries_transient_degraded_payload(tmp_path, monkeypatch):
+    """Transient Supabase/PostgREST degradation from the audit script is retried."""
+    import asyncio
+    import subprocess
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# test stub\n")
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+
+    async def _sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(srv.asyncio, "sleep", _sleep)
+
+    responses = [
+        SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "status": "degraded",
+                "reason": "signals_trace:ConnectError:[Errno 54] Connection reset by peer",
+            }),
+            stderr="",
+        ),
+        SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"status": "ok", "rows_scanned": 12}),
+            stderr="",
+        ),
+    ]
+
+    def _fake_run(*_args, **_kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {"limit": 12}))
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    data = json.loads(text)
+    assert data == {
+        "status": "ok",
+        "rows_scanned": 12,
+        "traceability_retry_attempts": 2,
+    }
+
+
+def test_signal_trade_correlation_reports_exhausted_transient_retries(tmp_path, monkeypatch):
+    """Persistent transient transport failures include retry-attempt metadata."""
+    import asyncio
+    import subprocess
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# test stub\n")
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+
+    async def _sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(srv.asyncio, "sleep", _sleep)
+
+    calls = 0
+
+    def _fake_run(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="signals_trace:ConnectError:[Errno 54] Connection reset by peer",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    data = json.loads(text)
+    assert calls == 3
+    assert data["error"] == "correlation audit failed"
+    assert data["returncode"] == 1
+    assert data["attempts"] == 3

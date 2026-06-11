@@ -110,6 +110,48 @@ def _pctl(values: list[float], pct: float) -> float:
     return round(float(vals[idx]), 3)
 
 
+_TRACEABILITY_TRANSIENT_MARKERS = (
+    "ConnectError",
+    "Connection reset by peer",
+    "ReadError",
+    "RemoteProtocolError",
+    "PoolTimeout",
+    "TimeoutException",
+    "timed out",
+    "server disconnected",
+)
+
+
+def _value_contains_marker(value: Any, markers: tuple[str, ...]) -> bool:
+    """Return true when a nested value contains one of the given text markers."""
+    if isinstance(value, str):
+        lower_value = value.lower()
+        return any(marker.lower() in lower_value for marker in markers)
+    if isinstance(value, dict):
+        return any(
+            _value_contains_marker(key, markers) or _value_contains_marker(item, markers)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple, set)):
+        return any(_value_contains_marker(item, markers) for item in value)
+    return False
+
+
+def _traceability_output_is_retryable(
+    *,
+    stdout: str,
+    stderr: str,
+    payload: Any | None = None,
+) -> bool:
+    """Detect transient Supabase/PostgREST failures from the audit script boundary."""
+    if payload is not None and _value_contains_marker(payload, _TRACEABILITY_TRANSIENT_MARKERS):
+        return True
+    return _value_contains_marker(
+        {"stdout": stdout, "stderr": stderr},
+        _TRACEABILITY_TRANSIENT_MARKERS,
+    )
+
+
 def _rate(count: int, total: int) -> float:
     return round(count / max(total, 1), 4)
 
@@ -10259,17 +10301,69 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
-            if _proc.returncode != 0:
-                return _text({
-                    "error": "correlation audit failed",
-                    "returncode": _proc.returncode,
-                    "stderr": (_proc.stderr or "")[:500],
-                })
-            try:
-                return _text(_json.loads(_proc.stdout))
-            except Exception:
-                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+            _last_proc = None
+            _last_parse_error = None
+            _attempts = 3
+            for _attempt in range(1, _attempts + 1):
+                _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+                _last_proc = _proc
+                _stdout = _proc.stdout or ""
+                _stderr = _proc.stderr or ""
+                if _proc.returncode != 0:
+                    if (
+                        _attempt < _attempts
+                        and _traceability_output_is_retryable(stdout=_stdout, stderr=_stderr)
+                    ):
+                        await asyncio.sleep(0.35 * _attempt)
+                        continue
+                    return _text({
+                        "error": "correlation audit failed",
+                        "returncode": _proc.returncode,
+                        "stderr": _stderr[:500],
+                        "attempts": _attempt,
+                    })
+                try:
+                    _payload = _json.loads(_stdout)
+                except Exception as exc:
+                    _last_parse_error = exc
+                    if (
+                        _attempt < _attempts
+                        and _traceability_output_is_retryable(stdout=_stdout, stderr=_stderr)
+                    ):
+                        await asyncio.sleep(0.35 * _attempt)
+                        continue
+                    return _text({
+                        "error": "could not parse audit JSON",
+                        "stdout": _stdout[:500],
+                        "attempts": _attempt,
+                    })
+                if (
+                    _attempt < _attempts
+                    and _traceability_output_is_retryable(
+                        stdout=_stdout,
+                        stderr=_stderr,
+                        payload=_payload,
+                    )
+                ):
+                    await asyncio.sleep(0.35 * _attempt)
+                    continue
+                if _attempt > 1:
+                    if isinstance(_payload, dict):
+                        _payload.setdefault("traceability_retry_attempts", _attempt)
+                    else:
+                        _payload = {
+                            "result": _payload,
+                            "traceability_retry_attempts": _attempt,
+                        }
+                return _text(_payload)
+            _stderr = (_last_proc.stderr or "") if _last_proc is not None else ""
+            return _text({
+                "error": "correlation audit failed",
+                "returncode": _last_proc.returncode if _last_proc is not None else None,
+                "stderr": _stderr[:500],
+                "attempts": _attempts,
+                "parse_error": str(_last_parse_error) if _last_parse_error else None,
+            })
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
