@@ -60,6 +60,29 @@ def _list_active_assignments(sb, subscriber_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def _paper_account_pnl(account: dict[str, Any] | None) -> tuple[float | None, float | None]:
+    """Return (realized_pnl, balance_delta) from a subscriber paper account row."""
+    if not account:
+        return None, None
+
+    realized_raw = account.get("realized_pnl_usd")
+    realized = float(realized_raw) if realized_raw is not None else None
+
+    current_raw = account.get("current_balance_usd")
+    starting_raw = account.get("starting_balance_usd")
+    balance_delta = None
+    if current_raw is not None and starting_raw is not None:
+        balance_delta = float(current_raw) - float(starting_raw)
+
+    if realized is None and balance_delta is not None:
+        realized = balance_delta
+
+    return (
+        round(realized, 2) if realized is not None else None,
+        round(balance_delta, 2) if balance_delta is not None else None,
+    )
+
+
 # ─── tools ──────────────────────────────────────────────────────────────────
 
 def get_signal_stream(
@@ -213,6 +236,8 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
     except Exception as exc:
         log.warning("get_my_portfolio paper account: %s", exc)
 
+    paper_pnl_usd, paper_balance_delta_usd = _paper_account_pnl(paper_account)
+
     open_entries: list[dict[str, Any]] = []
     bots = [a["bot"] for a in assignments if not a.get("paused")]
     if bots:
@@ -233,6 +258,8 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
     return {
         "subscriber_id": subscriber_id,
         "paper_account": paper_account,
+        "paper_pnl_usd": paper_pnl_usd,
+        "paper_balance_delta_usd": paper_balance_delta_usd,
         "assignments": assignments,
         "open_signals": open_entries,
         "pnl_today_usd": pnl.get("pnl_today_usd"),

@@ -16,6 +16,7 @@ from algochains_mcp.subscriber_tools import (
     SUBSCRIBER_TOOL_HANDLERS,
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
+    _paper_account_pnl,
     call_subscriber_tool,
     place_paper_order,
 )
@@ -131,3 +132,29 @@ class TestPlacePaperOrderValidation:
         ):
             out = place_paper_order(SUB_ID, symbol="MNQ", side="BUY", qty=1)
         assert out["error"] == "supabase_unavailable"
+
+
+class TestPaperAccountPnl:
+    def test_prefers_realized_pnl_field(self):
+        realized, balance_delta = _paper_account_pnl(
+            {
+                "starting_balance_usd": 1000,
+                "current_balance_usd": 9999,
+                "realized_pnl_usd": 301.6,
+            }
+        )
+
+        assert realized == 301.6
+        assert balance_delta == 8999.0
+
+    def test_falls_back_to_balance_delta_for_legacy_rows(self):
+        realized, balance_delta = _paper_account_pnl(
+            {
+                "starting_balance_usd": 1000,
+                "current_balance_usd": 1301.6,
+                "realized_pnl_usd": None,
+            }
+        )
+
+        assert realized == 301.6
+        assert balance_delta == 301.6

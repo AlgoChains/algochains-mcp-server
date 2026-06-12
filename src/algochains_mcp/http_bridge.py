@@ -759,6 +759,215 @@ def create_fastapi_app():
             raise HTTPException(status_code=401, detail="Owner API key required")
         return await handle_mcp_request("get_circuit_breaker_status", {}, is_owner=True, caller_scope=caller_scope)
 
+    def _health_rows(sb: Any, table: str, columns: str, *, limit: int = 5000) -> tuple[list[dict[str, Any]], str | None]:
+        """Best-effort Supabase table read for Command Center health aliases."""
+        try:
+            resp = sb.table(table).select(columns).limit(limit).execute()
+            return list(getattr(resp, "data", None) or []), None
+        except Exception as exc:
+            log.warning("Command Center subscriber health read failed for %s: %s", table, exc)
+            return [], str(exc)
+
+    def _money(value: Any) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _paper_account_rollup(rows: list[dict[str, Any]]) -> dict[str, float | int]:
+        realized = sum(_money(row.get("realized_pnl_usd")) for row in rows)
+        balance_delta = 0.0
+        balance_rows = 0
+        current_balance = 0.0
+        starting_balance = 0.0
+        fills_count = 0
+        for row in rows:
+            current_raw = row.get("current_balance_usd")
+            starting_raw = row.get("starting_balance_usd")
+            if current_raw is not None:
+                current_balance += _money(current_raw)
+            if starting_raw is not None:
+                starting_balance += _money(starting_raw)
+            if current_raw is not None and starting_raw is not None:
+                balance_delta += _money(current_raw) - _money(starting_raw)
+                balance_rows += 1
+            fills_count += int(_money(row.get("fills_count")))
+
+        # Some early paper-account rows only tracked balances. Use that delta
+        # when explicit realized PnL has not been populated yet.
+        paper_pnl = balance_delta if abs(realized) < 0.005 and balance_rows else realized
+        return {
+            "account_count": len(rows),
+            "paper_pnl_usd": round(paper_pnl, 2),
+            "paper_realized_pnl_usd": round(realized, 2),
+            "paper_balance_delta_usd": round(balance_delta, 2),
+            "paper_current_balance_usd": round(current_balance, 2),
+            "paper_starting_balance_usd": round(starting_balance, 2),
+            "fills_count": fills_count,
+        }
+
+    def _lag_seconds(rows: list[dict[str, Any]], now: datetime) -> float | None:
+        latest: datetime | None = None
+        for row in rows:
+            raw = row.get("last_seen")
+            if not raw:
+                continue
+            try:
+                seen = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if seen.tzinfo is None:
+                seen = seen.replace(tzinfo=timezone.utc)
+            seen = seen.astimezone(timezone.utc)
+            if latest is None or seen > latest:
+                latest = seen
+        if latest is None:
+            return None
+        return round(max(0.0, (now - latest).total_seconds()), 2)
+
+    @app_http.get("/api/subscribers")
+    async def subscriber_health(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        user_email: str | None = None,
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """Owner-only Command Center view of subscriber and copy-trade paper state."""
+        key_valid, is_owner, subscriber, _developer, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            user_email,
+            x_algochains_caller_scope,
+        )
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+
+        try:
+            from .marketplace.supabase_tools import _get_sb_client
+        except Exception as exc:  # pragma: no cover - import path safety
+            return {
+                "status": "degraded",
+                "error": f"supabase_tools unavailable: {exc}",
+                "source": "supabase_unavailable",
+            }
+
+        sb = _get_sb_client(use_service_role=True)
+        if sb is None:
+            return {
+                "status": "degraded",
+                "error": "Supabase service_role not configured",
+                "source": "supabase_unavailable",
+            }
+
+        now = datetime.now(timezone.utc)
+        subscriptions, sub_err = await asyncio.to_thread(
+            _health_rows,
+            sb,
+            "marketplace_botsubscription",
+            "id,status,created_at,subscriber_email,requester_slack_id",
+        )
+        assignments, assign_err = await asyncio.to_thread(
+            _health_rows,
+            sb,
+            "subscriber_bot_assignments",
+            "subscriber_id,bot,paused,updated_at",
+        )
+        paper_accounts, paper_err = await asyncio.to_thread(
+            _health_rows,
+            sb,
+            "subscriber_paper_accounts",
+            "subscriber_id,starting_balance_usd,current_balance_usd,realized_pnl_usd,"
+            "fills_count,last_reset_at,updated_at",
+        )
+        heartbeats, hb_err = await asyncio.to_thread(
+            _health_rows,
+            sb,
+            "subscriber_heartbeats",
+            "subscriber_id,last_seen,pnl_today_usd,fills_today,tradovate_linked,daemon_version",
+        )
+
+        errors = {
+            table: err
+            for table, err in {
+                "marketplace_botsubscription": sub_err,
+                "subscriber_bot_assignments": assign_err,
+                "subscriber_paper_accounts": paper_err,
+                "subscriber_heartbeats": hb_err,
+            }.items()
+            if err
+        }
+
+        active_subscriptions = [
+            row for row in subscriptions if str(row.get("status") or "").lower() == "active"
+        ]
+        active_assignments = [row for row in assignments if not row.get("paused")]
+        active_assignment_subscribers = {
+            str(row.get("subscriber_id"))
+            for row in active_assignments
+            if row.get("subscriber_id")
+        }
+        subscription_subscribers = {
+            str(row.get("subscriber_email") or row.get("requester_slack_id"))
+            for row in active_subscriptions
+            if row.get("subscriber_email") or row.get("requester_slack_id")
+        }
+        paper = _paper_account_rollup(paper_accounts)
+        lag_seconds = _lag_seconds(heartbeats, now)
+        live_pnl_usd = sum(_money(row.get("pnl_today_usd")) for row in heartbeats)
+        heartbeat_recent = lag_seconds is not None and lag_seconds <= 120
+        subscriber_count = max(
+            len(active_subscriptions),
+            len(active_assignment_subscribers),
+            len(subscription_subscribers),
+            len(paper_accounts),
+        )
+        status = "ok" if not errors else "degraded"
+
+        copy_trade = {
+            "schema_ok": not bool(errors),
+            "executor_ok": heartbeat_recent if heartbeats else None,
+            "subs": subscriber_count,
+            "subscriber_count": subscriber_count,
+            "active_subscriptions": len(active_subscriptions),
+            "active_assignments": len(active_assignments),
+            "paper_pnl_usd": paper["paper_pnl_usd"],
+            "paper_pnl": paper["paper_pnl_usd"],
+            "paper_pnl_rollup_usd": paper["paper_pnl_usd"],
+            "live_pnl_usd": round(live_pnl_usd, 2),
+            "lag_seconds": lag_seconds,
+        }
+
+        return {
+            "status": status,
+            "source": "supabase",
+            "as_of": now.isoformat(),
+            "subscriber_count": subscriber_count,
+            "subscribers": subscriber_count,
+            "subscriptions_count": len(active_subscriptions),
+            "assignments_count": len(active_assignments),
+            "paper_accounts_count": paper["account_count"],
+            "heartbeat_count": len(heartbeats),
+            "paper_pnl_usd": paper["paper_pnl_usd"],
+            "paper_pnl": paper["paper_pnl_usd"],
+            "paper_pnl_rollup_usd": paper["paper_pnl_usd"],
+            "paper_realized_pnl_usd": paper["paper_realized_pnl_usd"],
+            "paper_balance_delta_usd": paper["paper_balance_delta_usd"],
+            "paper_current_balance_usd": paper["paper_current_balance_usd"],
+            "paper_starting_balance_usd": paper["paper_starting_balance_usd"],
+            "fills_count": paper["fills_count"],
+            "live_pnl_usd": round(live_pnl_usd, 2),
+            "lag_seconds": lag_seconds,
+            "copy_trade": copy_trade,
+            "tables": {
+                "marketplace_botsubscription": len(subscriptions),
+                "subscriber_bot_assignments": len(assignments),
+                "subscriber_paper_accounts": len(paper_accounts),
+                "subscriber_heartbeats": len(heartbeats),
+            },
+            "errors": errors,
+            "caller_scope": caller_scope,
+        }
+
     # ── /v1/agent/* — multi-agent status API (owner + subscriber access) ───────
     # These endpoints are purpose-built for external OpenClaw skill agents that
     # need live AlgoChains system state. They read state files directly (no MCP
