@@ -17,6 +17,8 @@ from algochains_mcp.subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    get_my_pnl,
+    get_my_portfolio,
     place_paper_order,
 )
 
@@ -88,6 +90,128 @@ def _mock_sb_with_account(account_row):
         .maybe_single.return_value.execute.return_value
     ) = lookup
     return sb
+
+
+class _FakeResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    def __init__(self, client, table_name):
+        self.client = client
+        self.table_name = table_name
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def gte(self, *_args, **_kwargs):
+        return self
+
+    def gt(self, *_args, **_kwargs):
+        return self
+
+    def in_(self, *_args, **_kwargs):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def maybe_single(self):
+        return self
+
+    def execute(self):
+        return _FakeResponse(self.client.result_for(self.table_name))
+
+
+class _FakeSupabase:
+    def __init__(
+        self,
+        *,
+        fill_responses=None,
+        paper_account=None,
+        assignments=None,
+        signals=None,
+    ):
+        self.fill_responses = list(fill_responses or [[], []])
+        self.paper_account = paper_account
+        self.assignments = assignments or []
+        self.signals = signals or []
+
+    def table(self, table_name):
+        return _FakeQuery(self, table_name)
+
+    def result_for(self, table_name):
+        if table_name == "subscriber_fills":
+            return self.fill_responses.pop(0) if self.fill_responses else []
+        if table_name == "subscriber_paper_accounts":
+            return self.paper_account
+        if table_name == "subscriber_bot_assignments":
+            return self.assignments
+        if table_name == "copy_trade_signals":
+            return self.signals
+        raise AssertionError(f"unexpected table lookup: {table_name}")
+
+
+class TestPaperPnlRollup:
+    def test_get_my_pnl_keeps_daily_fill_pnl_and_exposes_paper_rollup(self):
+        sb = _FakeSupabase(
+            fill_responses=[[], []],
+            paper_account={
+                "starting_balance_usd": 10000,
+                "current_balance_usd": 10301.60,
+                "realized_pnl_usd": 301.60,
+                "fills_count": 12,
+            },
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_pnl(SUB_ID)
+
+        assert out["pnl_today_usd"] == 0
+        assert out["pnl_7d_usd"] == 0
+        assert out["paper_pnl_usd"] == 301.60
+        assert out["paper_pnl"] == 301.60
+        assert out["paper_pnl_rollup_usd"] == 301.60
+
+    def test_get_my_pnl_uses_balance_delta_when_realized_pnl_is_missing(self):
+        sb = _FakeSupabase(
+            fill_responses=[[], []],
+            paper_account={
+                "starting_balance_usd": "10000.005",
+                "current_balance_usd": "10301.605",
+                "realized_pnl_usd": None,
+            },
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_pnl(SUB_ID)
+
+        assert out["paper_pnl_usd"] == 301.60
+
+    def test_get_my_portfolio_exposes_paper_rollup_aliases(self):
+        sb = _FakeSupabase(
+            fill_responses=[[], []],
+            paper_account={
+                "starting_balance_usd": 10000,
+                "current_balance_usd": 10301.60,
+                "realized_pnl_usd": 301.60,
+                "fills_count": 12,
+            },
+            assignments=[],
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_portfolio(SUB_ID)
+
+        assert out["pnl_today_usd"] == 0
+        assert out["paper_account"]["realized_pnl_usd"] == 301.60
+        assert out["paper_pnl_usd"] == 301.60
+        assert out["paper_pnl"] == 301.60
+        assert out["paper_pnl_rollup_usd"] == 301.60
 
 
 class TestPlacePaperOrderValidation:
