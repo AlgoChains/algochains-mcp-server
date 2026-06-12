@@ -169,6 +169,9 @@ _TOOL_TIERS: dict[str, int] = {
     "get_prediction_market_bot_metrics": TIER_READ_ONLY,
     "record_prediction_market_bot_metric": TIER_WRITE_LOCAL,
     "propagate_trade_signal": TIER_ORDER_EXEC,
+    # Sends the same signed copy-trade propagation POSTs as propagate_trade_signal
+    # (BUY -> SELL -> BUY) and can fan out to subscribers' paper brokers.
+    "test_signal_propagation": TIER_ORDER_EXEC,
     "get_congressional_trades": TIER_READ_ONLY,
     "get_insider_activity": TIER_READ_ONLY,
     "get_alt_data_signals": TIER_READ_ONLY,

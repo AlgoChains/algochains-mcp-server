@@ -3588,7 +3588,7 @@ TOOLS = [
              "symbol": {"type": "string", "default": "BTC/USD"},
              "qty": {"type": "number", "default": 0.001},
          }, "required": ["strategy_name"]},
-         annotations=ANNOT_WRITE_SAFE),
+         annotations=ANNOT_TRADE_EXEC),
     Tool(name="get_macro_signals", description="Get pre-computed macro alpha signal fabric: yield curve shape (2y-10y), credit spreads (HY-IG), DXY momentum, PMI regime, VIX term structure contango/backwardation. All from real FRED/CBOE/Polygon APIs.",
          inputSchema={"type": "object", "properties": {"signals": {"type": "array", "items": {"type": "string"}, "description": "Subset: yield_curve, credit_spreads, dxy, pmi, vix. Omit for all."}}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
@@ -4621,7 +4621,6 @@ TIER1_TOOL_NAMES = {
     "record_prediction_market_bot_metric",
     "get_prediction_market_bot_metrics",
     "check_propagation_health",
-    "test_signal_propagation",
     "run_guardrail",
     # Skills Bridge (V22.7)
     "list_skills",

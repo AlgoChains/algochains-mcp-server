@@ -104,6 +104,9 @@ def test_get_tool_details_unknown_tool():
     "numerai_upload_predictions",
     "place_kalshi_order",
     "propagate_trade_signal",
+    # Sends signed BUY/SELL/BUY propagation POSTs; must use the same ORDER_EXEC
+    # authorization gate as propagate_trade_signal.
+    "test_signal_propagation",
     # BUG-07 FIX: These Kalshi execution tools were mis-tiered as WRITE_LOCAL via
     # the `run_` prefix rule, allowing autonomous agents to place real orders.
     # Now explicitly ORDER_EXEC — verify gating is enforced.
@@ -317,3 +320,37 @@ def test_all_order_exec_tools_blocked_without_token(monkeypatch):
         f"These ORDER_EXEC+ tools were NOT blocked by execute_dynamic_tool: {not_blocked}\n"
         "Add them to the tier system in tool_danger_tiers.py."
     )
+
+
+def test_test_signal_propagation_not_directly_callable_in_smart(monkeypatch):
+    """Regression: propagation smoke test must not bypass execute_dynamic_tool gates."""
+    monkeypatch.setenv("OWNER_API_TOKEN", "test-secret-for-stdio-audit")
+    import json
+    import types
+
+    import algochains_mcp.server as srv
+    from algochains_mcp.tool_danger_tiers import TIER_ORDER_EXEC, get_tool_tier
+
+    assert get_tool_tier("test_signal_propagation") >= TIER_ORDER_EXEC
+    assert "test_signal_propagation" not in srv.TIER1_TOOL_NAMES
+
+    monkeypatch.setattr(srv, "_GUARDRAILS_AVAILABLE", False)
+    monkeypatch.setattr(srv, "_config", types.SimpleNamespace(tool_mode="smart"))
+
+    async def _dispatch_should_not_run(name, arguments, registry):
+        raise AssertionError(f"{name} dispatched despite smart-mode gate")
+
+    monkeypatch.setattr(srv, "_dispatch_tool", _dispatch_should_not_run)
+
+    async def _call():
+        return await srv.call_tool(
+            "test_signal_propagation",
+            {"strategy_name": "MyBot", "symbol": "BTC/USD", "qty": 0.001},
+        )
+
+    result = asyncio.run(_call())
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    data = json.loads(text)
+    assert data.get("blocked") is True
+    assert data.get("tool") == "test_signal_propagation"
+    assert data.get("danger_tier") >= TIER_ORDER_EXEC
