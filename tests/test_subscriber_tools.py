@@ -17,6 +17,8 @@ from algochains_mcp.subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    get_my_pnl,
+    get_my_portfolio,
     place_paper_order,
 )
 
@@ -88,6 +90,130 @@ def _mock_sb_with_account(account_row):
         .maybe_single.return_value.execute.return_value
     ) = lookup
     return sb
+
+
+class _FakeResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    def __init__(self, data):
+        self._data = data
+        self._maybe_single = False
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def gte(self, *_args, **_kwargs):
+        return self
+
+    def gt(self, *_args, **_kwargs):
+        return self
+
+    def in_(self, *_args, **_kwargs):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
+
+    def maybe_single(self):
+        self._maybe_single = True
+        return self
+
+    def execute(self):
+        if not self._maybe_single:
+            return _FakeResponse(self._data)
+        if isinstance(self._data, list):
+            return _FakeResponse(self._data[0] if self._data else None)
+        return _FakeResponse(self._data)
+
+
+class _FakeSubscriberSupabase:
+    def __init__(
+        self,
+        *,
+        today_fills=None,
+        week_fills=None,
+        paper_account=None,
+        assignments=None,
+    ):
+        self.today_fills = today_fills or []
+        self.week_fills = week_fills or []
+        self.paper_account = paper_account
+        self.assignments = assignments or []
+        self.table_calls: list[str] = []
+
+    def table(self, name):
+        self.table_calls.append(name)
+        if name == "subscriber_fills":
+            fill_query_count = self.table_calls.count("subscriber_fills")
+            return _FakeQuery(self.today_fills if fill_query_count == 1 else self.week_fills)
+        if name == "subscriber_paper_accounts":
+            return _FakeQuery(self.paper_account)
+        if name == "subscriber_bot_assignments":
+            return _FakeQuery(self.assignments)
+        if name == "copy_trade_signals":
+            return _FakeQuery([])
+        raise AssertionError(f"unexpected table: {name}")
+
+
+class TestSubscriberPnlAliases:
+    def test_get_my_pnl_exposes_account_level_paper_pnl_when_daily_fills_reset(self):
+        sb = _FakeSubscriberSupabase(
+            today_fills=[],
+            week_fills=[],
+            paper_account={
+                "starting_balance_usd": 10000,
+                "current_balance_usd": 10301.60,
+                "realized_pnl_usd": 301.60,
+                "fills_count": 4,
+            },
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_pnl(SUB_ID)
+
+        assert out["pnl_today_usd"] == 0
+        assert out["paper_pnl_usd"] == 301.60
+        assert out["paper_pnl"] == 301.60
+        assert out["paper_pnl_rollup_usd"] == 301.60
+
+    def test_get_my_pnl_falls_back_to_account_balance_delta(self):
+        sb = _FakeSubscriberSupabase(
+            paper_account={
+                "starting_balance_usd": 10000,
+                "current_balance_usd": 10250.755,
+                "realized_pnl_usd": None,
+            },
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_pnl(SUB_ID)
+
+        assert out["paper_pnl_usd"] == 250.76
+        assert out["paper_pnl_rollup_usd"] == 250.76
+
+    def test_get_my_portfolio_includes_same_account_level_paper_pnl_aliases(self):
+        sb = _FakeSubscriberSupabase(
+            paper_account={
+                "starting_balance_usd": 10000,
+                "current_balance_usd": 10301.60,
+                "realized_pnl_usd": 301.60,
+                "fills_count": 4,
+            },
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_portfolio(SUB_ID)
+
+        assert out["pnl_today_usd"] == 0
+        assert out["paper_pnl_usd"] == 301.60
+        assert out["paper_pnl"] == 301.60
+        assert out["paper_pnl_rollup_usd"] == 301.60
 
 
 class TestPlacePaperOrderValidation:
