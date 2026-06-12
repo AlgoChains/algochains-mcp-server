@@ -26,7 +26,6 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path as _PathGlobal
-from typing import Any
 
 # FastAPI imports at module level so inner functions can resolve Request type
 try:
@@ -986,7 +985,13 @@ def create_fastapi_app():
     # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
     # Subscribers receive a sanitised view — no raw P&L, no account numbers.
 
+<<<<<<< HEAD
     _CT = str(default_control_tower())
+=======
+    _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
+    if not _CT:
+        _CT = str(default_control_tower())
+>>>>>>> origin/cursor/slack-bug-resolution-7326
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
@@ -1009,7 +1014,11 @@ def create_fastapi_app():
                 return []
             with p.open() as fh:
                 all_lines = fh.readlines()
+<<<<<<< HEAD
             return [line_text.rstrip() for line_text in all_lines[-lines:] if line_text.strip()]
+=======
+            return [line.rstrip() for line in all_lines[-lines:] if line.strip()]
+>>>>>>> origin/cursor/slack-bug-resolution-7326
         except Exception:
             return []
 
