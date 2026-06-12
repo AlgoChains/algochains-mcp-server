@@ -353,7 +353,6 @@ _TOOL_TIERS: dict[str, int] = {
     "get_my_fills": TIER_READ_ONLY,
     "get_my_assignments": TIER_READ_ONLY,
     "get_my_portfolio": TIER_READ_ONLY,
-    "get_marketplace_listings": TIER_READ_ONLY,
     "get_my_paper_positions": TIER_READ_ONLY,
     "place_paper_order": TIER_WRITE_LOCAL,
     "cancel_paper_order": TIER_WRITE_LOCAL,
