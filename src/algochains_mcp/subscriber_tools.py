@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,60 @@ def _err(msg: str, **extra: Any) -> dict[str, Any]:
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
+
+def _money_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _round_money(value: Decimal) -> float:
+    return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _paper_pnl_from_account(paper_account: dict[str, Any] | None) -> float | None:
+    """Return stable account-level paper PnL from the paper account row."""
+    if not paper_account:
+        return None
+
+    realized = _money_decimal(paper_account.get("realized_pnl_usd"))
+    if realized is not None:
+        return _round_money(realized)
+
+    current = _money_decimal(paper_account.get("current_balance_usd"))
+    starting = _money_decimal(paper_account.get("starting_balance_usd"))
+    if current is None or starting is None:
+        return None
+    return _round_money(current - starting)
+
+
+def _paper_pnl_aliases(paper_account: dict[str, Any] | None) -> dict[str, Any]:
+    paper_pnl = _paper_pnl_from_account(paper_account)
+    if paper_pnl is None:
+        return {}
+    return {
+        "paper_pnl_usd": paper_pnl,
+        "paper_pnl": paper_pnl,
+        "paper_pnl_rollup_usd": paper_pnl,
+    }
+
+
+def _lookup_paper_account(sb, subscriber_id: str) -> dict[str, Any] | None:
+    resp = (
+        sb.table("subscriber_paper_accounts")
+        .select(
+            "starting_balance_usd,current_balance_usd,realized_pnl_usd,"
+            "fills_count,last_reset_at,updated_at"
+        )
+        .eq("subscriber_id", subscriber_id)
+        .maybe_single()
+        .execute()
+    )
+    return getattr(resp, "data", None)
+
 
 def _list_active_assignments(sb, subscriber_id: str) -> list[dict[str, Any]]:
     """Return non-paused subscriber_bot_assignments for this subscriber."""
@@ -111,7 +166,7 @@ def get_signal_stream(
 
 
 def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
-    """Today + 7-day PnL aggregated from subscriber_fills."""
+    """Daily fill PnL plus stable account-level paper PnL aliases."""
     sb = _service_client()
     if sb is None:
         return _err("supabase_unavailable")
@@ -138,6 +193,11 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
 
     today_rows = getattr(today_resp, "data", None) or []
     week_rows = getattr(week_resp, "data", None) or []
+    paper_account = None
+    try:
+        paper_account = _lookup_paper_account(sb, subscriber_id)
+    except Exception as exc:
+        log.warning("get_my_pnl paper account: %s", exc)
 
     pnl_today = sum(float(r.get("pnl_usd") or 0) for r in today_rows)
     pnl_week = sum(float(r.get("pnl_usd") or 0) for r in week_rows)
@@ -155,6 +215,7 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
         "pnl_7d_usd": round(pnl_week, 2),
         "fills_today": fills_today,
         "pnl_today_by_bot": {k: round(v, 2) for k, v in by_bot.items()},
+        **_paper_pnl_aliases(paper_account),
         "as_of": now.isoformat(),
     }
 
@@ -199,17 +260,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
 
     paper_account = None
     try:
-        pa = (
-            sb.table("subscriber_paper_accounts")
-            .select(
-                "starting_balance_usd,current_balance_usd,realized_pnl_usd,"
-                "fills_count,last_reset_at,updated_at"
-            )
-            .eq("subscriber_id", subscriber_id)
-            .maybe_single()
-            .execute()
-        )
-        paper_account = getattr(pa, "data", None)
+        paper_account = _lookup_paper_account(sb, subscriber_id)
     except Exception as exc:
         log.warning("get_my_portfolio paper account: %s", exc)
 
@@ -237,6 +288,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         "open_signals": open_entries,
         "pnl_today_usd": pnl.get("pnl_today_usd"),
         "pnl_7d_usd": pnl.get("pnl_7d_usd"),
+        **_paper_pnl_aliases(paper_account),
         "fills_today": pnl.get("fills_today"),
         "as_of": datetime.now(timezone.utc).isoformat(),
     }

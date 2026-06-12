@@ -17,6 +17,8 @@ from algochains_mcp.subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    get_my_pnl,
+    get_my_portfolio,
     place_paper_order,
 )
 
@@ -88,6 +90,116 @@ def _mock_sb_with_account(account_row):
         .maybe_single.return_value.execute.return_value
     ) = lookup
     return sb
+
+
+class _Resp:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    def __init__(self, sb, table_name):
+        self.sb = sb
+        self.table_name = table_name
+        self.select_columns = ""
+
+    def select(self, columns):
+        self.select_columns = columns
+        return self
+
+    def eq(self, *_args):
+        return self
+
+    def gte(self, *_args):
+        return self
+
+    def maybe_single(self):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        if self.table_name == "subscriber_fills":
+            if self.select_columns == "pnl_usd,bot,fill_kind":
+                return _Resp(self.sb.today_fills)
+            return _Resp(self.sb.week_fills)
+        if self.table_name == "subscriber_paper_accounts":
+            return _Resp(self.sb.paper_account)
+        if self.table_name == "subscriber_bot_assignments":
+            return _Resp(self.sb.assignments)
+        return _Resp([])
+
+
+class _FakeSupabase:
+    def __init__(
+        self,
+        *,
+        today_fills=None,
+        week_fills=None,
+        paper_account=None,
+        assignments=None,
+    ):
+        self.today_fills = today_fills or []
+        self.week_fills = week_fills or []
+        self.paper_account = paper_account
+        self.assignments = assignments or []
+
+    def table(self, table_name):
+        return _FakeQuery(self, table_name)
+
+
+class TestSubscriberPaperPnlAliases:
+    def test_get_my_pnl_exposes_account_rollup_separate_from_daily_pnl(self):
+        sb = _FakeSupabase(
+            today_fills=[],
+            week_fills=[{"pnl_usd": 301.60}],
+            paper_account={
+                "starting_balance_usd": 10000,
+                "current_balance_usd": 10301.60,
+                "realized_pnl_usd": 301.60,
+            },
+        )
+
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_pnl(SUB_ID)
+
+        assert out["pnl_today_usd"] == 0
+        assert out["pnl_7d_usd"] == 301.60
+        assert out["paper_pnl_usd"] == 301.60
+        assert out["paper_pnl"] == 301.60
+        assert out["paper_pnl_rollup_usd"] == 301.60
+
+    def test_get_my_pnl_falls_back_to_paper_balance_delta(self):
+        sb = _FakeSupabase(
+            paper_account={
+                "starting_balance_usd": "10000.00",
+                "current_balance_usd": "10301.605",
+                "realized_pnl_usd": None,
+            },
+        )
+
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_pnl(SUB_ID)
+
+        assert out["paper_pnl_usd"] == 301.61
+        assert out["paper_pnl_rollup_usd"] == 301.61
+
+    def test_get_my_portfolio_exposes_account_rollup_aliases(self):
+        sb = _FakeSupabase(
+            paper_account={
+                "starting_balance_usd": 10000,
+                "current_balance_usd": 10301.60,
+                "realized_pnl_usd": 301.60,
+            },
+        )
+
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_portfolio(SUB_ID)
+
+        assert out["pnl_today_usd"] == 0
+        assert out["paper_pnl_usd"] == 301.60
+        assert out["paper_pnl_rollup_usd"] == 301.60
 
 
 class TestPlacePaperOrderValidation:
