@@ -188,7 +188,7 @@ class TestSubscriberPnlAliases:
         sb = _FakeSubscriberSupabase(
             paper_account={
                 "starting_balance_usd": 10000,
-                "current_balance_usd": 10250.755,
+                "current_balance_usd": 10250.76,
                 "realized_pnl_usd": None,
             },
         )
