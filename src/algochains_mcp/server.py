@@ -56,7 +56,7 @@ import os
 import sys
 from pathlib import Path as _PathGlobal
 
-from .e2e_sentinel import summarize_e2e_sentinel_state
+from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
 
 
 def _default_control_tower() -> str:
@@ -5746,6 +5746,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 import json as _json_e2e
                 _e2e_raw = _json_e2e.loads(_e2e_state_path.read_text())
                 e2e_sentinel = summarize_e2e_sentinel_state(_e2e_raw)
+                e2e_sentinel = apply_effective_sentinel_resolution(e2e_sentinel, _e2e_raw)
             except Exception as _e2e_err:
                 e2e_sentinel = {"status": "error", "detail": f"e2e_execution_sentinel.json parse failure: {_e2e_err}"}
 

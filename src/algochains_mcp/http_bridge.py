@@ -56,12 +56,12 @@ from .developer_tools import (
     DEVELOPER_TOOLS,
     check_developer_tool_access,
 )
+from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
 from .tool_policy import (
     evaluate_bridge_tool,
     visible_tools_for_bridge,
 )
 from .otel_tracing import redacted_argument_hash, trace_span
-from .e2e_sentinel import summarize_e2e_sentinel_state
 from .paths import default_control_tower
 
 log = logging.getLogger(__name__)
@@ -1051,6 +1051,7 @@ def create_fastapi_app():
 
         # E2E sentinel summary
         sentinel_summary = summarize_e2e_sentinel_state(sentinel)
+        sentinel_summary = apply_effective_sentinel_resolution(sentinel_summary, sentinel)
 
         # Signal health summary per bot
         signal_summaries: dict = {}
