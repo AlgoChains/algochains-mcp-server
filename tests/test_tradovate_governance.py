@@ -27,7 +27,7 @@ def _make_connector(access_token: str = ""):
     cfg = TradovateConfig(
         access_token=access_token,
         username="testuser",
-        password="testpass",  # noqa: secret-scan-skip — test fixture only
+        password="testpass",  # secret-scan-skip — test fixture only
         env="demo",
     )
     return TradovateConnector(cfg)
@@ -120,7 +120,7 @@ def test_connect_prefers_preexisting_token(monkeypatch):
         f"connect() made unexpected OAuth HTTP calls when TRADOVATE_ACCESS_TOKEN "
         f"was present: {http_calls}"
     )
-    _expected = "guardian-token-abc123"  # noqa: secret-scan-skip — test fixture value
+    _expected = "guardian-token-abc123"  # secret-scan-skip — test fixture value
     assert conn._access_token == _expected, (
         f"Expected _access_token={_expected!r}, got: {conn._access_token!r}"
     )
