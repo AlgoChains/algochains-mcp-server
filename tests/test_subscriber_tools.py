@@ -17,6 +17,8 @@ from algochains_mcp.subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    get_my_pnl,
+    get_my_portfolio,
     place_paper_order,
 )
 
@@ -76,6 +78,121 @@ class TestCallSubscriberTool:
     def test_bad_arguments_surface_cleanly(self):
         out = call_subscriber_tool("get_my_pnl", SUB_ID, {"bogus_kwarg": 1})
         assert out["error"] == "bad_arguments"
+
+
+class _FakeResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    def __init__(self, client, table_name):
+        self.client = client
+        self.table_name = table_name
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def gte(self, *_args, **_kwargs):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def maybe_single(self):
+        return self
+
+    def execute(self):
+        data = self.client.next_result(self.table_name)
+        return _FakeResult(data)
+
+
+class _FakeSupabase:
+    def __init__(self, results_by_table):
+        self.results_by_table = {
+            table: list(results)
+            for table, results in results_by_table.items()
+        }
+
+    def table(self, table_name):
+        return _FakeQuery(self, table_name)
+
+    def next_result(self, table_name):
+        rows = self.results_by_table.get(table_name, [])
+        if not rows:
+            return []
+        return rows.pop(0)
+
+
+class TestPaperPnlAliases:
+    def test_get_my_pnl_exposes_account_level_aliases_when_daily_fills_are_zero(self):
+        sb = _FakeSupabase(
+            {
+                "subscriber_fills": [[], []],
+                "subscriber_paper_accounts": [
+                    {
+                        "starting_balance_usd": 2500,
+                        "current_balance_usd": 2801.6,
+                        "realized_pnl_usd": 301.6,
+                    }
+                ],
+            }
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_pnl(SUB_ID)
+
+        assert out["pnl_today_usd"] == 0
+        assert out["paper_pnl_usd"] == 301.6
+        assert out["paper_pnl"] == 301.6
+        assert out["paper_pnl_rollup_usd"] == 301.6
+
+    def test_get_my_portfolio_carries_account_level_aliases(self):
+        sb = _FakeSupabase(
+            {
+                "subscriber_fills": [[], []],
+                "subscriber_paper_accounts": [
+                    {
+                        "starting_balance_usd": 2500,
+                        "current_balance_usd": 2801.6,
+                        "realized_pnl_usd": 301.6,
+                    },
+                    {
+                        "starting_balance_usd": 2500,
+                        "current_balance_usd": 2801.6,
+                        "realized_pnl_usd": 301.6,
+                    },
+                ],
+                "subscriber_bot_assignments": [[]],
+            }
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_portfolio(SUB_ID)
+
+        assert out["pnl_today_usd"] == 0
+        assert out["paper_pnl_usd"] == 301.6
+        assert out["paper_pnl"] == 301.6
+        assert out["paper_pnl_rollup_usd"] == 301.6
+
+    def test_paper_pnl_falls_back_to_balance_delta_when_realized_missing(self):
+        sb = _FakeSupabase(
+            {
+                "subscriber_fills": [[], []],
+                "subscriber_paper_accounts": [
+                    {
+                        "starting_balance_usd": "2500.00",
+                        "current_balance_usd": "2801.605",
+                        "realized_pnl_usd": None,
+                    }
+                ],
+            }
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_pnl(SUB_ID)
+
+        assert out["paper_pnl_usd"] == 301.61
 
 
 def _mock_sb_with_account(account_row):
