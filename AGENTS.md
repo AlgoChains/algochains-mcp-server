@@ -36,7 +36,7 @@ Tool exposure is controlled by `ALGOCHAINS_TOOL_MODE` (default: `smart`).
 
 | Mode | Tools visible | When to use |
 |------|--------------|-------------|
-| **smart** (default) | ~60 curated Tier-1 tools | Everyday use; Cursor/Windsurf tool-count limits |
+| **smart** (default) | 148 curated tools | Everyday use; Cursor/Windsurf tool-count limits |
 | **full** | ~480 tools | When smart mode can't reach a needed tool |
 
 **Always start in smart mode.** Use meta-tools to discover the rest:
@@ -83,7 +83,7 @@ Use this table to route a user request to the correct tool family.
 | **Live bots** | `get_bot_health`, `get_bot_heartbeat_openclaw`, `get_live_bot_metrics`, `get_all_bot_metrics`, `get_bot_dashboard`, `get_bot_position_state`, `get_bot_bracket_status` | AlgoChains live-bot telemetry |
 | **Bot ops (safety)** | `check_unprotected_positions`, `get_bracket_guardian_status`, `get_ai_pipeline_health`, `get_circuit_breaker_status` | Always Tier 1; safety-critical reads |
 | **Marketplace** | `get_marketplace_listings`, `submit_to_marketplace`, `run_marketplace_autopilot`, `run_mcpt_pipeline` | Strategy publishing and decay tracking |
-| **Subscriber / paper** | `get_signal_stream`, `get_my_pnl`, `get_my_fills`, `place_paper_order`, `check_propagation_health`, `test_signal_propagation` | Requires subscriber key or owner platform |
+| **Subscriber / paper** | `get_my_portfolio`, `get_signal_stream`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `get_marketplace_listings`, `place_paper_order`, `cancel_paper_order`, `get_my_paper_positions` | Requires `sub_live_…` key from algochains.ai — free hosted virtual paper account; no broker credentials needed. All Tier 0 (read) except `place_paper_order` / `cancel_paper_order` (Tier 1 write-local). `check_propagation_health` and `test_signal_propagation` are owner-side pipeline tools, not subscriber tools. |
 | **Prediction markets** | `get_prediction_markets`, `search_prediction_markets`, `get_polymarket_high_volume`, `get_kalshi_settlements`, `get_prediction_market_bot_metrics` | Kalshi + Polymarket |
 | **Graphiti (temporal KG)** | `graphiti_search`, `graphiti_health`, `graphiti_add_episode` | Advisory `agent_memory` only; never `broker_truth` |
 | **Sentiment / Onyx** | `analyze_sentiment`, `onyx_ask`, `onyx_search`, `run_onyx_ingest` | FinBERT + RAG over codebase/docs |
@@ -112,7 +112,8 @@ hard-coded in this repository.**
 | Tradovate live | Tradovate OAuth via `TRADOVATE_*` env vars | Futures order execution |
 | OANDA | `OANDA_*` env vars | Forex |
 | Interactive Brokers | `IBKR_*` env vars | Multi-asset live |
-| Subscriber key | `X-Api-Key: sub_live_…` header (hosted platform) | Scoped to one subscriber's paper portfolio |
+| Subscriber key (production) | `X-Api-Key: sub_live_…` header — set `ALGOCHAINS_SUBSCRIBER_KEY` in env | 9 subscriber tools: signal stream, fills, P&L, paper orders, portfolio |
+| Subscriber key (sandbox) | `X-Api-Key: sub_test_…` header — set `ALGOCHAINS_SUBSCRIBER_KEY` in env | Same scopes as `sub_live_`; hits dry-run portfolio only |
 | Owner token | `OWNER_API_TOKEN` | Tier 2–3 tools (order exec, bot restart, emergency stop) |
 | Bridge key | `ALGOCHAINS_BRIDGE_API_KEY` | Read-only team access to a bridge you operate |
 
@@ -183,12 +184,41 @@ get_tool_details("get_dark_pool_volume_v21")    # full schema + tier
 execute_dynamic_tool("get_dark_pool_volume_v21", {"symbol": "SPY"})  # call it
 ```
 
-### "Subscribe a user to my bot's paper account"
+### "What's my paper P&L / signal stream?" (subscriber persona)
+
 ```python
-# Platform-side — requires owner token and subscriber to exist on algochains.ai
-check_propagation_health()          # verify copy_trade pipeline is live
-test_signal_propagation()           # dry-run end-to-end signal fan-out
-get_signal_stream()                 # read latest signals (subscriber-scoped)
+# Subscriber key resolved from ALGOCHAINS_SUBSCRIBER_KEY env var (sub_live_… or sub_test_…).
+# All tools below are Tier 0–1; no owner_token required.
+
+get_my_portfolio()          # one-call snapshot: balance, assignments, open signals, 7d P&L
+get_signal_stream()         # latest unread copy_trade_signals for your subscribed bots
+get_my_pnl()                # today + 7-day P&L from subscriber_fills
+get_my_fills(limit=50)      # paginated fill history; optional bot= filter
+get_my_assignments()        # which bots you follow and their risk caps
+get_marketplace_listings()  # browse approved bots available to subscribe to
+```
+
+Subscriber onramp workflow:
+1. User signs up at algochains.ai → receives `sub_live_…` key
+2. Set `ALGOCHAINS_SUBSCRIBER_KEY=sub_live_…` in `.env` or shell
+3. Call `get_my_assignments()` to confirm which bots are in their subscription
+4. Call `get_signal_stream()` to see recent signals from those bots
+5. Call `get_my_pnl()` for today's paper P&L
+6. Call `get_my_portfolio()` for the full one-call snapshot
+
+Self-directed paper trading (subscriber — Tier 1, confirm with user first):
+```python
+place_paper_order(symbol="MNQ", side="BUY", qty=1, order_type="market")
+cancel_paper_order(order_id="<uuid>")
+get_my_paper_positions()    # pending + recently filled self-directed orders
+```
+
+### "Verify the copy-trade pipeline is healthy" (owner/operator — NOT subscriber)
+
+```python
+# Requires OWNER_API_TOKEN. These are pipeline-health tools, not subscriber tools.
+check_propagation_health()   # verify copy_trade fanout is live
+test_signal_propagation()    # dry-run end-to-end signal fan-out
 ```
 
 ---
@@ -213,6 +243,11 @@ get_signal_stream()                 # read latest signals (subscriber-scoped)
 
 6. **Real data only.** Do not fabricate fill prices, paper P&L, or regime signals.
    If a real source is unavailable, fail closed and surface the missing dependency.
+
+7. **Subscriber tools are scoped to the resolved `subscriber_id` only.** The server
+   resolves identity from the API key server-side — never pass or trust a
+   caller-supplied `subscriber_id`. If `supabase_unavailable` is returned, fail closed
+   and surface the error rather than estimating P&L or returning stale data.
 
 ---
 

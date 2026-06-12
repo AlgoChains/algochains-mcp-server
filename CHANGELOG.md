@@ -53,8 +53,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `order_flow/kalshi_slack_notifier.py` — Pushes Kalshi signals + fills to #openclaw Slack channel
 
 #### Subscriber Auth + Tools
-- `src/algochains_mcp/subscriber_auth.py` (142 lines) — JWT-based subscriber token issuance and validation; rate-limit guards per tier (free / paper / live)
-- `src/algochains_mcp/subscriber_tools.py` (381 lines) — Subscriber-facing read-only tools: `get_subscriber_portfolio`, `get_subscriber_bot_metrics`, `get_marketplace_listings`, `subscribe_to_bot`, `unsubscribe_from_bot`
+- `src/algochains_mcp/subscriber_auth.py` — Subscriber key resolution (`sub_live_…` / `sub_test_…` prefixes) via Supabase SECURITY DEFINER RPC; 60-second cache; key plaintext never leaves process
+- `src/algochains_mcp/subscriber_tools.py` — 9 subscriber-scoped tools: `get_my_portfolio`, `get_signal_stream`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `get_marketplace_listings`, `place_paper_order`, `cancel_paper_order`, `get_my_paper_positions`; all scoped to the resolved `subscriber_id` — no cross-subscriber data access possible
 
 #### Unified Path Resolution
 - `src/algochains_mcp/paths.py` (120 lines) — `default_control_tower()` resolver: honours `ALGOCHAINS_CONTROL_TOWER` env first, then `ALGOCHAINS_CONTROL_TOWER_PATH`, then Mac/WSL/desktop legacy paths. Eliminates layout-specific `parents[N]` chains that broke on desktop tower WSL2.
