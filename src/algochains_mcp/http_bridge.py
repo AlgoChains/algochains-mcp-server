@@ -26,7 +26,6 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path as _PathGlobal
-from typing import Any
 
 # FastAPI imports at module level so inner functions can resolve Request type
 try:
@@ -54,9 +53,9 @@ from .developer_auth import (
 )
 from .developer_tools import (
     DEVELOPER_TOOLS,
-    DEVELOPER_TOOL_SCOPES,
     check_developer_tool_access,
 )
+from .paths import default_control_tower
 from .tool_policy import (
     evaluate_bridge_tool,
     visible_tools_for_bridge,
@@ -329,7 +328,6 @@ def create_fastapi_app():
         log.warning("Request-ID middleware unavailable: %s", _mw_err)
 
     BRIDGE_API_KEY = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
-    OWNER_EMAIL = os.getenv("OWNER_EMAIL", "owner@algochains.ai")
     # K-8 fix: dev-mode escape hatch — set ALGOCHAINS_BRIDGE_DEV_MODE=true to
     # allow unauthenticated public-tool access on localhost during development.
     # In production (default) an empty key means the bridge refuses all requests.
@@ -768,8 +766,7 @@ def create_fastapi_app():
 
     _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
     if not _CT:
-        # resolve relative to this file's location
-        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+        _CT = str(default_control_tower())
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
@@ -792,7 +789,7 @@ def create_fastapi_app():
                 return []
             with p.open() as fh:
                 all_lines = fh.readlines()
-            return [l.rstrip() for l in all_lines[-lines:] if l.strip()]
+            return [line.rstrip() for line in all_lines[-lines:] if line.strip()]
         except Exception:
             return []
 
@@ -1018,7 +1015,6 @@ def create_fastapi_app():
                         "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2")
 
         def _classify_line(line: str) -> str | None:
-            l = line.lower()
             if any(k in line for k in ("FILL", "filled")):
                 return "fill"
             if any(k in line for k in ("SIGNAL", "signal_fired", "confidence")):
