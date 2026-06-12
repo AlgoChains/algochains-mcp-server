@@ -636,6 +636,16 @@ def create_fastapi_app():
         key_valid, _is_owner, subscriber, _developer, _caller_scope = _resolve_auth(x_api_key, authorization)
         if not key_valid or subscriber is None:
             raise HTTPException(status_code=401, detail="Subscriber API key required")
+        required_scope = SUBSCRIBER_TOOL_SCOPES.get("get_signal_stream")
+        if required_scope and required_scope not in subscriber.scopes:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "Missing scope on this API key",
+                    "tool": "get_signal_stream",
+                    "required_scope": required_scope,
+                },
+            )
         bot_filter = [b.strip().upper() for b in bots.split(",")] if bots else None
         interval = max(0.5, min(float(poll_interval), 10.0))
 

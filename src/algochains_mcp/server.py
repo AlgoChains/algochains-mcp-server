@@ -5292,16 +5292,27 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 })
         # ── End V22 Guardrails ────────────────────────────────────
 
-        order = await conn.place_order(
-            symbol=arguments["symbol"],
-            side=OrderSide(arguments["side"]),
-            qty=arguments["qty"],
-            order_type=OrderType(arguments.get("order_type", "market")),
-            limit_price=arguments.get("limit_price"),
-            stop_price=arguments.get("stop_price"),
-            trail_pct=arguments.get("trail_pct"),
-            time_in_force=arguments.get("time_in_force", "day"),
-        )
+        try:
+            order = await conn.place_order(
+                symbol=arguments["symbol"],
+                side=OrderSide(arguments["side"]),
+                qty=arguments["qty"],
+                order_type=OrderType(arguments.get("order_type", "market")),
+                limit_price=arguments.get("limit_price"),
+                stop_price=arguments.get("stop_price"),
+                trail_pct=arguments.get("trail_pct"),
+                time_in_force=arguments.get("time_in_force", "day"),
+            )
+        except Exception as _order_err:
+            if _GUARDRAILS_AVAILABLE:
+                try:
+                    get_guardrails().record_order_failure(
+                        arguments.get("broker", "tradovate"),
+                        str(_order_err),
+                    )
+                except Exception:
+                    pass
+            raise
         # V22: Record successful order for circuit breaker health tracking
         if _GUARDRAILS_AVAILABLE:
             try:

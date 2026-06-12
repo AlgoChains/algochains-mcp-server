@@ -21,6 +21,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from algochains_mcp.http_bridge import create_fastapi_app, PUBLIC_TOOLS, OWNER_TOOLS, _SERVER_VERSION
+from algochains_mcp.subscriber_auth import ResolvedSubscriber
 from algochains_mcp.subscriber_tools import SUBSCRIBER_TOOLS
 
 FAKE_OWNER_KEY = "test-owner-key-12345"
@@ -274,6 +275,22 @@ def test_subscriber_blocked_from_place_order():
             f"Subscriber place_order must return error body: {result}"
     else:
         assert result["status_code"] in (401, 403), f"Unexpected status: {result}"
+
+
+def test_subscriber_signal_stream_requires_signal_scope():
+    """SSE stream must enforce the same subscriber scope gate as /api/mcp."""
+    client = _make_client()
+    fake_sub = ResolvedSubscriber(subscriber_id="s1", scopes=("paper_trade",))
+    with (
+        patch("algochains_mcp.http_bridge.is_subscriber_key", return_value=True),
+        patch("algochains_mcp.http_bridge.resolve_subscriber_key", return_value=fake_sub),
+    ):
+        resp = client.get("/api/signals/stream", headers={"X-Api-Key": FAKE_SUB_KEY})
+
+    assert resp.status_code == 403
+    body = resp.json()
+    assert body["detail"]["tool"] == "get_signal_stream"
+    assert body["detail"]["required_scope"] == "signal_stream"
 
 
 # ── Unknown key ───────────────────────────────────────────────────────────────

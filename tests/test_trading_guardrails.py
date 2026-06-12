@@ -165,6 +165,42 @@ def test_half_open_breaker_allows_test_call_after_restart(
     assert persisted["tradovate"]["half_open_test_allowed"] is False
 
 
+def test_half_open_breaker_allows_only_one_test_call(
+    isolated_guardrails, monkeypatch
+):
+    """HALF_OPEN is a single-probe state, not an unlimited recovery window."""
+    state_path = isolated_guardrails
+    now_epoch = 1_781_000_000.0
+    state_path.write_text(
+        json.dumps(
+            {
+                "tradovate": {
+                    "state": "HALF_OPEN",
+                    "tripped_at": 123.0,
+                    "tripped_at_epoch": now_epoch - 600,
+                    "expires_at_epoch": now_epoch - 300,
+                    "trip_reason": "order_velocity",
+                    "trip_message": "Order velocity breached",
+                    "cooldown_sec": 300,
+                    "half_open_test_allowed": True,
+                    "trip_count_today": 1,
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(tg.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(tg.time, "time", lambda: now_epoch)
+
+    guardrails = tg.TradingGuardrails()
+
+    guardrails._check_cb_state("tradovate")
+    persisted = json.loads(state_path.read_text())
+    assert persisted["tradovate"]["half_open_test_allowed"] is False
+
+    with pytest.raises(tg.GuardrailTripped, match="waiting for test call result"):
+        guardrails._check_cb_state("tradovate")
+
+
 def test_legacy_monotonic_ai_loop_state_is_dropped_on_restart(
     isolated_guardrails, monkeypatch
 ):
