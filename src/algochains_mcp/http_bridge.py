@@ -54,9 +54,9 @@ from .developer_auth import (
 )
 from .developer_tools import (
     DEVELOPER_TOOLS,
-    DEVELOPER_TOOL_SCOPES,
     check_developer_tool_access,
 )
+from .paths import default_control_tower
 from .tool_policy import (
     evaluate_bridge_tool,
     visible_tools_for_bridge,
@@ -357,7 +357,6 @@ def create_fastapi_app():
         log.warning("Request-ID middleware unavailable: %s", _mw_err)
 
     BRIDGE_API_KEY = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
-    OWNER_EMAIL = os.getenv("OWNER_EMAIL", "owner@algochains.ai")
     # K-8 fix: dev-mode escape hatch — set ALGOCHAINS_BRIDGE_DEV_MODE=true to
     # allow unauthenticated public-tool access on localhost during development.
     # In production (default) an empty key means the bridge refuses all requests.
@@ -737,7 +736,7 @@ def create_fastapi_app():
         """Get full bot card data. Public card data is unauthenticated; attachments require owner."""
         if bot_id not in {"mnq", "cl", "mes", "nq"}:
             raise HTTPException(status_code=400, detail="bot_id must be mnq | cl | mes | nq")
-        _key_valid, is_owner, _subscriber, caller_scope = _resolve_auth(
+        _key_valid, is_owner, _subscriber, _developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             user_email,
@@ -802,8 +801,7 @@ def create_fastapi_app():
 
     _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
     if not _CT:
-        # resolve relative to this file's location
-        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+        _CT = str(default_control_tower())
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
@@ -826,7 +824,7 @@ def create_fastapi_app():
                 return []
             with p.open() as fh:
                 all_lines = fh.readlines()
-            return [l.rstrip() for l in all_lines[-lines:] if l.strip()]
+            return [line.rstrip() for line in all_lines[-lines:] if line.strip()]
         except Exception:
             return []
 
@@ -936,7 +934,10 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY (full view) or subscriber key (sanitised view).
         Latency: <150ms — reads from state files on disk.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, _developer, _caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+        )
         if not key_valid:
             raise HTTPException(status_code=401, detail="Valid API key required (owner or subscriber)")
         snapshot = await asyncio.to_thread(_build_status_snapshot, is_owner)
@@ -954,7 +955,10 @@ def create_fastapi_app():
 
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, _developer, _caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+        )
         if not key_valid:
             raise HTTPException(status_code=401, detail="Valid API key required")
         limit = max(1, min(int(limit), 100))
@@ -996,7 +1000,10 @@ def create_fastapi_app():
 
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, _developer, _caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+        )
         if not key_valid:
             raise HTTPException(status_code=401, detail="Valid API key required")
         hours = max(1, min(int(hours), 168))
@@ -1037,7 +1044,10 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY or subscriber key.
         Reconnect: standard SSE retry — client reconnects automatically on disconnect.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
+        key_valid, is_owner, subscriber, _developer, _caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+        )
         if not key_valid:
             raise HTTPException(status_code=401, detail="Valid API key required")
         interval = max(1.0, min(float(poll_interval), 30.0))
@@ -1052,16 +1062,16 @@ def create_fastapi_app():
                         "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2")
 
         def _classify_line(line: str) -> str | None:
-            l = line.lower()
-            if any(k in line for k in ("FILL", "filled")):
+            line_lower = line.lower()
+            if any(k in line_lower for k in ("fill", "filled")):
                 return "fill"
-            if any(k in line for k in ("SIGNAL", "signal_fired", "confidence")):
+            if any(k in line_lower for k in ("signal", "signal_fired", "confidence")):
                 return "signal"
-            if any(k in line for k in ("EXIT", "exit_reason", "closed")):
+            if any(k in line_lower for k in ("exit", "exit_reason", "closed")):
                 return "exit"
-            if any(k in line for k in ("ERROR", "Exception", "Traceback", "BRACKET FAILED")):
+            if any(k in line_lower for k in ("error", "exception", "traceback", "bracket failed")):
                 return "error"
-            if any(k in line for k in ("BRACKET", "stop_order", "target_order")):
+            if any(k in line_lower for k in ("bracket", "stop_order", "target_order")):
                 return "bracket"
             return None
 
