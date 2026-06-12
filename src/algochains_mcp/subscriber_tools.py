@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -90,15 +91,21 @@ def _paper_pnl_aliases(paper_account: dict[str, Any] | None) -> dict[str, float]
     if not paper_account:
         return {}
 
-    raw_pnl = paper_account.get("realized_pnl_usd")
-    if raw_pnl is None:
-        current_balance = paper_account.get("current_balance_usd")
-        starting_balance = paper_account.get("starting_balance_usd")
-        if current_balance is None or starting_balance is None:
-            return {}
-        raw_pnl = float(current_balance) - float(starting_balance)
+    try:
+        raw_pnl = paper_account.get("realized_pnl_usd")
+        if raw_pnl is None:
+            current_balance = paper_account.get("current_balance_usd")
+            starting_balance = paper_account.get("starting_balance_usd")
+            if current_balance is None or starting_balance is None:
+                return {}
+            raw_pnl = Decimal(str(current_balance)) - Decimal(str(starting_balance))
 
-    paper_pnl = round(float(raw_pnl or 0), 2)
+        paper_pnl = float(
+            Decimal(str(raw_pnl or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        )
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        log.warning("paper account pnl parse failed: %s", exc)
+        return {}
     return {
         "paper_pnl_usd": paper_pnl,
         "paper_pnl": paper_pnl,
