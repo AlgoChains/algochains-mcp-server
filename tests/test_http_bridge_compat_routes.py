@@ -123,3 +123,49 @@ def test_subscribers_route_aggregates_copy_trade_state():
     assert body["paper_account_count"] == 1
     assert body["heartbeat_count"] == 1
     assert {row["subscriber_id"] for row in body["subscribers"]} == {"sub-1", "sub-2"}
+
+
+def test_subscribers_route_falls_back_to_platform_subscriptions():
+    client = _client()
+    sb = _Supabase(
+        {
+            "algochains_subscriptions": [
+                {
+                    "id": "row-1",
+                    "user_id": "user-1",
+                    "bot_id": "MNQ",
+                    "status": "active",
+                    "broker_connected": True,
+                },
+                {
+                    "id": "row-2",
+                    "user_id": "user-2",
+                    "bot_id": "MES",
+                    "status": "trial",
+                    "broker_connected": False,
+                },
+                {
+                    "id": "row-3",
+                    "user_id": "user-2",
+                    "bot_id": "CL",
+                    "status": "cancelled",
+                    "broker_connected": False,
+                },
+            ],
+        }
+    )
+
+    with patch("algochains_mcp.marketplace.supabase_tools._get_sb_client", return_value=sb):
+        resp = client.get("/api/subscribers", headers={"X-Api-Key": OWNER_KEY})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 2
+    assert body["active"] == 2
+    assert body["platform_subscription_count"] == 3
+    assert body["active_platform_subscriptions"] == 2
+    assert {row["subscriber_id"] for row in body["subscribers"]} == {"user-1", "user-2"}
+    by_subscriber = {row["subscriber_id"]: row for row in body["subscribers"]}
+    assert by_subscriber["user-1"]["platform_subscription_count"] == 1
+    assert by_subscriber["user-2"]["platform_subscription_count"] == 2
+    assert by_subscriber["user-2"]["active_platform_subscription_count"] == 1

@@ -773,6 +773,10 @@ def create_fastapi_app():
             "marketplace_botsubscription",
             "id,subscriber_id,subscriber_email,requester_slack_id,status,created_at,listing_id_id",
         )
+        platform_subscriptions, platform_subscriptions_error = _select_rows(
+            "algochains_subscriptions",
+            "id,user_id,bot_id,status,broker,broker_connected,started_at,expires_at,created_at",
+        )
 
         subscribers: dict[str, dict[str, Any]] = {}
 
@@ -780,6 +784,12 @@ def create_fastapi_app():
             sid = row.get("subscriber_id")
             if sid:
                 return str(sid)
+            user_id = row.get("user_id")
+            if user_id:
+                return str(user_id)
+            platform_user_id = row.get("platform_user_id")
+            if platform_user_id:
+                return str(platform_user_id)
             email = row.get("subscriber_email")
             if email:
                 return str(email)
@@ -795,12 +805,16 @@ def create_fastapi_app():
             return subscribers.setdefault(
                 key,
                 {
-                    "subscriber_id": row.get("subscriber_id"),
+                    "subscriber_id": row.get("subscriber_id") or row.get("user_id") or row.get("platform_user_id"),
+                    "platform_user_id": row.get("platform_user_id") or row.get("user_id"),
                     "subscriber_email": row.get("subscriber_email"),
                     "requester_slack_id": row.get("requester_slack_id"),
                     "assignments": [],
+                    "platform_subscriptions": [],
                     "assignment_count": 0,
                     "active_assignment_count": 0,
+                    "platform_subscription_count": 0,
+                    "active_platform_subscription_count": 0,
                     "marketplace_subscription_count": 0,
                     "active_marketplace_subscription_count": 0,
                 },
@@ -835,6 +849,15 @@ def create_fastapi_app():
             if row.get("status") == "active":
                 sub["active_marketplace_subscription_count"] += 1
 
+        for row in platform_subscriptions:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            sub["platform_subscriptions"].append(row)
+            sub["platform_subscription_count"] += 1
+            if row.get("status") in {"active", "trial"}:
+                sub["active_platform_subscription_count"] += 1
+
         return {
             "subscribers": list(subscribers.values()),
             "total": len(subscribers),
@@ -843,6 +866,7 @@ def create_fastapi_app():
                 for row in subscribers.values()
                 if row.get("active_assignment_count", 0) > 0
                 or row.get("active_marketplace_subscription_count", 0) > 0
+                or row.get("active_platform_subscription_count", 0) > 0
             ),
             "assignments": assignments,
             "assignment_count": len(assignments),
@@ -850,6 +874,11 @@ def create_fastapi_app():
             "subscriptions": subscriptions,
             "subscription_count": len(subscriptions),
             "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
+            "platform_subscriptions": platform_subscriptions,
+            "platform_subscription_count": len(platform_subscriptions),
+            "active_platform_subscriptions": sum(
+                1 for row in platform_subscriptions if row.get("status") in {"active", "trial"}
+            ),
             "paper_account_count": len(paper_accounts),
             "heartbeat_count": len(heartbeats),
             "query_errors": {
@@ -859,6 +888,7 @@ def create_fastapi_app():
                     "paper_accounts": paper_error,
                     "heartbeats": heartbeat_error,
                     "subscriptions": subscriptions_error,
+                    "platform_subscriptions": platform_subscriptions_error,
                 }.items()
                 if value
             },
