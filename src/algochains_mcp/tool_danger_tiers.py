@@ -127,10 +127,6 @@ _TOOL_TIERS: dict[str, int] = {
     "get_daily_loss_proximity": TIER_READ_ONLY,
     "event_risk_check": TIER_READ_ONLY,
     # Strategy research (read only)
-    # NOTE: validate_strategy appears again at TIER_WRITE_LOCAL below — that
-    # entry overrides this one. The final effective tier is TIER_WRITE_LOCAL
-    # (correct: validation writes sandbox state). Left here for documentation.
-    "validate_strategy": TIER_READ_ONLY,
     "run_backtest": TIER_READ_ONLY,
     "walk_forward_test": TIER_READ_ONLY,
     "optimize_strategy": TIER_READ_ONLY,
@@ -487,5 +483,5 @@ TOOL_TIERS = _TOOL_TIERS
 # AST-parses this source (the only place the dup survives) and asserts:
 #   1. every duplicate key is whitelisted below, and
 #   2. no duplicate lowers a tool's effective tier (no silent downgrade).
-# Keep this set in sync with that test. validate_strategy: READ_ONLY -> WRITE_LOCAL.
-_EXPECTED_INTENTIONAL_DUPES: set[str] = {"validate_strategy"}
+# Keep this set in sync with that test.
+_EXPECTED_INTENTIONAL_DUPES: set[str] = set()
