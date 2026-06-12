@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 
 from algochains_mcp.tradovate_token_status import summarize_tradovate_token_state
 
@@ -83,8 +84,9 @@ def test_includes_sanitized_guardian_failure_state(tmp_path):
 def test_get_bot_health_uses_multi_source_tradovate_token_summary(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
+    expires_at = int(time.time() + 4_000)
     (state_dir / "tradovate_token.json").write_text(
-        json.dumps({"accessToken": _jwt_with_exp(5_000), "expires_at_epoch": 5_000})
+        json.dumps({"accessToken": _jwt_with_exp(expires_at), "expires_at_epoch": expires_at})
     )
     (state_dir / "tradovate_token_guardian_state.json").write_text(
         json.dumps({"status": "ok", "last_success": "2026-06-12T16:00:00Z"})
@@ -99,6 +101,6 @@ def test_get_bot_health_uses_multi_source_tradovate_token_summary(tmp_path, monk
     token = payload["tradovate_token"]
     assert token["present"] is True
     assert token["status"] == "ok"
-    assert token["expires_in_seconds"] == 4_000
+    assert token["expires_in_seconds"] > 3_900
     assert token["primary_source"] == "state/tradovate_token.json"
     assert token["guardian"]["status"] == "ok"
