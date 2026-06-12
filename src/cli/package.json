@@ -15,7 +15,7 @@
     "dev": "bun run src/index.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^1.19.6",
+    "@hono/node-server": "^2.0.4",
     "chalk": "^5.0.0",
     "chokidar": "^3.6.0",
     "commander": "^12.0.0",
@@ -28,6 +28,7 @@
     "node-cron": "^3.0.3",
     "ora": "^8.0.0",
     "react": "^18.0.0",
+    "react-devtools-core": "^4.28.5",
     "toml": "^3.0.0"
   },
   "devDependencies": {

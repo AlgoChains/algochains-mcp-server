@@ -778,6 +778,18 @@ def create_fastapi_app():
     # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
     # Subscribers receive a sanitised view — no raw P&L, no account numbers.
 
+    def _default_control_tower_path() -> str:
+        here = _PathGlobal(__file__).resolve()
+        for parent in here.parents:
+            candidate = parent / "algochains-control-tower"
+            if candidate.exists():
+                return str(candidate)
+        # The /v1/agent endpoints tolerate missing state files. Use a stable
+        # repo-local fallback instead of assuming a fixed parent depth.
+        if len(here.parents) >= 3:
+            return str(here.parents[2] / "algochains-control-tower")
+        return str(here.parent / "algochains-control-tower")
+
     _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
     if not _CT:
         _CT = _default_control_tower_path()

@@ -15,7 +15,28 @@ export interface McpClient {
   isHealthy(): Promise<boolean>;
 }
 
+function normalizeBridgeUrls(bridgeUrl: string): { rootUrl: string; toolUrl: string } {
+  const normalized = bridgeUrl.replace(/\/+$/, "");
+  if (normalized.endsWith("/api/mcp")) {
+    return {
+      rootUrl: normalized.slice(0, -"/api/mcp".length),
+      toolUrl: normalized,
+    };
+  }
+  if (normalized.endsWith("/tool")) {
+    return {
+      rootUrl: normalized.slice(0, -"/tool".length),
+      toolUrl: normalized,
+    };
+  }
+  return {
+    rootUrl: normalized,
+    toolUrl: `${normalized}/api/mcp`,
+  };
+}
+
 export function createMcpClient(bridgeUrl: string, timeoutMs = 30_000): McpClient {
+  const urls = normalizeBridgeUrls(bridgeUrl);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "User-Agent": "algochains-cli/22.5.0",
@@ -45,7 +66,7 @@ export function createMcpClient(bridgeUrl: string, timeoutMs = 30_000): McpClien
 
   return {
     async callTool(name: string, args: Record<string, unknown>): Promise<McpToolResult> {
-      const res = await fetchWithTimeout(`${bridgeUrl}/tool`, {
+      const res = await fetchWithTimeout(urls.toolUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({ tool: name, arguments: args }),
@@ -58,7 +79,7 @@ export function createMcpClient(bridgeUrl: string, timeoutMs = 30_000): McpClien
     },
 
     async listTools(): Promise<Array<{ name: string; description: string }>> {
-      const res = await fetchWithTimeout(`${bridgeUrl}/tools`, { headers });
+      const res = await fetchWithTimeout(`${urls.rootUrl}/tools`, { headers });
       if (!res.ok) return [];
       const data = await res.json() as { tools?: Array<{ name: string; description: string }> };
       return data.tools ?? [];
@@ -66,7 +87,7 @@ export function createMcpClient(bridgeUrl: string, timeoutMs = 30_000): McpClien
 
     async isHealthy(): Promise<boolean> {
       try {
-        const res = await fetchWithTimeout(`${bridgeUrl}/health`, { headers });
+        const res = await fetchWithTimeout(`${urls.rootUrl}/health`, { headers });
         return res.ok;
       } catch { return false; }
     },
