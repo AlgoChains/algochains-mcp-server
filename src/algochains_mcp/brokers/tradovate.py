@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 
@@ -708,7 +708,6 @@ class TradovateConnector(BrokerConnector):
             raise BrokerQuoteError(
                 f"Contract not found: {symbol}", broker="tradovate"
             )
-        contract_id = contract.get("id", 0)
         try:
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
             if isinstance(quotes, dict):
