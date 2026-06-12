@@ -17,6 +17,7 @@ from algochains_mcp.subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    get_my_pnl,
     place_paper_order,
 )
 
@@ -76,6 +77,71 @@ class TestCallSubscriberTool:
     def test_bad_arguments_surface_cleanly(self):
         out = call_subscriber_tool("get_my_pnl", SUB_ID, {"bogus_kwarg": 1})
         assert out["error"] == "bad_arguments"
+
+
+class _FakeResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    def __init__(self, data):
+        self.data = data
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, *_args, **_kwargs):
+        return self
+
+    def gte(self, *_args, **_kwargs):
+        return self
+
+    def maybe_single(self, *_args, **_kwargs):
+        return self
+
+    def execute(self):
+        return _FakeResponse(self.data)
+
+
+class _FakeSupabase:
+    def __init__(self, table_results):
+        self.table_results = {name: list(results) for name, results in table_results.items()}
+
+    def table(self, name):
+        results = self.table_results.get(name)
+        if not results:
+            return _FakeQuery([])
+        return _FakeQuery(results.pop(0))
+
+
+class TestPaperPnlAliases:
+    def test_get_my_pnl_exposes_account_level_paper_pnl_aliases(self):
+        sb = _FakeSupabase(
+            {
+                "subscriber_fills": [
+                    [],
+                    [{"pnl_usd": 301.6}],
+                ],
+                "subscriber_paper_accounts": [
+                    {
+                        "starting_balance_usd": 2500,
+                        "current_balance_usd": 2801.6,
+                        "realized_pnl_usd": 301.6,
+                        "fills_count": 8,
+                    }
+                ],
+            }
+        )
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_pnl(SUB_ID)
+
+        assert out["pnl_today_usd"] == 0
+        assert out["pnl_7d_usd"] == 301.6
+        assert out["paper_pnl_usd"] == 301.6
+        assert out["paper_pnl"] == 301.6
+        assert out["paper_pnl_rollup_usd"] == 301.6
+        assert out["paper_pnl_source"] == "realized_pnl_usd"
 
 
 def _mock_sb_with_account(account_row):
