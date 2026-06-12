@@ -40,6 +40,40 @@ MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
                7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
 
 
+def _jwt_expiry_epoch(access_token: str) -> float | None:
+    """Return the JWT exp claim as an epoch timestamp, if present and parseable."""
+    token = access_token.strip()
+    if token.startswith("Bearer "):
+        token = token.removeprefix("Bearer ").strip()
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+
+    try:
+        import base64
+        import binascii
+        import json
+
+        payload_segment = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload_bytes = base64.urlsafe_b64decode(payload_segment.encode("ascii"))
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except (ValueError, TypeError, UnicodeDecodeError, binascii.Error):
+        return None
+
+    exp = payload.get("exp")
+    if isinstance(exp, bool):
+        return None
+    if isinstance(exp, (int, float)):
+        return float(exp)
+    if isinstance(exp, str):
+        try:
+            return float(exp)
+        except ValueError:
+            return None
+    return None
+
+
 def _front_month_symbol(base: str) -> str:
     """Convert base symbol (MNQ) to front-month Tradovate symbol (MNQZ5)."""
     now = datetime.now(timezone.utc)
@@ -174,8 +208,12 @@ class TradovateConnector(BrokerConnector):
                 )
                 if r.status_code == 200:
                     accounts = r.json()
+                    now = time.time()
+                    expires_at = _jwt_expiry_epoch(pretoken)
                     self._access_token = pretoken
-                    self._token_expires_at = time.time() + 3600
+                    self._token_expires_at = (
+                        expires_at if expires_at and expires_at > now else now + 3600
+                    )
                     if accounts and isinstance(accounts, list):
                         self._account_id = accounts[0].get("id", 0)
                         self._account_spec = accounts[0].get("name", "")
