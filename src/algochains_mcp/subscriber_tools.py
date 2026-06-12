@@ -60,6 +60,50 @@ def _list_active_assignments(sb, subscriber_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def _get_paper_account(sb, subscriber_id: str) -> dict[str, Any] | None:
+    """Return the durable paper account row for this subscriber, if present."""
+    try:
+        resp = (
+            sb.table("subscriber_paper_accounts")
+            .select(
+                "starting_balance_usd,current_balance_usd,realized_pnl_usd,"
+                "fills_count,last_reset_at,updated_at"
+            )
+            .eq("subscriber_id", subscriber_id)
+            .maybe_single()
+            .execute()
+        )
+        row = getattr(resp, "data", None)
+        return row if isinstance(row, dict) else None
+    except Exception as exc:
+        log.warning("paper account lookup failed: %s", exc)
+        return None
+
+
+def _paper_pnl_from_account(row: dict[str, Any] | None) -> float | None:
+    """Derive account-level paper PnL from persisted account data only."""
+    if not row:
+        return None
+    realized = row.get("realized_pnl_usd")
+    if realized is not None:
+        return round(float(realized), 2)
+    starting = row.get("starting_balance_usd")
+    current = row.get("current_balance_usd")
+    if starting is None or current is None:
+        return None
+    return round(float(current) - float(starting), 2)
+
+
+def _paper_pnl_aliases(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Stable account-level PnL aliases used by Command Center health checks."""
+    paper_pnl = _paper_pnl_from_account(row)
+    return {
+        "paper_pnl_usd": paper_pnl,
+        "paper_pnl": paper_pnl,
+        "paper_pnl_rollup_usd": paper_pnl,
+    }
+
+
 # ─── tools ──────────────────────────────────────────────────────────────────
 
 def get_signal_stream(
@@ -111,7 +155,7 @@ def get_signal_stream(
 
 
 def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
-    """Today + 7-day PnL aggregated from subscriber_fills."""
+    """Today + 7-day fill PnL plus durable account-level paper PnL."""
     sb = _service_client()
     if sb is None:
         return _err("supabase_unavailable")
@@ -156,6 +200,7 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
         "fills_today": fills_today,
         "pnl_today_by_bot": {k: round(v, 2) for k, v in by_bot.items()},
         "as_of": now.isoformat(),
+        **_paper_pnl_aliases(_get_paper_account(sb, subscriber_id)),
     }
 
 
@@ -197,21 +242,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
     assignments_payload = get_my_assignments(subscriber_id)
     assignments = assignments_payload.get("assignments") or []
 
-    paper_account = None
-    try:
-        pa = (
-            sb.table("subscriber_paper_accounts")
-            .select(
-                "starting_balance_usd,current_balance_usd,realized_pnl_usd,"
-                "fills_count,last_reset_at,updated_at"
-            )
-            .eq("subscriber_id", subscriber_id)
-            .maybe_single()
-            .execute()
-        )
-        paper_account = getattr(pa, "data", None)
-    except Exception as exc:
-        log.warning("get_my_portfolio paper account: %s", exc)
+    paper_account = _get_paper_account(sb, subscriber_id)
 
     open_entries: list[dict[str, Any]] = []
     bots = [a["bot"] for a in assignments if not a.get("paused")]
@@ -238,6 +269,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         "pnl_today_usd": pnl.get("pnl_today_usd"),
         "pnl_7d_usd": pnl.get("pnl_7d_usd"),
         "fills_today": pnl.get("fills_today"),
+        **_paper_pnl_aliases(paper_account),
         "as_of": datetime.now(timezone.utc).isoformat(),
     }
 
