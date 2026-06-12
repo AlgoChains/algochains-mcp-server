@@ -270,6 +270,34 @@ async def handle_mcp_request(
         return {"error": str(e), "tool": tool_name}
 
 
+def _with_bot_collection_aliases(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add Command Center-friendly collection fields to legacy bot metric maps."""
+    normalized = dict(payload)
+    existing_bots = normalized.get("bots")
+    bots = existing_bots if isinstance(existing_bots, list) and existing_bots else []
+
+    if not bots:
+        bots = []
+        for key, value in payload.items():
+            if not isinstance(value, dict):
+                continue
+            bot_id = value.get("bot_id")
+            if bot_id is None and key in {"mnq", "cl", "mes", "nq"}:
+                bot = dict(value)
+                bot["bot_id"] = key
+                bots.append(bot)
+            elif isinstance(bot_id, str):
+                bots.append(value)
+
+    if bots:
+        normalized["bots"] = bots
+        normalized.setdefault("bot_count", len(bots))
+        normalized.setdefault("total", len(bots))
+        normalized.setdefault("running", sum(1 for bot in bots if bot.get("is_running")))
+
+    return normalized
+
+
 def create_fastapi_app():
     """Create FastAPI app for standalone HTTP bridge. Install: pip install fastapi uvicorn"""
     try:
@@ -664,7 +692,13 @@ def create_fastapi_app():
         )
         if not key_valid or subscriber is not None:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner, caller_scope=caller_scope)
+        payload = await handle_mcp_request(
+            "get_all_bot_metrics",
+            {},
+            is_owner=is_owner,
+            caller_scope=caller_scope,
+        )
+        return _with_bot_collection_aliases(payload)
 
     @app_http.get("/api/bots/{bot_id}")
     async def get_bot(
