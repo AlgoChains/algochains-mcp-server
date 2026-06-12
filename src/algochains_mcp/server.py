@@ -3848,6 +3848,10 @@ TOOLS = [
          description="Check whether this MCP server node is the primary trader (MacBook offline) or standby (MacBook alive). Reads the Mac heartbeat file to determine heartbeat age, Mac liveness, and which node is currently running the bots. Critical for dual-node failover awareness.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_adaptive_brain_status",
+         description="Check local adaptive_brain.py daemon liveness from process, script, state-file, and log evidence. Read-only; does not restart or modify the daemon.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_strategy_academic_citations",
          description="Get all academic citations, SSRN papers, and published works that provide the theoretical basis for a specific bot's strategy. Includes authors, year, venue, DOI/SSRN link, and relevance explanation. Bot IDs: mnq, cl, mes, nq.",
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
@@ -4638,6 +4642,7 @@ TIER1_TOOL_NAMES = {
     "get_live_bot_metrics",
     "get_all_bot_metrics",
     "get_system_heartbeat",
+    "get_adaptive_brain_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
     "list_bot_research_attachments",
@@ -8946,6 +8951,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(hb.to_dict())
         except Exception as exc:
             return _text({"error": f"Heartbeat read error: {exc}"})
+
+    elif name == "get_adaptive_brain_status":
+        try:
+            from .live_bot_intelligence.adaptive_brain import get_adaptive_brain_status
+            return _text(get_adaptive_brain_status())
+        except Exception as exc:
+            return _text({"error": f"Adaptive brain status error: {exc}"})
 
     elif name == "get_strategy_academic_citations":
         try:

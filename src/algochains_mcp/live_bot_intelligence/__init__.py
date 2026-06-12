@@ -7,6 +7,7 @@ and operational management (restart/flatten) for the 4 live Tradovate bots.
 Read-only tools:
   - get_live_bot_metrics(bot_id)            → real P&L, WinRate, Sharpe from logs
   - get_system_heartbeat()                   → Mac/Desktop liveness + mode
+  - get_adaptive_brain_status()              → adaptive_brain.py process/state/log status
   - get_bot_card_data(bot_id)               → full bot card payload for algochains.ai
   - get_strategy_academic_citations(bot_id) → SSRN citations + blueprint links
   - list_bot_research_attachments(bot_id)   → backtest JSON, whitepaper, MCPT badge
@@ -21,6 +22,7 @@ Owner-gated tools (require OWNER_API_TOKEN):
 """
 
 from .metrics_parser import parse_bot_metrics, BotMetrics, BOT_LOG_PATHS
+from .adaptive_brain import get_adaptive_brain_status
 from .heartbeat import get_system_heartbeat, SystemHeartbeat
 from .academic_registry import get_academic_citations, get_bot_card_data, AcademicCitation
 from .bot_ops import (
@@ -37,6 +39,7 @@ __all__ = [
     "BotMetrics",
     "BOT_LOG_PATHS",
     "get_system_heartbeat",
+    "get_adaptive_brain_status",
     "SystemHeartbeat",
     "get_academic_citations",
     "get_bot_card_data",
