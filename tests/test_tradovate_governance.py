@@ -10,8 +10,11 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 import sys
+import time
 
 import pytest
 
@@ -28,6 +31,18 @@ def _make_connector(access_token: str = ""):
         env="demo",
     )
     return TradovateConnector(cfg)
+
+
+def _jwt_with_exp(exp: int) -> str:
+    """Build an unsigned JWT-shaped test token with an exp claim."""
+    header = {"alg": "none", "typ": "JWT"}
+    payload = {"exp": exp}
+
+    def _segment(data: dict) -> str:
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return f"{_segment(header)}.{_segment(payload)}."
 
 
 def test_streaming_capability_is_false():
@@ -110,6 +125,79 @@ def test_connect_prefers_preexisting_token(monkeypatch):
     assert conn._access_token == _expected, (
         f"Expected _access_token={_expected!r}, got: {conn._access_token!r}"
     )
+
+
+def test_connect_uses_preexisting_jwt_expiry(monkeypatch):
+    """A Guardian JWT with >60 min remaining must not reconnect immediately."""
+    expires_at = int(time.time() + (76 * 60))
+    access_token = _jwt_with_exp(expires_at)
+    monkeypatch.setenv("TRADOVATE_ACCESS_TOKEN", access_token)
+
+    from algochains_mcp.brokers.tradovate import TradovateConnector, TradovateConfig
+    cfg = TradovateConfig(
+        access_token=os.environ.get("TRADOVATE_ACCESS_TOKEN", ""),
+        username="user",
+        password="pass",
+        env="demo",
+    )
+    conn = TradovateConnector(cfg)
+
+    async def _mock_get(url, *a, **kw):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"id": 99, "name": "TEST123"}]
+        return resp
+
+    async def _run():
+        conn._http.get = _mock_get  # type: ignore
+        assert await conn.connect() is True
+
+        reconnects = 0
+
+        async def _unexpected_reconnect():
+            nonlocal reconnects
+            reconnects += 1
+            return True
+
+        conn.connect = _unexpected_reconnect  # type: ignore
+        await conn._ensure_token()
+        return reconnects
+
+    reconnects = asyncio.run(_run())
+    assert conn._token_expires_at == expires_at
+    assert reconnects == 0
+
+
+def test_connect_falls_back_for_opaque_preexisting_token(monkeypatch):
+    """Non-JWT Guardian tokens retain the conservative 60-minute fallback."""
+    monkeypatch.setenv("TRADOVATE_ACCESS_TOKEN", "opaque-guardian-token")
+
+    from algochains_mcp.brokers.tradovate import TradovateConnector, TradovateConfig
+    cfg = TradovateConfig(
+        access_token=os.environ.get("TRADOVATE_ACCESS_TOKEN", ""),
+        username="user",
+        password="pass",
+        env="demo",
+    )
+    conn = TradovateConnector(cfg)
+
+    async def _mock_get(url, *a, **kw):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"id": 99, "name": "TEST123"}]
+        return resp
+
+    async def _run():
+        conn._http.get = _mock_get  # type: ignore
+        before = time.time()
+        assert await conn.connect() is True
+        after = time.time()
+        return before, after
+
+    before, after = asyncio.run(_run())
+    assert before + 3600 <= conn._token_expires_at <= after + 3600
 
 
 def test_no_ws_import_in_connector():
