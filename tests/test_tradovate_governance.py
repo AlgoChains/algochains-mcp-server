@@ -130,3 +130,49 @@ def test_no_ws_import_in_connector():
         f"WebSocket import/usage found in tradovate.py connector: {found}. "
         "MCP connector must be REST-only; WS belongs to the control tower bots."
     )
+
+
+def test_get_account_uses_cash_balance_when_total_cash_value_is_null():
+    """Nullable Tradovate fields must not leak as JSON null account balances."""
+    conn = _make_connector()
+
+    async def _mock_get(path, *args, **kwargs):
+        if path == "/account/list":
+            return [{"id": 99, "name": "TEST123"}]
+        if path == "/cashBalance/getCashBalanceSnapshot":
+            return {"totalCashValue": None, "cashBalance": "12500.75"}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_account()
+
+    account = asyncio.run(_run())
+    payload = account.to_dict()
+    assert payload["equity"] == 12500.75
+    assert payload["cash"] == 12500.75
+    assert payload["balance"] == 12500.75
+    assert payload["account_balance"] == 12500.75
+
+
+def test_get_account_raises_when_snapshot_has_no_numeric_balance():
+    """A missing live balance is a degraded broker read, not a zero/null balance."""
+    from algochains_mcp.errors import BrokerConnectionError
+
+    conn = _make_connector()
+
+    async def _mock_get(path, *args, **kwargs):
+        if path == "/account/list":
+            return [{"id": 99, "name": "TEST123"}]
+        if path == "/cashBalance/getCashBalanceSnapshot":
+            return {"totalCashValue": None, "cashBalance": None}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_account()
+
+    with pytest.raises(BrokerConnectionError, match="numeric balance"):
+        asyncio.run(_run())
