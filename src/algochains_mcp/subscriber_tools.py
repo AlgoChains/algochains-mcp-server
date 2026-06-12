@@ -60,6 +60,44 @@ def _list_active_assignments(sb, subscriber_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def _get_paper_account(sb, subscriber_id: str) -> dict[str, Any] | None:
+    """Return the subscriber's aggregate paper account row, if present."""
+    resp = (
+        sb.table("subscriber_paper_accounts")
+        .select(
+            "starting_balance_usd,current_balance_usd,realized_pnl_usd,"
+            "fills_count,last_reset_at,updated_at"
+        )
+        .eq("subscriber_id", subscriber_id)
+        .maybe_single()
+        .execute()
+    )
+    return getattr(resp, "data", None)
+
+
+def _paper_pnl_aliases(paper_account: dict[str, Any] | None) -> dict[str, float]:
+    """Expose account-level paper PnL under the names health views consume."""
+    if not paper_account:
+        return {}
+
+    realized = paper_account.get("realized_pnl_usd")
+    if realized is not None:
+        paper_pnl = float(realized)
+    else:
+        current_balance = paper_account.get("current_balance_usd")
+        starting_balance = paper_account.get("starting_balance_usd")
+        if current_balance is None or starting_balance is None:
+            return {}
+        paper_pnl = float(current_balance) - float(starting_balance)
+
+    rounded_pnl = round(paper_pnl, 2)
+    return {
+        "paper_pnl_usd": rounded_pnl,
+        "paper_pnl": rounded_pnl,
+        "paper_pnl_rollup_usd": rounded_pnl,
+    }
+
+
 # ─── tools ──────────────────────────────────────────────────────────────────
 
 def get_signal_stream(
@@ -111,7 +149,7 @@ def get_signal_stream(
 
 
 def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
-    """Today + 7-day PnL aggregated from subscriber_fills."""
+    """Fill-window PnL plus stable paper-account PnL aliases."""
     sb = _service_client()
     if sb is None:
         return _err("supabase_unavailable")
@@ -136,6 +174,12 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
     except Exception as exc:
         return _err("query_failed", detail=str(exc))
 
+    paper_account = None
+    try:
+        paper_account = _get_paper_account(sb, subscriber_id)
+    except Exception as exc:
+        log.warning("get_my_pnl paper account: %s", exc)
+
     today_rows = getattr(today_resp, "data", None) or []
     week_rows = getattr(week_resp, "data", None) or []
 
@@ -156,6 +200,7 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
         "fills_today": fills_today,
         "pnl_today_by_bot": {k: round(v, 2) for k, v in by_bot.items()},
         "as_of": now.isoformat(),
+        **_paper_pnl_aliases(paper_account),
     }
 
 
@@ -199,17 +244,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
 
     paper_account = None
     try:
-        pa = (
-            sb.table("subscriber_paper_accounts")
-            .select(
-                "starting_balance_usd,current_balance_usd,realized_pnl_usd,"
-                "fills_count,last_reset_at,updated_at"
-            )
-            .eq("subscriber_id", subscriber_id)
-            .maybe_single()
-            .execute()
-        )
-        paper_account = getattr(pa, "data", None)
+        paper_account = _get_paper_account(sb, subscriber_id)
     except Exception as exc:
         log.warning("get_my_portfolio paper account: %s", exc)
 
@@ -239,6 +274,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         "pnl_7d_usd": pnl.get("pnl_7d_usd"),
         "fills_today": pnl.get("fills_today"),
         "as_of": datetime.now(timezone.utc).isoformat(),
+        **_paper_pnl_aliases(paper_account),
     }
 
 
