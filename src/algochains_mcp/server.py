@@ -4799,10 +4799,154 @@ async def list_tools() -> list[Tool]:
     return TOOLS_TIER1
 
 
+async def _execute_tool_with_runtime_guards(
+    name: str,
+    arguments: dict,
+    registry: BrokerRegistry,
+    *,
+    transport: str,
+    policy_decision: Any,
+) -> list[TextContent]:
+    """Run a tool through the shared runtime guards before dispatch.
+
+    Dynamic dispatch authorizes hidden tools before this helper is called; the
+    inner tool still needs the same rate limits, circuit breakers, timeouts, and
+    response guard that direct calls receive.
+    """
+    arguments = validate_arguments(name, arguments)
+    limiter = get_rate_limiter()
+    tlog = get_tool_logger()
+    t0 = time.monotonic()
+
+    try:
+        # Replay guard for signed destructive requests. Unsigned callers pass
+        # through; this activates only when timestamp + nonce are provided.
+        _x_ts = arguments.pop("_x_timestamp", None)
+        _x_nonce = arguments.pop("_x_nonce", None)
+        if _x_ts and _x_nonce:
+            try:
+                from .tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
+                _tier = get_tool_tier(name)
+                if _tier >= TIER_ORDER_EXEC:
+                    from .security.replay_guard import _GLOBAL_GUARD as _rg
+                    _rg_result = _rg.validate(_x_ts, _x_nonce)
+                    if not _rg_result.get("valid", True):
+                        return _text({
+                            "error_type": "ReplayGuardRejected",
+                            "tool": name,
+                            "reason": _rg_result.get("reason", "unknown"),
+                            "message": "Request rejected by replay guard. Timestamp too old or nonce already seen.",
+                        })
+            except ImportError:
+                pass  # tier module unavailable — skip replay check
+
+        check_circuit(name)
+
+        broker_name = arguments.get("broker", "")
+        if broker_name:
+            await limiter.acquire(broker_name)
+
+        category = get_tool_category(name)
+        if category:
+            await limiter.acquire(category)
+
+        try:
+            from .security.per_tool_rate_limiter import check_rate_limit as _check_ptrl
+            _ptrl_result = _check_ptrl(name)
+            if not _ptrl_result.get("allowed", True):
+                return _text({
+                    "error_type": "RateLimitError",
+                    "tool": name,
+                    "message": f"Per-tool rate limit exceeded: {_ptrl_result.get('description', '')}",
+                    "calls_in_window": _ptrl_result.get("calls_in_window"),
+                    "limit": _ptrl_result.get("limit"),
+                    "window_seconds": _ptrl_result.get("window_seconds"),
+                    "reset_in_seconds": _ptrl_result.get("reset_in_seconds"),
+                })
+        except ImportError:
+            pass  # security module unavailable — category limiter is still active
+
+        sem = get_tool_semaphore(name)
+        timeout = get_tool_timeout(name)
+
+        async def _guarded_dispatch() -> list[TextContent]:
+            if sem:
+                async with sem:
+                    return await asyncio.wait_for(
+                        _dispatch_tool(name, arguments, registry),
+                        timeout=timeout,
+                    )
+            return await asyncio.wait_for(
+                _dispatch_tool(name, arguments, registry),
+                timeout=timeout,
+            )
+
+        with trace_span(
+            "mcp.tool.call",
+            {
+                "tool.name": name,
+                "mcp.server": "algochains",
+                "mcp.transport": transport,
+                "algochains.danger_tier": policy_decision.danger_tier,
+                "algochains.danger_label": policy_decision.danger_label,
+                "algochains.tier_source": policy_decision.tier_source,
+                "algochains.arguments_hash": redacted_argument_hash(arguments),
+            },
+        ) as span:
+            result = await _guarded_dispatch()
+            if span is not None:
+                span.set_attribute("algochains.tool.success", True)
+
+        for content in result:
+            if hasattr(content, "text"):
+                content.text = guard_response_size(content.text, name)
+
+        record_success(name)
+        tlog.log_call(name, arguments, duration_ms=(time.monotonic() - t0) * 1000)
+        return result
+
+    except asyncio.TimeoutError:
+        record_failure(name)
+        elapsed = (time.monotonic() - t0) * 1000
+        logger.error("Tool %s TIMED OUT after %.0fms (limit: %.0fs)", name, elapsed, get_tool_timeout(name))
+        tlog.log_call(name, arguments, error="timeout", duration_ms=elapsed)
+        return _text({"error_type": "TimeoutError", "message": f"Tool '{name}' timed out after {get_tool_timeout(name):.0f}s", "tool": name})
+
+    except CircuitOpenError as e:
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": "CircuitOpenError", "message": str(e), "tool": name, "retry_after_seconds": round(e.retry_after)})
+
+    except AlgoChainsError as e:
+        record_failure(name)
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _error_text(e)
+
+    except AttributeError as e:
+        record_failure(name)
+        msg = str(e)
+        if "NoneType" in msg or "None" in msg:
+            friendly = (
+                f"Engine for tool '{name}' failed to initialize (returned None). "
+                "Check server startup logs for import errors or missing env vars. "
+                f"Original error: {msg}"
+            )
+            logger.error("Tool %s: uninitialized engine — %s", name, msg)
+            tlog.log_call(name, arguments, error=friendly, duration_ms=(time.monotonic() - t0) * 1000)
+            return _text({"error_type": "EngineUnavailable", "message": friendly, "tool": name})
+        logger.error("Tool %s AttributeError: %s", name, msg, exc_info=True)
+        tlog.log_call(name, arguments, error=msg, duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": "AttributeError", "message": msg, "tool": name})
+
+    except Exception as e:
+        record_failure(name)
+        logger.error("Tool %s failed: %s", name, e, exc_info=True)
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": type(e).__name__, "message": str(e), "tool": name})
+
+
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     registry = _get_registry()
-    limiter = get_rate_limiter()
     tlog = get_tool_logger()
     t0 = time.monotonic()
 
@@ -4850,104 +4994,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             payload["message"] = direct_decision.reason
             return _text(payload)
 
-        # ── 1b. Replay guard for signed destructive requests ─────
-        # When a caller includes X-Timestamp + X-Nonce headers (passed as
-        # _x_timestamp / _x_nonce arguments), validate freshness and uniqueness
-        # for Tier-2+ tools.  Unsigned callers (no headers) pass through; this
-        # gate only activates when the caller opts into signed requests.
-        _x_ts = arguments.pop("_x_timestamp", None)
-        _x_nonce = arguments.pop("_x_nonce", None)
-        if _x_ts and _x_nonce:
-            try:
-                from .tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
-                _tier = get_tool_tier(name)
-                if _tier >= TIER_ORDER_EXEC:
-                    from .security.replay_guard import _GLOBAL_GUARD as _rg
-                    _rg_result = _rg.validate(_x_ts, _x_nonce)
-                    if not _rg_result.get("valid", True):
-                        return _text({
-                            "error_type": "ReplayGuardRejected",
-                            "tool": name,
-                            "reason": _rg_result.get("reason", "unknown"),
-                            "message": "Request rejected by replay guard. Timestamp too old or nonce already seen.",
-                        })
-            except ImportError:
-                pass  # tier module unavailable — skip replay check
-
-        # ── 2. Circuit breaker — fail fast if engine is down ─────
-        check_circuit(name)
-
-        # ── 3. Rate limiting ─────────────────────────────────────
-        broker_name = arguments.get("broker", "")
-        if broker_name:
-            await limiter.acquire(broker_name)
-
-        category = get_tool_category(name)
-        if category:
-            await limiter.acquire(category)
-
-        # ── 3b. Per-tool rate limits (destructive tools) ─────────
-        # check_rate_limit() is O(1) for tools not in TOOL_RATE_LIMITS.
-        # Must run AFTER category limiter so both layers enforce sequentially.
-        try:
-            from .security.per_tool_rate_limiter import check_rate_limit as _check_ptrl
-            _ptrl_result = _check_ptrl(name)
-            if not _ptrl_result.get("allowed", True):
-                return _text({
-                    "error_type": "RateLimitError",
-                    "tool": name,
-                    "message": f"Per-tool rate limit exceeded: {_ptrl_result.get('description', '')}",
-                    "calls_in_window": _ptrl_result.get("calls_in_window"),
-                    "limit": _ptrl_result.get("limit"),
-                    "window_seconds": _ptrl_result.get("window_seconds"),
-                    "reset_in_seconds": _ptrl_result.get("reset_in_seconds"),
-                })
-        except ImportError:
-            pass  # security module unavailable — category limiter is still active
-
-        # ── 4. Concurrency semaphore — bound parallel calls ──────
-        sem = get_tool_semaphore(name)
-        timeout = get_tool_timeout(name)
-
-        async def _guarded_dispatch() -> list[TextContent]:
-            if sem:
-                async with sem:
-                    return await asyncio.wait_for(
-                        _dispatch_tool(name, arguments, registry),
-                        timeout=timeout,
-                    )
-            else:
-                return await asyncio.wait_for(
-                    _dispatch_tool(name, arguments, registry),
-                    timeout=timeout,
-                )
-
-        # ── 5. Execute with timeout ──────────────────────────────
-        with trace_span(
-            "mcp.tool.call",
-            {
-                "tool.name": name,
-                "mcp.server": "algochains",
-                "mcp.transport": "stdio",
-                "algochains.danger_tier": direct_decision.danger_tier,
-                "algochains.danger_label": direct_decision.danger_label,
-                "algochains.tier_source": direct_decision.tier_source,
-                "algochains.arguments_hash": redacted_argument_hash(arguments),
-            },
-        ) as span:
-            result = await _guarded_dispatch()
-            if span is not None:
-                span.set_attribute("algochains.tool.success", True)
-
-        # ── 6. Response size guard ───────────────────────────────
-        for content in result:
-            if hasattr(content, "text"):
-                content.text = guard_response_size(content.text, name)
-
-        # ── 7. Record success (circuit breaker) ──────────────────
-        record_success(name)
-        tlog.log_call(name, arguments, duration_ms=(time.monotonic() - t0) * 1000)
-        return result
+        return await _execute_tool_with_runtime_guards(
+            name,
+            arguments,
+            registry,
+            transport="stdio",
+            policy_decision=direct_decision,
+        )
 
     except asyncio.TimeoutError:
         record_failure(name)
@@ -7205,7 +7258,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         if not decision.allow:
             return _text(decision.as_error())
-        return await _dispatch_tool(inner_name, inner_args, registry)
+        return await _execute_tool_with_runtime_guards(
+            inner_name,
+            inner_args,
+            registry,
+            transport="dynamic",
+            policy_decision=decision,
+        )
 
     # ── V18: Intent-Based Trading ─────────────────────────────
     elif name == "execute_intent":

@@ -92,6 +92,18 @@ def _read_project_version() -> str:
 
 _SERVER_VERSION = _read_project_version()
 
+
+def _default_control_tower_path() -> str:
+    """Resolve a sibling control-tower checkout without assuming path depth."""
+    current = _PathGlobal(__file__).resolve()
+    for parent in current.parents:
+        candidate = parent / "algochains-control-tower"
+        if candidate.exists():
+            return str(candidate)
+    if len(current.parents) > 2:
+        return str(current.parents[2] / "algochains-control-tower")
+    return str(_PathGlobal.cwd() / "algochains-control-tower")
+
 # ─── Tool whitelist (what the site is allowed to call) ───────────────────────
 
 PUBLIC_TOOLS = {
@@ -703,7 +715,7 @@ def create_fastapi_app():
         """Get full bot card data. Public card data is unauthenticated; attachments require owner."""
         if bot_id not in {"mnq", "cl", "mes", "nq"}:
             raise HTTPException(status_code=400, detail="bot_id must be mnq | cl | mes | nq")
-        _key_valid, is_owner, _subscriber, caller_scope = _resolve_auth(
+        _key_valid, is_owner, _subscriber, _developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             user_email,
@@ -768,8 +780,7 @@ def create_fastapi_app():
 
     _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
     if not _CT:
-        # resolve relative to this file's location
-        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+        _CT = _default_control_tower_path()
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
@@ -902,8 +913,8 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY (full view) or subscriber key (sanitised view).
         Latency: <150ms — reads from state files on disk.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
+        if not key_valid or developer is not None or (not is_owner and subscriber is None):
             raise HTTPException(status_code=401, detail="Valid API key required (owner or subscriber)")
         snapshot = await asyncio.to_thread(_build_status_snapshot, is_owner)
         snapshot["access_level"] = "owner" if is_owner else "subscriber"
@@ -920,8 +931,8 @@ def create_fastapi_app():
 
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
+        if not key_valid or developer is not None or (not is_owner and subscriber is None):
             raise HTTPException(status_code=401, detail="Valid API key required")
         limit = max(1, min(int(limit), 100))
 
@@ -962,8 +973,8 @@ def create_fastapi_app():
 
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
+        if not key_valid or developer is not None or (not is_owner and subscriber is None):
             raise HTTPException(status_code=401, detail="Valid API key required")
         hours = max(1, min(int(hours), 168))
 
@@ -1003,8 +1014,8 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY or subscriber key.
         Reconnect: standard SSE retry — client reconnects automatically on disconnect.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
+        if not key_valid or developer is not None or (not is_owner and subscriber is None):
             raise HTTPException(status_code=401, detail="Valid API key required")
         interval = max(1.0, min(float(poll_interval), 30.0))
 
