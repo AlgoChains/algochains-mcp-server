@@ -57,6 +57,7 @@ import sys
 from pathlib import Path as _PathGlobal
 
 from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
+from .tradovate_token_status import summarize_tradovate_token_state
 
 
 def _default_control_tower() -> str:
@@ -5574,22 +5575,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "last_line_preview": tail_preview,
             }
 
-        # Tradovate token expiry (best-effort)
-        token_file = control_tower / "tradovate_token_live.txt"
-        token_info = {"present": token_file.exists()}
-        if token_file.exists():
-            try:
-                content = token_file.read_text().splitlines()
-                jwt = content[0].replace("Bearer ", "").strip() if content else ""
-                if jwt.count(".") == 2:
-                    import base64 as _b64, json as _json
-                    pad = lambda s: s + "=" * (-len(s) % 4)  # noqa: E731
-                    payload = _json.loads(_b64.urlsafe_b64decode(pad(jwt.split(".")[1])))
-                    exp = payload.get("exp")
-                    if exp:
-                        token_info["expires_in_seconds"] = int(exp - now)
-            except Exception:
-                pass
+        # Tradovate token expiry + guardian state (secret-free, best-effort).
+        token_info = summarize_tradovate_token_state(control_tower, now=now)
 
         # ── signal_health.json slice (bounded operational telemetry) ──
         # Provides MCP clients one-stop visibility into bot params, validated
