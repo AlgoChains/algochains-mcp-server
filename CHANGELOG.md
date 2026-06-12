@@ -6,156 +6,40 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
-
----
-
-## [22.5.0] — 2026-06-10
-
-### Security
-
-- **SEC-2026-C1: `export_config` now requires `owner_token` (OWNER_API_TOKEN)**
-  (`byok/key_orchestrator.py`, `tool_danger_tiers.py`, `server.py`)
-  Previously `export_config` was callable from any smart-mode MCP client and returned
-  plaintext environment API keys in JSON/env/mcp-config format. Escalated to
-  `TIER_ORDER_EXEC`; handler now verifies `owner_token` matches `OWNER_API_TOKEN`.
-  MCP output without owner token returns a masked-values-only error message.
-
-- **SEC-2026-C2: `deliver_strategy_to_subscriber` hardened against config theft + SSRF**
-  (`marketplace/supabase_tools.py`, `tool_danger_tiers.py`, `server.py`)
-  Tool now: (a) requires `owner_token`; (b) verifies active subscription ownership
-  before accessing any listing data; (c) SSRF-blocks private/link-local webhook URLs;
-  (d) no longer returns `signed_token` in the MCP response — delivery receipt only.
-  Escalated to `TIER_ORDER_EXEC`.
-
-- **SEC-2026-C3: `send_waitlist_invite` removed from Tier-1; invite codes email-only**
-  (`waitlist.py`, `server.py`, `tool_danger_tiers.py`)
-  Invite minting was available to any smart-mode caller without auth. Tool now
-  requires `owner_token`. `send_invite()` no longer returns `invite_code` or
-  `invite_url` in the MCP response — codes are delivered by email only.
-
-- **SEC-2026-C4: `upsert_bot_performance` removed from Tier-1; requires owner_token**
-  (`live_bot_intelligence/multi_account_metrics.py`, `server.py`, `tool_danger_tiers.py`)
-  Metric forgery on marketplace/subscriber dashboards was possible. Tool now requires
-  `owner_token`. Removed from `TIER1_TOOL_NAMES`. Callers must supply a valid owner
-  token; service-role write path is unchanged.
-
-### Changed
-
-- Tool count: 478 → 485 (7 new tools added in marketplace and subscriber surfaces)
-- `server.py` module docstring updated to v22.5 / 485 tools
-
----
-
-## [Unreleased] — prior to 22.5.0
-
-### Security
-
-- **SEC-2026-C1: `export_config` now requires `owner_token` (OWNER_API_TOKEN)**
-  (`byok/key_orchestrator.py`, `tool_danger_tiers.py`, `server.py`)
-  Previously `export_config` was callable from any smart-mode MCP client and returned
-  plaintext environment API keys in JSON/env/mcp-config format. Escalated to
-  `TIER_ORDER_EXEC`; handler now verifies `owner_token` matches `OWNER_API_TOKEN`.
-  MCP output without owner token returns a masked-values-only error message.
-
-- **SEC-2026-C2: `deliver_strategy_to_subscriber` hardened against config theft + SSRF**
-  (`marketplace/supabase_tools.py`, `tool_danger_tiers.py`, `server.py`)
-  Tool now: (a) requires `owner_token`; (b) verifies active subscription ownership
-  before accessing any listing data; (c) SSRF-blocks private/link-local webhook URLs;
-  (d) no longer returns `signed_token` in the MCP response — delivery receipt only.
-  Escalated to `TIER_ORDER_EXEC`.
-
-- **SEC-2026-C3: `send_waitlist_invite` removed from Tier-1; invite codes email-only**
-  (`waitlist.py`, `server.py`, `tool_danger_tiers.py`)
-  Invite minting was available to any smart-mode caller without auth. Tool now
-  requires `owner_token`. `send_invite()` no longer returns `invite_code` or
-  `invite_url` in the MCP response — codes are delivered by email only.
-
-- **SEC-2026-C4: `upsert_bot_performance` removed from Tier-1; requires owner_token**
-  (`live_bot_intelligence/multi_account_metrics.py`, `server.py`, `tool_danger_tiers.py`)
-  Metric forgery on marketplace/subscriber dashboards was possible. Tool now requires
-  `owner_token`. Canonical metric writes go through `metrics_streaming_daemon.py`.
-
-### Fixed
-
-- **Circuit breakers now survive restarts correctly** (`trading_guardrails.py`).
-  `tripped_at` was persisted as `time.monotonic()`, which is meaningless across
-  processes — a stale state file could pin breakers OPEN for days of fresh uptime
-  (observed: all 3 brokers stuck OPEN with `trip_count_today: 137`). Breakers now
-  persist wall-clock `tripped_at_epoch`/`expires_at_epoch`; transient trips
-  (`ai_loop_detected`, `tool_rate_limit`, `order_velocity`) auto-clear on load when
-  expired or when only legacy monotonic timestamps exist. Hard safety trips
-  (`daily_loss`, `drawdown`, `consecutive_losses`, `manual_trip`, `state_file_corrupt`)
-  never auto-clear on restart. `get_status()` reports `persistence_basis`.
-- **HALF_OPEN restart deadlock**: `half_open_test_allowed` is now persisted (legacy
-  rows restore as test-allowed) — previously a breaker restored in HALF_OPEN could
-  never accept its one recovery test call, blocking orders until manual reset.
-- Runtime state files (`state/guardrails_state.json`, `state/onboarding_state.json`)
-  are no longer git-tracked — a committed copy with stale OPEN breakers was the
-  poisoning vector for fresh checkouts.
-- CI: release workflow repaired — `publish-sdk` mcporter config, `@vercel/pkg` (gone
-  from npm) → `@yao-pkg/pkg` (see run 27230812921).
-
----
-
-## [22.4.1] — 2026-06-09
-
-### Fixed
-
-- **`subscriber_auth.py` (BUG-19b)**: the null-`subscriber_id` guard used an undefined
-  name (`logger` instead of `log`), raising `NameError` — the HTTP bridge surfaced a 500
-  instead of a clean 401 when a key row resolved without a subscriber id. Now a clean
-  auth failure with negative caching. Regression suite added (`tests/test_subscriber_auth.py`).
-- `http_bridge.py`: metadata-fallback version string updated (was stuck at `22.2.0`)
-- `scripts/startup_health_check.py`: banner no longer hardcodes `v20.0` — reads package version
-- README: HTTP bridge port corrected (`8765` → `8090`, the actual default); removed claim
-  that CHANGELOG contains v23.x–v26.x entries; `docs/CLI_GAP_ANALYSIS.md` now exists
-
-### Docs
-
-- `CHANGELOG.md`: backfilled the missing `[22.4.0]` release entry (22.3.0 was never published)
-- `docs/CLI_GAP_ANALYSIS.md`: created — current `algochains` CLI surface + missing subcommand roadmap
-- `docs/GOTCHAS_AND_BUGS.md`: closed stale P1 on `tests/test_live_audit.py` (hardcoded keys
-  were purged; file is env-only with a regression test)
-
----
-
-## [22.4.0] — 2026-06-09
-
-> Note: version 22.3.0 was never published — the release train went 22.2.0 → 22.4.0.
+## [22.4.0] — 2026-04-06
 
 ### Added
 
-#### Distribution (first public release)
-- **PyPI**: `pip install algochains-mcp-server` / `pipx install algochains-mcp-server`
-  published via GitHub Actions OIDC (no stored token)
-- **Homebrew**: `brew tap algochains/algochains && brew install algochains` — formula
-  installs from the PyPI sdist (works while the GitHub repo is private)
-- **Windows**: `install.ps1` auto-installer + pipx-based install docs
-- Daily CI check for PyPI version drift
+#### UX & Team Onboarding
+- `scripts/quickstart.py` — interactive setup wizard and health-check path for demo/paper/live setup.
+- `SAFETY_MODEL.md` — plain-language safety guide for guardrails, confirmations, circuit breakers, and team access.
+- `get_onboarding_status` and `generate_ide_config` MCP tools — expose setup progress and generate IDE MCP config for Cursor, Windsurf, Claude, or VS Code.
 
-#### CLI
-- `algochains-mcp --version`, `--generate-config {cursor,claude-desktop,windsurf,claude-code,all}`,
-  `--request-access <email>` (Slack approval flow), `--demo-signal` (15s-TTL test signal)
-- TypeScript CLI rebuild (React+Ink REPL, daemon, trust ladder T0–T3, kill switch,
-  OS keyring auth, doctor, shell completions, plugins, triggers)
+#### Desktop Tower and Bot Health Visibility
+- `get_tower_health` and `get_tower_job_status` are part of the smart tool set so operators can inspect desktop tower reachability and dispatched job status without full-mode exposure.
+- `get_bot_health` includes `e2e_sentinel`, `desktop_inference_slo`, and `decision_latency_slo` slices for MNQ signal -> order -> bracket -> fill traceability.
 
-#### Developer tier
-- `developer_auth.py` — `ac_live_*` / `ac_test_*` key resolution with caching
-- Developer tool allowlist (28 tools) + per-key rate limiter (60 RPM / 1000 RPH / 15-burst)
-- Bridge `_resolve_auth` wiring + integration tests + onboarding guide
+### Changed
 
-#### Tools
-- `get_signal_trade_correlation`; widened `get_bot_health` Kronos slice
+- `tool_danger_tiers.py` is the documented machine-readable danger classification layer for the 478-tool full surface and bridge `/tools` metadata.
+- README setup and docs navigation were reorganized around demo/paper/live setup paths and operational safety references.
 
-### Fixed
+---
 
-- HMAC hardening: removed `'1234'` default secret in `trade_propagation.py` — fails closed
-  when `ALGOCHAINS_SIGNAL_SECRET` is unset
-- Stale default-constant references causing `NameError` in propagation tools
-- Startup log no longer reports `v20.0.0`
-- PyPI description trimmed to ≤512 chars (upload 400)
-- Homebrew formula: PyPI tarball instead of private GitHub release asset (404)
+## [22.3.0] — 2026-04-06
+
+### Added
+
+#### Proprietary Data Ingestion
+- `ingest_csv_data` — validates real OHLCV CSV files, normalizes symbol/timeframe path components, and writes clean rows under `state/custom_data/`.
+- `ingest_json_signals` — ingests pre-computed entry/exit signals, ML features, labels, or regime tags from JSON.
+- `connect_onyx_docs` — indexes local research documents into Onyx for `onyx_ask()` and `onyx_search()`.
+- `register_strategy` — validates and registers custom strategy specs for later backtesting.
+- `list_ingested_data` — audits imported custom datasets, signal files, Onyx documents, and registered strategies.
+
+### Security / Hardening
+
+- Data ingestion validates file existence, expected suffixes, required columns/types, symbol/timeframe safety, and destination jail boundaries. It does not synthesize missing data.
 
 ---
 

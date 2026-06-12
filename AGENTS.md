@@ -219,3 +219,53 @@ get_signal_stream()                 # read latest signals (subscriber-scoped)
 *Source files for this document: `src/algochains_mcp/server.py` (TIER1_TOOL_NAMES),
 `src/algochains_mcp/tool_danger_tiers.py` (tier constants), `README.md` (install and
 broker table), `MEGA_PROMPT_V22.md` (operator context).*
+
+---
+
+## Cursor Cloud specific instructions
+
+Durable, non-obvious notes for running/developing this repo in the Cloud Agent VM.
+Standard commands live in the `Makefile` and §1 above — prefer those; this section
+only captures gotchas.
+
+### Python environment
+- Dependencies are installed into a project virtualenv at **`.venv`** (the VM lacks a
+  usable global pip; `python3-venv` is a system package the snapshot already provides).
+  The startup update script recreates/refreshes `.venv`.
+- **Always invoke tools via `.venv/bin/...`** (e.g. `.venv/bin/algochains-mcp`,
+  `.venv/bin/python`, `.venv/bin/pytest`, `.venv/bin/ruff`) or `source .venv/bin/activate`.
+  The `Makefile` uses bare `python3`/`ruff`/`uvicorn`, so either activate the venv first
+  or override, e.g. `make test PYTHON=.venv/bin/python`.
+- The update script installs extras `dev,http,supabase,auth,quant,optimize,datasets`.
+  `quant` (scipy/numpy/hmmlearn) is required just to *collect* `tests/numerai/`.
+
+### Running the core product (stdio MCP server)
+- The core product is the **stdio MCP server**, not a web app. Run with
+  `ALGOCHAINS_DEMO_MODE=1 .venv/bin/algochains-mcp --mode demo` (demo mode needs no
+  credentials). It speaks MCP over stdin/stdout and **exits immediately on stdin EOF** —
+  so `... < /dev/null` looks like a clean exit; that is expected, not a crash.
+- To exercise it end-to-end, drive it with an MCP client over stdio (see the `mcp`
+  Python package: `stdio_client` + `ClientSession`) and call a Tier-0 tool such as
+  `detect_market_regime` or the meta tool `discover_tools`.
+- Tool exposure defaults to `ALGOCHAINS_TOOL_MODE=smart` (~150 tools). Set it to `full`
+  for ~480. Brokers/market-data/Stripe/Supabase/Redis/Onyx are all optional and
+  credential-gated; demo mode stubs execution-class tools.
+- Optional HTTP transport: `.venv/bin/algochains-mcp-http --host 127.0.0.1 --port 8080`
+  (`GET /health` → 200). This is distinct from the `http_bridge` module below.
+
+### Known pre-existing failures (NOT environment problems)
+These fail on a clean checkout regardless of setup — do not treat them as setup regressions:
+- **Lint:** `make lint` (ruff) reports ~400 pre-existing findings, mostly `F401`
+  unused-import in `tests/`. The ruff toolchain itself works.
+- **Tests:** `make test` / `pytest` yields ~370 passed and ~165 failed. Causes:
+  (a) response-shape drift — many tests assert dict keys like `"success"`/`"timeframe"`
+  that the code no longer returns (`KeyError`); (b) the HTTP-bridge tests raise
+  `IndexError: 4` because `src/algochains_mcp/http_bridge.py` resolves a path via
+  `Path(__file__).resolve().parents[4]`, which assumes the package sits ≥4 dirs below
+  root — at `/workspace` it is too shallow. Set `ALGOCHAINS_CONTROL_TOWER=<path>` to
+  skip that branch when working on the bridge.
+- **Full-suite vs per-file:** many async tests call the deprecated
+  `asyncio.get_event_loop().run_until_complete(...)`. On Python 3.12, once a
+  `@pytest.mark.asyncio` test unsets the loop, those raise
+  `RuntimeError: There is no current event loop`. So the full-suite failure count is
+  inflated vs running a single file; prefer per-file runs when validating a change.

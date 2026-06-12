@@ -21,7 +21,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # ── Path resolution ──────────────────────────────────────────────────────────
 # Unified resolver honors ALGOCHAINS_CONTROL_TOWER first, then falls back to
@@ -40,6 +40,174 @@ BOT_MAP = {
 }
 
 SYMBOL_MAP = {"mnq": "MNQ", "cl": "CL", "mes": "MES", "nq": "NQ"}
+
+
+def _tail_jsonl(path: Path, limit: int = 200) -> list[dict[str, Any]]:
+    """Read recent JSONL telemetry rows without surfacing raw log payloads."""
+    if not path.exists():
+        return []
+    try:
+        from collections import deque
+
+        rows: list[dict[str, Any]] = []
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in deque(handle, maxlen=max(1, limit)):
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+        return rows
+    except Exception:
+        return []
+
+
+def _pctl(values: list[float], pct: float) -> float:
+    vals = sorted(v for v in values if isinstance(v, (int, float)))
+    if not vals:
+        return 0.0
+    idx = min(len(vals) - 1, max(0, int(round((pct / 100.0) * (len(vals) - 1)))))
+    return round(float(vals[idx]), 3)
+
+
+def _rate(count: int, total: int) -> float:
+    return round(count / max(total, 1), 4)
+
+
+def _read_env_file_value(env_file: Path, key: str) -> str | None:
+    if not env_file.exists():
+        return None
+    try:
+        for raw_line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            env_key, value = line.split("=", 1)
+            if env_key.strip() == key:
+                return value.strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return None
+
+
+def _pipeline_timeout_config(control_tower: Path) -> tuple[float, str]:
+    """
+    Return the bot runtime timeout, preferring control-tower .env over MCP env.
+
+    The watchdog alert is about the desktop bot process, so the control-tower
+    .env is the source of truth when present.
+    """
+    raw = _read_env_file_value(control_tower / ".env", "PIPELINE_TIMEOUT_SECONDS")
+    source = "control_tower_env"
+    if raw is None:
+        raw = os.getenv("PIPELINE_TIMEOUT_SECONDS")
+        source = "process_env"
+    if raw is None:
+        raw = "8"
+        source = "default"
+    try:
+        return float(raw), source
+    except (TypeError, ValueError):
+        return 8.0, "default_invalid"
+
+
+def _summarize_desktop_inference(control_tower: Path) -> dict[str, Any]:
+    rows = _tail_jsonl(control_tower / "logs" / "desktop_inference_latency.jsonl", 200)
+    if not rows:
+        return {"status": "missing_or_empty", "count": 0}
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        key = (
+            f"{row.get('model_id', 'unknown')}|"
+            f"{row.get('runtime', 'unknown')}|"
+            f"{row.get('prompt_class', 'unknown')}"
+        )
+        groups.setdefault(key, []).append(row)
+
+    summary: dict[str, Any] = {}
+    for key, group_rows in sorted(groups.items(), key=lambda item: len(item[1]), reverse=True)[:20]:
+        latencies = [
+            float(r.get("latency_s") or 0.0)
+            for r in group_rows
+            if r.get("latency_s") is not None
+        ]
+        failures = [r for r in group_rows if not r.get("ok")]
+        schema_failures = [r for r in group_rows if r.get("validation_errors")]
+        fallback_reasons = sorted(
+            {str(r.get("fallback_reason")) for r in failures if r.get("fallback_reason")}
+        )
+        summary[key] = {
+            "count": len(group_rows),
+            "p50_s": _pctl(latencies, 50),
+            "p95_s": _pctl(latencies, 95),
+            "max_s": round(max(latencies), 3) if latencies else 0.0,
+            "failure_rate": _rate(len(failures), len(group_rows)),
+            "schema_failure_rate": _rate(len(schema_failures), len(group_rows)),
+            "fallback_reasons": fallback_reasons[:10],
+        }
+    return {"status": "ok", "count": len(rows), "groups": summary}
+
+
+def _summarize_decision_latency(
+    control_tower: Path,
+    *,
+    pipeline_timeout_s: float,
+) -> dict[str, Any]:
+    rows = _tail_jsonl(control_tower / "logs" / "decision_latency.jsonl", 500)
+    if not rows:
+        return {"status": "missing_or_empty", "count": 0}
+
+    event_counts: dict[str, int] = {}
+    for row in rows:
+        event = str(row.get("event", "unknown"))
+        event_counts[event] = event_counts.get(event, 0) + 1
+
+    numeric_keys = (
+        "analyze_ms",
+        "multi_agent_ms",
+        "desktop_inference_ms",
+        "cloud_fallback_ms",
+        "order_submit_latency_ms",
+        "broker_ack_latency_ms",
+        "fill_confirm_latency_ms",
+        "signal_to_ack_ms",
+        "signal_to_fill_ms",
+    )
+    metrics: dict[str, Any] = {}
+    for key in numeric_keys:
+        vals = [float(row[key]) for row in rows if isinstance(row.get(key), (int, float))]
+        if vals:
+            metrics[key] = {
+                "count": len(vals),
+                "p50_ms": _pctl(vals, 50),
+                "p95_ms": _pctl(vals, 95),
+                "max_ms": round(max(vals), 3),
+            }
+
+    timeout_events = sum(
+        count
+        for event, count in event_counts.items()
+        if "timeout" in event.lower()
+        and ("multi_agent" in event.lower() or "pipeline" in event.lower())
+    )
+    timeout_ms = pipeline_timeout_s * 1000.0
+    multi_agent_p95_ms = (metrics.get("multi_agent_ms") or {}).get("p95_ms")
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "events": event_counts,
+        "metrics": metrics,
+        "timeout_event_rate": _rate(timeout_events, len(rows)),
+        "slo": {
+            "pipeline_timeout_ms": round(timeout_ms, 3),
+            "multi_agent_p95_over_timeout": (
+                isinstance(multi_agent_p95_ms, (int, float))
+                and float(multi_agent_p95_ms) > timeout_ms
+            ),
+        },
+    }
 
 
 def _verify_owner(owner_token: str) -> tuple[bool, str]:
@@ -145,17 +313,28 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
 
     cfg = BOT_MAP[bot_id]
     log_path = CONTROL_TOWER / cfg["log"]
-    if not log_path.exists():
-        return {"bot": bot_id, "status": "unknown", "detail": "Log file not found"}
+    detail = None
 
     try:
-        size = log_path.stat().st_size
-        offset = max(0, size - 10240)
-        with open(log_path, "rb") as f:
-            f.seek(offset)
-            tail = f.read().decode("utf-8", errors="replace")
+        if log_path.exists():
+            size = log_path.stat().st_size
+            offset = max(0, size - 10240)
+            with open(log_path, "rb") as f:
+                f.seek(offset)
+                tail = f.read().decode("utf-8", errors="replace")
+        else:
+            tail = ""
+            detail = "Log file not found"
     except Exception as e:
-        return {"bot": bot_id, "status": "unknown", "error": str(e)}
+        tail = ""
+        detail = f"Log read error: {e}"
+
+    pipeline_timeout_s, timeout_source = _pipeline_timeout_config(CONTROL_TOWER)
+    decision_latency = _summarize_decision_latency(
+        CONTROL_TOWER,
+        pipeline_timeout_s=pipeline_timeout_s,
+    )
+    desktop_inference = _summarize_desktop_inference(CONTROL_TOWER)
 
     anthropic_error = bool(re.search(r"insufficient_quota|credit balance|overloaded_error|529", tail, re.I))
     cerebras_error  = bool(re.search(r"llama3\.3.*not found|model.*404|cerebras.*error", tail, re.I))
@@ -163,10 +342,15 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     shadow_mode     = bool(re.search(r"shadow.?mode|shadow_mode.*True", tail, re.I))
     ensemble_active = bool(re.search(r"AI APPROVED|Multi-agent APPROVED", tail))
     ensemble_reject = bool(re.search(r"AI REJECTED|advisory REJECTED", tail))
-    debate_timeout  = re.findall(r"(\d+\.?\d*)s[).] pipeline|pipeline.*?(\d+\.?\d*)s", tail)
+    decision_timeout_rate = float(decision_latency.get("timeout_event_rate", 0.0) or 0.0)
+    multi_agent_p95_over_timeout = bool(
+        (decision_latency.get("slo") or {}).get("multi_agent_p95_over_timeout")
+    )
+    telemetry_timeout = decision_timeout_rate > 0.0 or multi_agent_p95_over_timeout
+    pipeline_timeout_detected = timeout_event or telemetry_timeout
 
     mode = "unknown"
-    if shadow_mode or timeout_event:
+    if shadow_mode or pipeline_timeout_detected:
         mode = "shadow_timeout"
     elif ensemble_active:
         mode = "active"
@@ -180,15 +364,24 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         "blocks_trades": False,
         "anthropic_quota_error": anthropic_error,
         "cerebras_model_error": cerebras_error,
-        "pipeline_timeout_detected": timeout_event,
+        "pipeline_timeout_detected": pipeline_timeout_detected,
+        "pipeline_timeout_log_detected": timeout_event,
+        "pipeline_timeout_event_rate": decision_timeout_rate,
+        "multi_agent_p95_over_timeout": multi_agent_p95_over_timeout,
         "shadow_mode_active": shadow_mode,
         "last_ensemble_approved": ensemble_active,
         "last_ensemble_rejected": ensemble_reject,
-        "pipeline_timeout_config_s": float(os.getenv("PIPELINE_TIMEOUT_SECONDS", "8")),
+        "pipeline_timeout_config_s": pipeline_timeout_s,
+        "pipeline_timeout_config_source": timeout_source,
+        "decision_latency": decision_latency,
+        "desktop_inference": desktop_inference,
         "cerebras_model": "llama3.1-8b",
+        "detail": detail,
         "note": (
             "Anthropic credits zero — top up console.anthropic.com to restore 7-AI voting"
             if anthropic_error else
+            "Pipeline timeout rate elevated — inspect decision_latency.multi_agent_ms and desktop_inference groups"
+            if pipeline_timeout_detected else
             "Pipeline healthy" if mode == "active" else
             "Pipeline in shadow/timeout mode — all trades use primary confidence gate only"
         ),

@@ -379,7 +379,7 @@ def _mcp_server_args() -> dict:
         )
     env.setdefault(
         "ALGOCHAINS_BRIDGE_URL",
-        os.getenv("ALGOCHAINS_BRIDGE_URL", "https://api.algochains.ai"),
+        os.getenv("ALGOCHAINS_BRIDGE_URL", "https://mcp.algochains.ai"),
     )
     return {
         "command": sys.executable,

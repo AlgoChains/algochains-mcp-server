@@ -30,7 +30,7 @@ The MCP server can also place orders (via `place_order`, `cancel_order`) — pri
 
 ### `X-Request-Id` (HTTP bridge header)
 
-Every request through the HTTP bridge (`/mcp` endpoint) gets an `X-Request-Id` header:
+Every request through the HTTP bridge (`/api/mcp` endpoint) gets an `X-Request-Id` header:
 - **Inbound:** if the caller provides `X-Request-Id`, it is preserved and reflected back
 - **Generated:** if absent, the bridge generates a random 8-char hex ID
 - **Logged:** the middleware logs `req_id`, `path`, `method`, `status`, `elapsed_ms`
@@ -45,8 +45,8 @@ import uuid
 signal_id = str(uuid.uuid4())  # generate or reuse from trade_log row
 
 response = requests.post(
-    "https://your-mcp-bridge/mcp",
-    headers={"X-API-Key": OWNER_KEY, "X-Request-Id": signal_id},
+    "https://your-mcp-bridge/api/mcp",
+    headers={"X-Api-Key": OWNER_KEY, "X-Request-Id": signal_id},
     json={
         "tool": "place_order",
         "arguments": {

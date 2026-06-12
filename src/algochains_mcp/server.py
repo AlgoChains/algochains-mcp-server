@@ -56,6 +56,8 @@ import os
 import sys
 from pathlib import Path as _PathGlobal
 
+from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
+
 
 def _default_control_tower() -> str:
     """
@@ -112,6 +114,27 @@ def _pctl(values: list[float], pct: float) -> float:
 
 def _rate(count: int, total: int) -> float:
     return round(count / max(total, 1), 4)
+
+
+_TRACEABILITY_TRANSIENT_MARKERS = (
+    "connecterror",
+    "connection reset by peer",
+    "connectionreseterror",
+    "errno 54",
+    "readtimeout",
+    "read timeout",
+    "protocolerror",
+    "remoteprotocolerror",
+    "readerror",
+    "server disconnected",
+    "connection aborted",
+)
+
+
+def _is_traceability_transient_failure(*chunks: str | None) -> bool:
+    """Return true for traceability audit failures worth retrying locally."""
+    text = "\n".join(chunk for chunk in chunks if chunk).lower()
+    return any(marker in text for marker in _TRACEABILITY_TRANSIENT_MARKERS)
 
 
 def _summarize_desktop_inference_log(control_tower: _PathGlobal) -> dict[str, Any]:
@@ -3542,8 +3565,10 @@ TOOLS = [
              "take_profit": {"type": "number", "default": 0.0},
          }, "required": ["strategy_name", "symbol", "side", "qty"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="check_propagation_health", description="Check if the AlgoChains Django signal propagation service (Roo architecture) is reachable. Returns endpoint URL, reachability, and setup status. Use before running bots.",
-         inputSchema={"type": "object", "properties": {}, "required": []},
+    Tool(name="check_propagation_health", description="Check if the AlgoChains Django signal propagation service (Roo architecture) is reachable and whether copy-trade paper fanout has active backlog. Separates active_lag_seconds from idle_since_last_signal_seconds so quiet markets do not look stalled.",
+         inputSchema={"type": "object", "properties": {
+             "max_lag_seconds": {"type": "number", "default": 30.0, "description": "SLO threshold for active, unexpired signal backlog."},
+         }, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="run_guardrail", description="Run the GUARDRAIL pre-flight middleware chain before placing any order. Executes 6 gates: VIX, daily-loss, stoploss-guard, cooldown, confidence, R/R. Returns approved=true only if all gates pass. Wire this before every order execution.",
          inputSchema={"type": "object", "properties": {
@@ -3846,6 +3871,10 @@ TOOLS = [
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_system_heartbeat",
          description="Check whether this MCP server node is the primary trader (MacBook offline) or standby (MacBook alive). Reads the Mac heartbeat file to determine heartbeat age, Mac liveness, and which node is currently running the bots. Critical for dual-node failover awareness.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_adaptive_brain_status",
+         description="Read adaptive_brain.py daemon liveness from bounded process, script, state, and log evidence. Read-only; does not restart or mutate daemon state.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_strategy_academic_citations",
@@ -4638,6 +4667,7 @@ TIER1_TOOL_NAMES = {
     "get_live_bot_metrics",
     "get_all_bot_metrics",
     "get_system_heartbeat",
+    "get_adaptive_brain_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
     "list_bot_research_attachments",
@@ -4799,10 +4829,154 @@ async def list_tools() -> list[Tool]:
     return TOOLS_TIER1
 
 
+async def _execute_tool_with_runtime_guards(
+    name: str,
+    arguments: dict,
+    registry: BrokerRegistry,
+    *,
+    transport: str,
+    policy_decision: Any,
+) -> list[TextContent]:
+    """Run a tool through the shared runtime guards before dispatch.
+
+    Dynamic dispatch authorizes hidden tools before this helper is called; the
+    inner tool still needs the same rate limits, circuit breakers, timeouts, and
+    response guard that direct calls receive.
+    """
+    arguments = validate_arguments(name, arguments)
+    limiter = get_rate_limiter()
+    tlog = get_tool_logger()
+    t0 = time.monotonic()
+
+    try:
+        # Replay guard for signed destructive requests. Unsigned callers pass
+        # through; this activates only when timestamp + nonce are provided.
+        _x_ts = arguments.pop("_x_timestamp", None)
+        _x_nonce = arguments.pop("_x_nonce", None)
+        if _x_ts and _x_nonce:
+            try:
+                from .tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
+                _tier = get_tool_tier(name)
+                if _tier >= TIER_ORDER_EXEC:
+                    from .security.replay_guard import _GLOBAL_GUARD as _rg
+                    _rg_result = _rg.validate(_x_ts, _x_nonce)
+                    if not _rg_result.get("valid", True):
+                        return _text({
+                            "error_type": "ReplayGuardRejected",
+                            "tool": name,
+                            "reason": _rg_result.get("reason", "unknown"),
+                            "message": "Request rejected by replay guard. Timestamp too old or nonce already seen.",
+                        })
+            except ImportError:
+                pass  # tier module unavailable — skip replay check
+
+        check_circuit(name)
+
+        broker_name = arguments.get("broker", "")
+        if broker_name:
+            await limiter.acquire(broker_name)
+
+        category = get_tool_category(name)
+        if category:
+            await limiter.acquire(category)
+
+        try:
+            from .security.per_tool_rate_limiter import check_rate_limit as _check_ptrl
+            _ptrl_result = _check_ptrl(name)
+            if not _ptrl_result.get("allowed", True):
+                return _text({
+                    "error_type": "RateLimitError",
+                    "tool": name,
+                    "message": f"Per-tool rate limit exceeded: {_ptrl_result.get('description', '')}",
+                    "calls_in_window": _ptrl_result.get("calls_in_window"),
+                    "limit": _ptrl_result.get("limit"),
+                    "window_seconds": _ptrl_result.get("window_seconds"),
+                    "reset_in_seconds": _ptrl_result.get("reset_in_seconds"),
+                })
+        except ImportError:
+            pass  # security module unavailable — category limiter is still active
+
+        sem = get_tool_semaphore(name)
+        timeout = get_tool_timeout(name)
+
+        async def _guarded_dispatch() -> list[TextContent]:
+            if sem:
+                async with sem:
+                    return await asyncio.wait_for(
+                        _dispatch_tool(name, arguments, registry),
+                        timeout=timeout,
+                    )
+            return await asyncio.wait_for(
+                _dispatch_tool(name, arguments, registry),
+                timeout=timeout,
+            )
+
+        with trace_span(
+            "mcp.tool.call",
+            {
+                "tool.name": name,
+                "mcp.server": "algochains",
+                "mcp.transport": transport,
+                "algochains.danger_tier": policy_decision.danger_tier,
+                "algochains.danger_label": policy_decision.danger_label,
+                "algochains.tier_source": policy_decision.tier_source,
+                "algochains.arguments_hash": redacted_argument_hash(arguments),
+            },
+        ) as span:
+            result = await _guarded_dispatch()
+            if span is not None:
+                span.set_attribute("algochains.tool.success", True)
+
+        for content in result:
+            if hasattr(content, "text"):
+                content.text = guard_response_size(content.text, name)
+
+        record_success(name)
+        tlog.log_call(name, arguments, duration_ms=(time.monotonic() - t0) * 1000)
+        return result
+
+    except asyncio.TimeoutError:
+        record_failure(name)
+        elapsed = (time.monotonic() - t0) * 1000
+        logger.error("Tool %s TIMED OUT after %.0fms (limit: %.0fs)", name, elapsed, get_tool_timeout(name))
+        tlog.log_call(name, arguments, error="timeout", duration_ms=elapsed)
+        return _text({"error_type": "TimeoutError", "message": f"Tool '{name}' timed out after {get_tool_timeout(name):.0f}s", "tool": name})
+
+    except CircuitOpenError as e:
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": "CircuitOpenError", "message": str(e), "tool": name, "retry_after_seconds": round(e.retry_after)})
+
+    except AlgoChainsError as e:
+        record_failure(name)
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _error_text(e)
+
+    except AttributeError as e:
+        record_failure(name)
+        msg = str(e)
+        if "NoneType" in msg or "None" in msg:
+            friendly = (
+                f"Engine for tool '{name}' failed to initialize (returned None). "
+                "Check server startup logs for import errors or missing env vars. "
+                f"Original error: {msg}"
+            )
+            logger.error("Tool %s: uninitialized engine — %s", name, msg)
+            tlog.log_call(name, arguments, error=friendly, duration_ms=(time.monotonic() - t0) * 1000)
+            return _text({"error_type": "EngineUnavailable", "message": friendly, "tool": name})
+        logger.error("Tool %s AttributeError: %s", name, msg, exc_info=True)
+        tlog.log_call(name, arguments, error=msg, duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": "AttributeError", "message": msg, "tool": name})
+
+    except Exception as e:
+        record_failure(name)
+        logger.error("Tool %s failed: %s", name, e, exc_info=True)
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": type(e).__name__, "message": str(e), "tool": name})
+
+
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     registry = _get_registry()
-    limiter = get_rate_limiter()
     tlog = get_tool_logger()
     t0 = time.monotonic()
 
@@ -4850,104 +5024,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             payload["message"] = direct_decision.reason
             return _text(payload)
 
-        # ── 1b. Replay guard for signed destructive requests ─────
-        # When a caller includes X-Timestamp + X-Nonce headers (passed as
-        # _x_timestamp / _x_nonce arguments), validate freshness and uniqueness
-        # for Tier-2+ tools.  Unsigned callers (no headers) pass through; this
-        # gate only activates when the caller opts into signed requests.
-        _x_ts = arguments.pop("_x_timestamp", None)
-        _x_nonce = arguments.pop("_x_nonce", None)
-        if _x_ts and _x_nonce:
-            try:
-                from .tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
-                _tier = get_tool_tier(name)
-                if _tier >= TIER_ORDER_EXEC:
-                    from .security.replay_guard import _GLOBAL_GUARD as _rg
-                    _rg_result = _rg.validate(_x_ts, _x_nonce)
-                    if not _rg_result.get("valid", True):
-                        return _text({
-                            "error_type": "ReplayGuardRejected",
-                            "tool": name,
-                            "reason": _rg_result.get("reason", "unknown"),
-                            "message": "Request rejected by replay guard. Timestamp too old or nonce already seen.",
-                        })
-            except ImportError:
-                pass  # tier module unavailable — skip replay check
-
-        # ── 2. Circuit breaker — fail fast if engine is down ─────
-        check_circuit(name)
-
-        # ── 3. Rate limiting ─────────────────────────────────────
-        broker_name = arguments.get("broker", "")
-        if broker_name:
-            await limiter.acquire(broker_name)
-
-        category = get_tool_category(name)
-        if category:
-            await limiter.acquire(category)
-
-        # ── 3b. Per-tool rate limits (destructive tools) ─────────
-        # check_rate_limit() is O(1) for tools not in TOOL_RATE_LIMITS.
-        # Must run AFTER category limiter so both layers enforce sequentially.
-        try:
-            from .security.per_tool_rate_limiter import check_rate_limit as _check_ptrl
-            _ptrl_result = _check_ptrl(name)
-            if not _ptrl_result.get("allowed", True):
-                return _text({
-                    "error_type": "RateLimitError",
-                    "tool": name,
-                    "message": f"Per-tool rate limit exceeded: {_ptrl_result.get('description', '')}",
-                    "calls_in_window": _ptrl_result.get("calls_in_window"),
-                    "limit": _ptrl_result.get("limit"),
-                    "window_seconds": _ptrl_result.get("window_seconds"),
-                    "reset_in_seconds": _ptrl_result.get("reset_in_seconds"),
-                })
-        except ImportError:
-            pass  # security module unavailable — category limiter is still active
-
-        # ── 4. Concurrency semaphore — bound parallel calls ──────
-        sem = get_tool_semaphore(name)
-        timeout = get_tool_timeout(name)
-
-        async def _guarded_dispatch() -> list[TextContent]:
-            if sem:
-                async with sem:
-                    return await asyncio.wait_for(
-                        _dispatch_tool(name, arguments, registry),
-                        timeout=timeout,
-                    )
-            else:
-                return await asyncio.wait_for(
-                    _dispatch_tool(name, arguments, registry),
-                    timeout=timeout,
-                )
-
-        # ── 5. Execute with timeout ──────────────────────────────
-        with trace_span(
-            "mcp.tool.call",
-            {
-                "tool.name": name,
-                "mcp.server": "algochains",
-                "mcp.transport": "stdio",
-                "algochains.danger_tier": direct_decision.danger_tier,
-                "algochains.danger_label": direct_decision.danger_label,
-                "algochains.tier_source": direct_decision.tier_source,
-                "algochains.arguments_hash": redacted_argument_hash(arguments),
-            },
-        ) as span:
-            result = await _guarded_dispatch()
-            if span is not None:
-                span.set_attribute("algochains.tool.success", True)
-
-        # ── 6. Response size guard ───────────────────────────────
-        for content in result:
-            if hasattr(content, "text"):
-                content.text = guard_response_size(content.text, name)
-
-        # ── 7. Record success (circuit breaker) ──────────────────
-        record_success(name)
-        tlog.log_call(name, arguments, duration_ms=(time.monotonic() - t0) * 1000)
-        return result
+        return await _execute_tool_with_runtime_guards(
+            name,
+            arguments,
+            registry,
+            transport="stdio",
+            policy_decision=direct_decision,
+        )
 
     except asyncio.TimeoutError:
         record_failure(name)
@@ -5214,16 +5297,27 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 })
         # ── End V22 Guardrails ────────────────────────────────────
 
-        order = await conn.place_order(
-            symbol=arguments["symbol"],
-            side=OrderSide(arguments["side"]),
-            qty=arguments["qty"],
-            order_type=OrderType(arguments.get("order_type", "market")),
-            limit_price=arguments.get("limit_price"),
-            stop_price=arguments.get("stop_price"),
-            trail_pct=arguments.get("trail_pct"),
-            time_in_force=arguments.get("time_in_force", "day"),
-        )
+        try:
+            order = await conn.place_order(
+                symbol=arguments["symbol"],
+                side=OrderSide(arguments["side"]),
+                qty=arguments["qty"],
+                order_type=OrderType(arguments.get("order_type", "market")),
+                limit_price=arguments.get("limit_price"),
+                stop_price=arguments.get("stop_price"),
+                trail_pct=arguments.get("trail_pct"),
+                time_in_force=arguments.get("time_in_force", "day"),
+            )
+        except Exception as _order_err:
+            if _GUARDRAILS_AVAILABLE:
+                try:
+                    get_guardrails().record_order_failure(
+                        arguments.get("broker", "tradovate"),
+                        str(_order_err),
+                    )
+                except Exception:
+                    pass
+            raise
         # V22: Record successful order for circuit breaker health tracking
         if _GUARDRAILS_AVAILABLE:
             try:
@@ -5656,36 +5750,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             try:
                 import json as _json_e2e
                 _e2e_raw = _json_e2e.loads(_e2e_state_path.read_text())
-                _e2e_class = _e2e_raw.get("classification", {}) or {}
-                _e2e_evidence = _e2e_raw.get("evidence", {}) or {}
-                _e2e_broker = _e2e_evidence.get("broker", {}) or {}
-                _e2e_process = _e2e_evidence.get("process", {}) or {}
-                _e2e_log = _e2e_evidence.get("log", {}) or {}
-                _e2e_rate = _e2e_raw.get("rate_limits", {}) or {}
-                e2e_sentinel = {
-                    "generated_at": _e2e_raw.get("generated_at"),
-                    "state": _e2e_class.get("state"),
-                    "severity": _e2e_class.get("severity"),
-                    "issue_class": _e2e_class.get("issue_class"),
-                    "incident_id": _e2e_class.get("incident_id"),
-                    "why": _e2e_class.get("why"),
-                    "needs_owner": _e2e_class.get("needs_owner"),
-                    "safe_auto_action": _e2e_class.get("safe_auto_action"),
-                    "skill_routes": _e2e_class.get("skill_routes", []),
-                    "broker_flat": (
-                        _e2e_broker.get("positions_count") == 0
-                        and _e2e_broker.get("working_orders_count") == 0
-                    ),
-                    "positions_count": _e2e_broker.get("positions_count"),
-                    "working_orders_count": _e2e_broker.get("working_orders_count"),
-                    "pids": _e2e_process.get("pids", []),
-                    "fd_count": _e2e_process.get("fd_count"),
-                    "last_scan_age_sec": _e2e_log.get("last_scan_age_sec"),
-                    "memory_status": (_e2e_raw.get("memory", {}) or {}).get("status"),
-                    "slack_status": (_e2e_raw.get("slack", {}) or {}).get("status"),
-                    "last_memory_at": _e2e_rate.get("last_memory_at"),
-                    "last_slack_at": _e2e_rate.get("last_slack_at"),
-                }
+                e2e_sentinel = summarize_e2e_sentinel_state(_e2e_raw)
+                e2e_sentinel = apply_effective_sentinel_resolution(e2e_sentinel, _e2e_raw)
             except Exception as _e2e_err:
                 e2e_sentinel = {"status": "error", "detail": f"e2e_execution_sentinel.json parse failure: {_e2e_err}"}
 
@@ -7205,7 +7271,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         if not decision.allow:
             return _text(decision.as_error())
-        return await _dispatch_tool(inner_name, inner_args, registry)
+        return await _execute_tool_with_runtime_guards(
+            inner_name,
+            inner_args,
+            registry,
+            transport="dynamic",
+            policy_decision=decision,
+        )
 
     # ── V18: Intent-Based Trading ─────────────────────────────
     elif name == "execute_intent":
@@ -7997,7 +8069,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "check_propagation_health":
         from .trade_propagation import check_propagation_health
         try:
-            out = await check_propagation_health()
+            out = await check_propagation_health(
+                max_lag_seconds=float(args.get("max_lag_seconds", 30.0))
+            )
             return _text(out)
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
@@ -8946,6 +9020,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(hb.to_dict())
         except Exception as exc:
             return _text({"error": f"Heartbeat read error: {exc}"})
+
+    elif name == "get_adaptive_brain_status":
+        try:
+            from .adaptive_brain_status import get_adaptive_brain_status
+            return _text(get_adaptive_brain_status())
+        except Exception as exc:
+            return _text({"error": f"Adaptive brain status error: {exc}"})
 
     elif name == "get_strategy_academic_citations":
         try:
@@ -10259,17 +10340,35 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
-            if _proc.returncode != 0:
-                return _text({
-                    "error": "correlation audit failed",
-                    "returncode": _proc.returncode,
-                    "stderr": (_proc.stderr or "")[:500],
-                })
-            try:
-                return _text(_json.loads(_proc.stdout))
-            except Exception:
-                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+            _max_attempts = max(
+                1,
+                min(int(os.getenv("ALGOCHAINS_TRACEABILITY_AUDIT_ATTEMPTS", "3")), 5),
+            )
+            for _attempt in range(1, _max_attempts + 1):
+                _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+                if _proc.returncode == 0:
+                    try:
+                        return _text(_json.loads(_proc.stdout))
+                    except Exception:
+                        return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+
+                _transient = _is_traceability_transient_failure(_proc.stderr, _proc.stdout)
+                if not _transient or _attempt == _max_attempts:
+                    payload = {
+                        "error": "correlation audit failed",
+                        "returncode": _proc.returncode,
+                        "stderr": (_proc.stderr or "")[:500],
+                    }
+                    if _transient:
+                        payload.update({
+                            "error": "correlation audit transient failure",
+                            "transient": True,
+                            "attempts": _attempt,
+                            "retry_attempts": _attempt - 1,
+                        })
+                    return _text(payload)
+
+                time.sleep(min(0.25 * _attempt, 1.0))
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 

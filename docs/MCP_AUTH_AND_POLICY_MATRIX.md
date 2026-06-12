@@ -12,13 +12,41 @@ for stdio, HTTP bridge, and dynamic tool execution.
 | HTTP public | no key | `PUBLIC_TOOLS` only | no `ORDER_EXEC` or `DESTRUCTIVE` tools allowed |
 | HTTP owner | `ALGOCHAINS_BRIDGE_API_KEY` | `PUBLIC_TOOLS` + `OWNER_TOOLS` | `confirm=true`; caller scope ceilings apply |
 | HTTP subscriber | `sub_live_*` Supabase key | `SUBSCRIBER_TOOLS` only | no owner/broker execution surface |
+| HTTP developer | `ac_live_*` / `ac_test_*` Supabase key via `X-Api-Key` or bearer token | `DEVELOPER_TOOLS` only | max danger tier `WRITE_LOCAL`; `execute_dynamic_tool` blocked |
 
 ## Secret Split
 
 - `ALGOCHAINS_BRIDGE_API_KEY` authenticates owner access to the HTTP bridge.
 - `OWNER_API_TOKEN` authenticates owner execution through local/dynamic paths.
+- Developer keys are hashed before Supabase lookup and resolve through
+  `resolve_developer_api_key`; plaintext keys are never stored by the bridge.
+- Subscriber and developer keys are separate surfaces. A developer key does not
+  grant copy-trade subscriber data, and a subscriber key does not grant strategy
+  publishing/backtest tools.
 
 Do not assume one key grants the other surface.
+
+## Developer Tier Contract
+
+Developer-tier behavior is defined by:
+
+- `src/algochains_mcp/developer_auth.py` for key prefix detection, hashing,
+  Supabase resolution, positive/negative cache TTLs, and fail-closed behavior.
+- `src/algochains_mcp/developer_tools.py` for the allowlist, hard blocklist, and
+  per-tool scope requirements.
+- `src/algochains_mcp/developer_rate_limiter.py` for default limits:
+  60 RPM, 1,000 RPH, 15 requests per 10 seconds, and 256 KB request bodies.
+
+Hard constraints:
+
+- Only `ac_live_*` and `ac_test_*` keys enter the developer path.
+- Developer keys resolve before owner-key comparison, so a malformed developer
+  key cannot fall through into owner auth.
+- Developer tools must be `READ_ONLY` or `WRITE_LOCAL`; broker execution,
+  live bot/account state, subscriber tools, and `execute_dynamic_tool` are
+  explicitly blocked.
+- Missing scopes return a `missing_scope:<scope>` denial reason instead of
+  falling back to public or owner behavior.
 
 ## Manifest Contract
 

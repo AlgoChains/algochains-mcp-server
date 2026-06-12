@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -20,6 +21,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from algochains_mcp.http_bridge import create_fastapi_app, PUBLIC_TOOLS, OWNER_TOOLS, _SERVER_VERSION
+from algochains_mcp.subscriber_auth import ResolvedSubscriber
 from algochains_mcp.subscriber_tools import SUBSCRIBER_TOOLS
 
 FAKE_OWNER_KEY = "test-owner-key-12345"
@@ -79,6 +81,27 @@ def test_health_includes_version():
     assert body["version"] == _SERVER_VERSION
 
 
+def test_bridge_starts_without_control_tower_env(monkeypatch):
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER", raising=False)
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER_PATH", raising=False)
+    client = _make_client()
+    resp = client.get("/health")
+    assert resp.status_code == 200
+
+
+def test_status_alias_matches_health():
+    client = _make_client()
+    health = client.get("/health")
+    status = client.get("/status")
+    assert status.status_code == 200
+    health_body = health.json()
+    status_body = status.json()
+    assert status_body["timestamp"]
+    assert {k: v for k, v in status_body.items() if k != "timestamp"} == {
+        k: v for k, v in health_body.items() if k != "timestamp"
+    }
+
+
 # ── Anonymous access ─────────────────────────────────────────────────────────
 
 
@@ -109,6 +132,38 @@ def test_anon_blocked_from_get_account():
     client = _make_client()
     result = _call_tool(client, "get_account")
     assert result["status_code"] == 401
+
+
+def test_public_marketplace_route_returns_listings_without_key():
+    client = _make_client()
+    payload = {
+        "total": 3,
+        "live": 1,
+        "validated": 2,
+        "paper": 0,
+        "subscribable": 3,
+        "owner_only": 0,
+        "listings": [
+            {"id": "mnq", "name": "MNQ Scalper", "status": "live"},
+            {"id": "cl", "name": "CL Swing", "status": "validated"},
+            {"id": "mes", "name": "MES EMA", "status": "validated"},
+        ],
+        "source": "supabase",
+    }
+
+    with patch(
+        "algochains_mcp.server.call_tool",
+        new_callable=AsyncMock,
+        return_value=[SimpleNamespace(text=json.dumps(payload))],
+    ) as mock_call:
+        resp = client.get("/api/marketplace?asset_class=futures&status=live&limit=500")
+
+    assert resp.status_code == 200
+    assert resp.json() == payload
+    mock_call.assert_awaited_once_with(
+        "get_marketplace_listings",
+        {"asset_class": "futures", "status": "live", "limit": 100},
+    )
 
 
 # ── Owner access ─────────────────────────────────────────────────────────────
@@ -145,6 +200,30 @@ def test_owner_can_call_public_tool():
         result = _call_tool(client, "get_vix_term_structure", {}, **OWNER_HEADERS)
     # Should not be a 401 or 403
     assert result["status_code"] not in (401, 403), f"Owner should access public tools: {result}"
+
+
+def test_owner_can_read_agent_status():
+    client = _make_client()
+    resp = client.get("/v1/agent/status", headers=OWNER_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["access_level"] == "owner"
+    assert "bots_alive" in body
+
+
+def test_invalid_agent_status_key_gets_401():
+    client = _make_client()
+    resp = client.get("/v1/agent/status", headers={"X-Api-Key": "bad-key-xyz"})
+    assert resp.status_code == 401
+
+
+def test_bot_card_public_route_does_not_crash():
+    client = _make_client()
+    with patch("algochains_mcp.http_bridge.handle_mcp_request", new_callable=AsyncMock) as mock_handle:
+        mock_handle.return_value = {"bot_id": "mnq"}
+        resp = client.get("/api/bots/mnq/card")
+    assert resp.status_code == 200
+    assert resp.json()["bot_id"] == "mnq"
 
 
 # ── Subscriber access ─────────────────────────────────────────────────────────
@@ -196,6 +275,22 @@ def test_subscriber_blocked_from_place_order():
             f"Subscriber place_order must return error body: {result}"
     else:
         assert result["status_code"] in (401, 403), f"Unexpected status: {result}"
+
+
+def test_subscriber_signal_stream_requires_signal_scope():
+    """SSE stream must enforce the same subscriber scope gate as /api/mcp."""
+    client = _make_client()
+    fake_sub = ResolvedSubscriber(subscriber_id="s1", scopes=("paper_trade",))
+    with (
+        patch("algochains_mcp.http_bridge.is_subscriber_key", return_value=True),
+        patch("algochains_mcp.http_bridge.resolve_subscriber_key", return_value=fake_sub),
+    ):
+        resp = client.get("/api/signals/stream", headers={"X-Api-Key": FAKE_SUB_KEY})
+
+    assert resp.status_code == 403
+    body = resp.json()
+    assert body["detail"]["tool"] == "get_signal_stream"
+    assert body["detail"]["required_scope"] == "signal_stream"
 
 
 # ── Unknown key ───────────────────────────────────────────────────────────────
