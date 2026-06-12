@@ -87,6 +87,19 @@ def test_bridge_starts_without_control_tower_env(monkeypatch):
     assert resp.status_code == 200
 
 
+def test_status_alias_matches_health():
+    client = _make_client()
+    health = client.get("/health")
+    status = client.get("/status")
+    assert status.status_code == 200
+    health_body = health.json()
+    status_body = status.json()
+    assert status_body["timestamp"]
+    assert {k: v for k, v in status_body.items() if k != "timestamp"} == {
+        k: v for k, v in health_body.items() if k != "timestamp"
+    }
+
+
 # ── Anonymous access ─────────────────────────────────────────────────────────
 
 

@@ -415,8 +415,7 @@ def create_fastapi_app():
         arguments: dict = {}
         user_email: str | None = None
 
-    @app_http.get("/health")
-    async def health():
+    def _health_payload() -> dict:
         """
         Bridge health — includes version, auth mode, and server import check.
         Phase J observability: richer /health for incident triage.
@@ -438,6 +437,15 @@ def create_fastapi_app():
             "tool_count": tool_count,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    @app_http.get("/health")
+    async def health():
+        return _health_payload()
+
+    @app_http.get("/status")
+    async def status():
+        """Legacy watchdog-compatible alias for /health."""
+        return _health_payload()
 
     @app_http.get("/tools")
     async def list_available_tools(
@@ -778,21 +786,23 @@ def create_fastapi_app():
     # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
     # Subscribers receive a sanitised view — no raw P&L, no account numbers.
 
-    def _default_control_tower_path() -> str:
+    def _resolve_control_tower_path() -> str:
+        configured = os.environ.get("ALGOCHAINS_CONTROL_TOWER") or os.environ.get(
+            "ALGOCHAINS_CONTROL_TOWER_PATH"
+        )
+        if configured:
+            return configured
+
         here = _PathGlobal(__file__).resolve()
         for parent in here.parents:
             candidate = parent / "algochains-control-tower"
             if candidate.exists():
                 return str(candidate)
-        # The /v1/agent endpoints tolerate missing state files. Use a stable
-        # repo-local fallback instead of assuming a fixed parent depth.
-        if len(here.parents) >= 3:
-            return str(here.parents[2] / "algochains-control-tower")
-        return str(here.parent / "algochains-control-tower")
 
-    _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
-    if not _CT:
-        _CT = _default_control_tower_path()
+        repo_root = here.parents[2] if len(here.parents) >= 3 else here.parent
+        return str(repo_root / "algochains-control-tower")
+
+    _CT = _resolve_control_tower_path()
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
