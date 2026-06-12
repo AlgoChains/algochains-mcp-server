@@ -837,6 +837,26 @@ def create_fastapi_app():
     # SECURITY FIX (V22 audit): Sensitive GET convenience endpoints require API key.
     # Previously these called handle_mcp_request(is_owner=True) with no auth check —
     # any unauthenticated client could scrape live bot metrics and heartbeat status.
+    # Marketplace listings are the exception: this is public, read-only catalogue
+    # data and Command Center health probes call the legacy GET route directly.
+
+    @app_http.get("/api/marketplace")
+    async def get_marketplace(
+        asset_class: str = "all",
+        status: str = "all",
+        limit: int = 50,
+    ):
+        """Convenience endpoint: public marketplace listings."""
+        safe_limit = max(1, min(int(limit), 100))
+        return await handle_mcp_request(
+            "get_marketplace_listings",
+            {
+                "asset_class": asset_class,
+                "status": status,
+                "limit": safe_limit,
+            },
+            is_owner=False,
+        )
 
     @app_http.get("/api/bots")
     async def get_all_bots(
