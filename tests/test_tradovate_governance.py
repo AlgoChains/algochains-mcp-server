@@ -81,7 +81,6 @@ def test_connect_prefers_preexisting_token(monkeypatch):
 
     # Track HTTP calls — should be 0 if pre-existing token is used
     http_calls: list[str] = []
-    original_post = conn._http.post
 
     async def _mock_post(url, *a, **kw):
         http_calls.append(url)
