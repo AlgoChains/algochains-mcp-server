@@ -61,6 +61,8 @@ from .tool_policy import (
     visible_tools_for_bridge,
 )
 from .otel_tracing import redacted_argument_hash, trace_span
+from .e2e_sentinel import summarize_e2e_sentinel_state
+from .paths import default_control_tower
 
 log = logging.getLogger(__name__)
 
@@ -954,23 +956,7 @@ def create_fastapi_app():
     # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
     # Subscribers receive a sanitised view — no raw P&L, no account numbers.
 
-    def _resolve_control_tower_path() -> str:
-        configured = os.environ.get("ALGOCHAINS_CONTROL_TOWER") or os.environ.get(
-            "ALGOCHAINS_CONTROL_TOWER_PATH"
-        )
-        if configured:
-            return configured
-
-        here = _PathGlobal(__file__).resolve()
-        for parent in here.parents:
-            candidate = parent / "algochains-control-tower"
-            if candidate.exists():
-                return str(candidate)
-
-        repo_root = here.parents[2] if len(here.parents) >= 3 else here.parent
-        return str(repo_root / "algochains-control-tower")
-
-    _CT = _resolve_control_tower_path()
+    _CT = str(default_control_tower())
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
@@ -1034,14 +1020,7 @@ def create_fastapi_app():
         }
 
         # E2E sentinel summary
-        sentinel_class = sentinel.get("classification") or {}
-        sentinel_summary = {
-            "outcome": sentinel_class.get("outcome"),
-            "severity": sentinel_class.get("severity"),
-            "reason": sentinel_class.get("reason"),
-            "description": sentinel_class.get("description"),
-            "ts": sentinel.get("last_check"),
-        }
+        sentinel_summary = summarize_e2e_sentinel_state(sentinel)
 
         # Signal health summary per bot
         signal_summaries: dict = {}
