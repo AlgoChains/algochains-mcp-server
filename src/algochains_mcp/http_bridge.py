@@ -62,6 +62,7 @@ from .tool_policy import (
     visible_tools_for_bridge,
 )
 from .otel_tracing import redacted_argument_hash, trace_span
+from .paths import default_control_tower
 
 log = logging.getLogger(__name__)
 
@@ -808,10 +809,7 @@ def create_fastapi_app():
     # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
     # Subscribers receive a sanitised view — no raw P&L, no account numbers.
 
-    _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
-    if not _CT:
-        # resolve relative to this file's location
-        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+    _CT = str(default_control_tower())
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
