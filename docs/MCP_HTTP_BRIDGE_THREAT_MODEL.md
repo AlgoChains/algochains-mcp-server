@@ -14,6 +14,7 @@
 | Tradovate session / OAuth tokens | `.env` + `state/tradovate_token.json` | CRITICAL — enables live order placement |
 | `ALGOCHAINS_BRIDGE_API_KEY` (owner key) | `.env` | HIGH — full owner tool access |
 | `sub_live_*` subscriber keys | Supabase `subscriber_api_keys` table | HIGH — subscriber data + fill reporting |
+| `ac_live_*` / `ac_test_*` developer keys | Supabase `developer_api_keys` table | HIGH — developer strategy, data, and marketplace write-local tools |
 | Supabase service role key | `.env` | HIGH — row-level security bypass capability |
 | ML model artifacts (`.pkl`, `.json`) | `models/` | MEDIUM — IP; integrity tied to SHA-256 checks |
 | Marketplace listing data | Supabase + file system | LOW — publicly browsable subset |
@@ -25,8 +26,9 @@
 | Actor | Auth mechanism | Tool surface | Can call danger tiers? |
 |-------|---------------|-------------|------------------------|
 | Anonymous / no key | None | `PUBLIC_TOOLS` only (13 tools) | No |
-| Owner | `ALGOCHAINS_BRIDGE_API_KEY` + `user_email == OWNER_EMAIL` | `PUBLIC_TOOLS` + `OWNER_TOOLS` (40 tools total) | Yes — with `confirm=true` |
-| Subscriber | `sub_live_*` key resolved against Supabase | `SUBSCRIBER_TOOLS` (12 tools, scoped) | No |
+| Owner | `ALGOCHAINS_BRIDGE_API_KEY` | `PUBLIC_TOOLS` + `OWNER_TOOLS` | Yes — with `confirm=true` |
+| Subscriber | `sub_live_*` key resolved against Supabase | `SUBSCRIBER_TOOLS` (7 tools, scoped) | No |
+| Developer | `ac_live_*` / `ac_test_*` key resolved against Supabase | `DEVELOPER_TOOLS` (scoped, no broker execution) | No `ORDER_EXEC`; max `WRITE_LOCAL` |
 | Dev mode (localhost only) | `ALGOCHAINS_BRIDGE_DEV_MODE=true` | Public tools without key | No |
 
 Current implementation note: HTTP bridge dispatch now delegates danger tier,
@@ -37,7 +39,7 @@ alias for older tool schemas.
 ### Public Tools (13)
 Read-only: market data, strategy discovery, Onyx search, macro signals, VIX term structure, latency profile.
 
-### Owner Tools (27)
+### Owner Tools
 Authoritative list lives in `src/algochains_mcp/http_bridge.py::OWNER_TOOLS`.
 The owner surface includes live account reads, owner bot metrics, controlled
 marketplace operations, Onyx ingest/status, and explicitly confirmed order
@@ -45,6 +47,18 @@ execution tools.
 
 ### Subscriber Tools (7)
 `get_signal_stream`, `ack_signal`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `report_fill`, `heartbeat`
+
+### Developer Tools
+Authoritative list lives in `src/algochains_mcp/developer_tools.py::DEVELOPER_TOOLS`.
+The developer surface includes public market/regime reads, Onyx search, tool
+discovery, validation/backtest helpers, historical data reads, and marketplace
+submission. The bridge blocks `execute_dynamic_tool`, live owner state,
+subscriber-only tools, broker order execution, and Numerai submit/upload tools
+even if a scope is present.
+
+Accepted headers: `X-Api-Key: ac_live_...` or
+`Authorization: Bearer ac_live_...`. `X-Developer-Key` is not read by
+`http_bridge.py`.
 
 ---
 
@@ -63,7 +77,7 @@ execution tools.
              ▼
 ┌─────────────────────────────────┐
 │  MCP Tool dispatch (server.py)  │  ← trust boundary #2 (tool code runs here)
-│  300+ tools; some call brokers  │
+│  478 tools; some call brokers   │
 └────────────┬────────────────────┘
              │
     ┌────────┼────────┐
@@ -86,7 +100,7 @@ Tradovate  Supabase  Local files
 **Verification:** Unit-tested. `_check_auth()` returns 403 with tool list before `call_tool()` is reached.  
 **Verdict:** ✅ Mitigated.
 
-### H-F3 — Danger tier bypass — missing `confirm` (PARTIALLY MITIGATED)
+### H-F3 — Danger tier bypass — missing `confirm` (PATCHED in code)
 **Path:** Owner calls `place_order` without `confirm=true` → `get_danger_tier()` returns `TIER_ORDER_EXEC` → bridge returns 400 with required arg hint.  
 **Gap found:** `get_danger_tier()` import is inside a `try/except`; if `tool_danger_tiers` module fails to import, the gate logs a warning and **allows execution** (fail-open).  
 **Finding:** H-F3-WARN — silently passes danger gate if module import fails.  
@@ -109,11 +123,23 @@ Tradovate  Supabase  Local files
 **Verification:** `onyx_ask` calls local ChromaDB / SQLite — no outbound URL construction from user input found.  
 **Verdict:** ✅ Low risk in current implementation. Flag for review if Onyx gains URL-fetch capability.
 
-### H-F7 — Oversized payloads / DoS
-**Path:** POST `/mcp` with multi-MB JSON body → no body-size limit enforced at bridge level.  
+### H-F7 — Oversized payloads / DoS (PATCHED in code)
+**Path:** POST `/api/mcp` with multi-MB JSON body.  
 **Risk:** MEDIUM — could exhaust memory or hang tool dispatch.  
-**Finding:** H-F7-OPEN — no rate limit or max body size configured.  
-**Remediation:** Track in Phase J (rate limiting backlog); reverse-proxy (nginx/Cloudflare) should enforce 1 MB body limit.
+**Remediation (applied):** `/api/mcp` checks `Content-Length` and raw body size
+against `ALGOCHAINS_DEV_MAX_BODY_KB` from `developer_rate_limiter.py`
+(default 256 KB) before JSON parsing. Reverse-proxy limits are still recommended
+as defense in depth.
+
+### H-F11 — Developer key escalation (PATCHED in code)
+**Path:** Developer key calls `execute_dynamic_tool` or owner-only tools such as
+`place_order` / `get_bot_health`.  
+**Verification:** `handle_mcp_request()` routes developer callers through
+`check_developer_tool_access()` before dispatch. `DEVELOPER_BLOCKED_TOOLS`
+hard-blocks dynamic dispatch, owner bot/account state, subscriber tools, and
+Numerai submit/upload paths.  
+**Verdict:** Mitigated; covered by `tests/test_developer_tools.py` and
+`tests/test_http_bridge_developer_auth.py`.
 
 ### H-F8 — Replay attack on owner key
 **Path:** Attacker intercepts `ALGOCHAINS_BRIDGE_API_KEY` → replays against bridge.  
@@ -142,6 +168,10 @@ Tradovate  Supabase  Local files
 | Owner key → `place_order` with `confirm=true` | dispatched | ✅ |
 | Subscriber key → `get_my_pnl` | 200 scoped | ✅ |
 | Subscriber key → `get_account` | 403 | ✅ |
+| Developer key → `detect_market_regime` | 200 scoped | ✅ |
+| Developer key → `place_order` | error payload; not dispatched | ✅ |
+| Developer key → `execute_dynamic_tool` | error payload; not dispatched | ✅ |
+| Oversized `/api/mcp` body | 413 | ✅ |
 | Unknown key → any tool | 401 | ✅ |
 | Dev mode + no key → public tool | 200 | ✅ (localhost only) |
 
@@ -161,16 +191,21 @@ The `get_danger_tier()` import was in a bare `try/except` that silently allowed 
 
 Every request now gets an `X-Request-Id` header and a structured log line with method, path, status, and elapsed_ms.
 
+### 6.4 — Developer-tier bridge hardening
+
+Developer keys now resolve through the dedicated `ac_live_*` / `ac_test_*`
+path, receive only `DEVELOPER_TOOLS`, and are rate-limited per key hash. The
+bridge enforces a 256 KB default request-body cap before JSON parsing.
+
 ---
 
 ## 7. Open Findings (tracked)
 
-| ID | Severity | Finding | Owner | ETA |
-|----|----------|---------|-------|-----|
-| H-F3-WARN | MEDIUM | Danger tier import failure allows execution | Phase J bridge tests | Sprint+1 |
-| H-F5-WARN | LOW | No startup assertion that BRIDGE_API_KEY is set | Ops runbook | Sprint+1 |
-| H-F7-OPEN | MEDIUM | No request body size limit at bridge layer | Rate limiting (Phase J) | Sprint+2 |
-| H-F8-ACCEPTED | HIGH | Static shared secret — no per-request nonce | Key rotation SOP | Ongoing |
+| ID | Severity | Finding | Owner | Status |
+|----|----------|---------|-------|--------|
+| H-F3-WARN | MEDIUM | Danger tier import failure allows execution | Phase J bridge tests | Remediated in code; keep regression tests |
+| H-F5-WARN | LOW | No startup assertion that BRIDGE_API_KEY is set | Ops runbook | Tracked |
+| H-F8-ACCEPTED | HIGH | Static shared secret — no per-request nonce | Key rotation SOP | Accepted risk; rotate on leak |
 
 ---
 
@@ -180,25 +215,36 @@ Every request now gets an `X-Request-Id` header and a structured log line with m
 BASE=http://localhost:3333
 
 # Anonymous: public tool
-curl -s -X POST $BASE/mcp -H 'Content-Type: application/json' \
+curl -s -X POST $BASE/api/mcp -H 'Content-Type: application/json' \
   -d '{"tool":"get_vix_term_structure","arguments":{}}' | jq .status
 
 # Anonymous: owner tool → expect 401
-curl -s -X POST $BASE/mcp -H 'Content-Type: application/json' \
+curl -s -X POST $BASE/api/mcp -H 'Content-Type: application/json' \
   -d '{"tool":"place_order","arguments":{}}' | jq .
 
 # Owner without confirm → expect 400
-curl -s -X POST $BASE/mcp \
+curl -s -X POST $BASE/api/mcp \
   -H "X-Api-Key: $ALGOCHAINS_BRIDGE_API_KEY" \
-  -H "X-User-Email: $OWNER_EMAIL" \
   -H 'Content-Type: application/json' \
   -d '{"tool":"place_order","arguments":{"symbol":"MNQ","action":"BUY","quantity":1}}' | jq .
 
 # Subscriber: call owner tool → expect 403
-curl -s -X POST $BASE/mcp \
+curl -s -X POST $BASE/api/mcp \
   -H "X-Api-Key: sub_live_TESTKEY" \
   -H 'Content-Type: application/json' \
   -d '{"tool":"get_account","arguments":{}}' | jq .
+
+# Developer: allowed read tool → expect 200
+curl -s -X POST $BASE/api/mcp \
+  -H "X-Api-Key: ac_live_TESTKEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"tool":"detect_market_regime","arguments":{}}' | jq .
+
+# Developer: dynamic escalation blocked
+curl -s -X POST $BASE/api/mcp \
+  -H "X-Api-Key: ac_live_TESTKEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"tool":"execute_dynamic_tool","arguments":{"tool_name":"place_order"}}' | jq .
 
 # /health check
 curl -s $BASE/health | jq .
