@@ -282,6 +282,29 @@ async def handle_mcp_request(
         return {"error": str(e), "tool": tool_name}
 
 
+def _with_bot_list_aliases(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Preserve legacy bot-id keys while exposing probe-friendly list/count aliases."""
+    bots = [
+        value
+        for key, value in metrics.items()
+        if key not in {"bots", "bot_count"} and isinstance(value, dict)
+    ]
+    return {
+        **metrics,
+        "bots": metrics.get("bots") if isinstance(metrics.get("bots"), list) else bots,
+        "bot_count": metrics.get("bot_count") if isinstance(metrics.get("bot_count"), int) else len(bots),
+    }
+
+
+def _with_system_aliases(heartbeat: dict[str, Any]) -> dict[str, Any]:
+    """Expose system heartbeat under both historical and Command Center keys."""
+    return {
+        **heartbeat,
+        "heartbeat": heartbeat.get("heartbeat") if isinstance(heartbeat.get("heartbeat"), dict) else heartbeat,
+        "system": heartbeat.get("system") if isinstance(heartbeat.get("system"), dict) else heartbeat,
+    }
+
+
 def create_fastapi_app():
     """Create FastAPI app for standalone HTTP bridge. Install: pip install fastapi uvicorn"""
     try:
@@ -883,7 +906,8 @@ def create_fastapi_app():
         )
         if not key_valid or subscriber is not None:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner, caller_scope=caller_scope)
+        metrics = await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner, caller_scope=caller_scope)
+        return _with_bot_list_aliases(metrics)
 
     @app_http.get("/api/bots/{bot_id}")
     async def get_bot(
@@ -960,7 +984,25 @@ def create_fastapi_app():
         )
         if not key_valid or subscriber is not None or not is_owner:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
+        heartbeat = await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
+        return _with_system_aliases(heartbeat)
+
+    @app_http.get("/api/system")
+    async def system_status(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """Compatibility endpoint for Command Center health probes."""
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+        heartbeat = await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
+        return _with_system_aliases(heartbeat)
 
     @app_http.get("/api/guardrails")
     async def guardrail_status(
@@ -985,13 +1027,7 @@ def create_fastapi_app():
     # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
     # Subscribers receive a sanitised view — no raw P&L, no account numbers.
 
-<<<<<<< HEAD
     _CT = str(default_control_tower())
-=======
-    _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
-    if not _CT:
-        _CT = str(default_control_tower())
->>>>>>> origin/cursor/slack-bug-resolution-7326
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
@@ -1014,11 +1050,7 @@ def create_fastapi_app():
                 return []
             with p.open() as fh:
                 all_lines = fh.readlines()
-<<<<<<< HEAD
-            return [line_text.rstrip() for line_text in all_lines[-lines:] if line_text.strip()]
-=======
             return [line.rstrip() for line in all_lines[-lines:] if line.strip()]
->>>>>>> origin/cursor/slack-bug-resolution-7326
         except Exception:
             return []
 
@@ -1238,15 +1270,16 @@ def create_fastapi_app():
                         "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2")
 
         def _classify_line(line: str) -> str | None:
-            if any(k in line for k in ("FILL", "filled")):
+            lower_line = line.lower()
+            if any(keyword in lower_line for keyword in ("fill", "filled")):
                 return "fill"
-            if any(k in line for k in ("SIGNAL", "signal_fired", "confidence")):
+            if any(keyword in lower_line for keyword in ("signal", "signal_fired", "confidence")):
                 return "signal"
-            if any(k in line for k in ("EXIT", "exit_reason", "closed")):
+            if any(keyword in lower_line for keyword in ("exit", "exit_reason", "closed")):
                 return "exit"
-            if any(k in line for k in ("ERROR", "Exception", "Traceback", "BRACKET FAILED")):
+            if any(keyword in lower_line for keyword in ("error", "exception", "traceback", "bracket failed")):
                 return "error"
-            if any(k in line for k in ("BRACKET", "stop_order", "target_order")):
+            if any(keyword in lower_line for keyword in ("bracket", "stop_order", "target_order")):
                 return "bracket"
             return None
 
