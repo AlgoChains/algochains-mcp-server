@@ -3975,9 +3975,23 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_onboarding_status",
-         description="Check current onboarding progress: steps completed, steps remaining, connected brokers and data providers, and next required action. Call this to see where you are in the setup process.",
+         description="Check current onboarding progress: steps completed, steps remaining, connected brokers/providers, AlgoChains API key status, guardrail prefs, and next required action.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="set_algochains_api_key",
+         description="Step 4: Set your AlgoChains developer API key (ac_live_* or ac_test_*) for marketplace and bridge access. Validates against the bridge health endpoint. Get a key via create_developer_key tool or at algochains.ai/account/developer-keys/.",
+         inputSchema={"type": "object", "properties": {
+             "api_key": {"type": "string", "description": "Your developer key (ac_live_... or ac_test_...)"},
+         }, "required": ["api_key"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="set_guardrail_preferences",
+         description="Step 6: Configure guardrail notification thresholds. Hard-coded limits (daily loss $500, max drawdown 15%, VIX>35 gate) cannot be changed — this only controls when you are notified.",
+         inputSchema={"type": "object", "properties": {
+             "notify_on_daily_loss_pct": {"type": "number", "default": 80, "description": "Notify when daily loss reaches this % of $500 limit (e.g. 80 = alert at $400 loss)"},
+             "pause_on_consecutive_losses": {"type": "integer", "default": 3, "description": "Pause and alert after N consecutive losing trades"},
+             "slack_alerts_enabled": {"type": "boolean", "default": False},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="generate_ide_config",
          description="Generate the MCP config file (mcporter.json / mcp.json) for your IDE based on your connected brokers and data providers. IDEs: cursor | windsurf | claude | vscode. Mode: smart (default, 25 tools) | full (262 tools). Output includes install instructions.",
          inputSchema={"type": "object", "properties": {"ide": {"type": "string", "enum": ["cursor", "windsurf", "claude", "vscode"]}, "tool_mode": {"type": "string", "enum": ["smart", "full"], "default": "smart"}}, "required": ["ide"]},
@@ -4797,6 +4811,8 @@ TIER1_TOOL_NAMES = {
     "validate_data_provider",
     "run_onboarding_smoke_test",
     "get_onboarding_status",
+    "set_algochains_api_key",
+    "set_guardrail_preferences",
     "generate_ide_config",
     # V22.3 — Data Ingestion (always Tier 1 — users need this early)
     "ingest_csv_data",
@@ -9379,6 +9395,24 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(_ob_status())
         except Exception as exc:
             return _text({"error": f"Onboarding status error: {exc}"})
+
+    elif name == "set_algochains_api_key":
+        try:
+            from .onboarding import set_algochains_api_key as _set_ac_key
+            return _text(_set_ac_key(api_key=arguments["api_key"]))
+        except Exception as exc:
+            return _text({"error": f"API key configuration error: {exc}"})
+
+    elif name == "set_guardrail_preferences":
+        try:
+            from .onboarding import set_guardrail_preferences as _set_guardrail_prefs
+            return _text(_set_guardrail_prefs(
+                notify_on_daily_loss_pct=float(arguments.get("notify_on_daily_loss_pct", 80)),
+                pause_on_consecutive_losses=int(arguments.get("pause_on_consecutive_losses", 3)),
+                slack_alerts_enabled=bool(arguments.get("slack_alerts_enabled", False)),
+            ))
+        except Exception as exc:
+            return _text({"error": f"Guardrail prefs error: {exc}"})
 
     elif name == "generate_ide_config":
         try:

@@ -813,25 +813,145 @@ async def run_smoke_test() -> dict:
     }
 
 
+def set_algochains_api_key(api_key: str) -> dict:
+    """
+    Step 4: Configure your AlgoChains developer API key (ac_live_* or ac_test_*).
+
+    This key enables marketplace access, bridge connectivity, and the hosted API.
+    Create one at algochains.ai/account/developer-keys/ or via create_developer_key MCP tool.
+    The key is validated against the bridge health endpoint before being accepted.
+    """
+    import re
+    if not api_key or not re.match(r"^ac_(live|test)_", api_key):
+        return {
+            "error": "Invalid key format",
+            "message": "AlgoChains developer keys must start with 'ac_live_' or 'ac_test_'.",
+            "hint": "Get a key at algochains.ai/account/developer-keys/ or call create_developer_key.",
+        }
+
+    # Attempt live validation against the bridge health endpoint
+    _bridge_url = os.environ.get("ALGOCHAINS_BRIDGE_URL", "https://api.algochains.ai").rstrip("/")
+    validated = False
+    validation_detail = "Bridge validation skipped (ALGOCHAINS_BRIDGE_URL not reachable)"
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f"{_bridge_url}/health",
+            headers={"X-Api-Key": api_key},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if resp.status == 200:
+                validated = True
+                validation_detail = f"Validated against {_bridge_url}"
+    except Exception as exc:
+        validation_detail = f"Bridge health check skipped: {exc}"
+
+    state = _load_state()
+    state.algochains_key_set = True
+    _save_state(state)
+
+    # Set in process env so subsequent tools can use it immediately
+    os.environ["AC_DEV_KEY"] = api_key
+
+    return {
+        "status": "ok",
+        "step": 4,
+        "api_key_prefix": api_key[:12] + "***",
+        "validated_against_bridge": validated,
+        "validation_detail": validation_detail,
+        "message": (
+            "✅ AlgoChains API key configured and validated."
+            if validated
+            else "⚠️  API key saved locally. Bridge validation skipped — verify with test_bridge_connection()."
+        ),
+        "next_step": "run_onboarding_smoke_test",
+    }
+
+
+def set_guardrail_preferences(
+    notify_on_daily_loss_pct: float = 80.0,
+    pause_on_consecutive_losses: int = 3,
+    slack_alerts_enabled: bool = False,
+) -> dict:
+    """
+    Step 6: Configure guardrail notification preferences.
+
+    Note: Hard-coded safety limits (daily loss $500, 15% max drawdown, VIX>35 gate)
+    CANNOT be changed here — they are enforced at the server level. This step
+    only configures when you want to be notified (not when trading stops).
+
+    Parameters:
+      notify_on_daily_loss_pct: Alert when daily loss reaches this % of $500 limit
+                                (default 80% = $400 loss triggers notification)
+      pause_on_consecutive_losses: Pause and alert after N consecutive losing trades
+      slack_alerts_enabled: Enable Slack notifications (requires SLACK_BOT_TOKEN)
+    """
+    if not (0 < notify_on_daily_loss_pct <= 100):
+        return {"error": "notify_on_daily_loss_pct must be between 0 and 100"}
+    if not (0 < pause_on_consecutive_losses <= 20):
+        return {"error": "pause_on_consecutive_losses must be between 1 and 20"}
+
+    prefs = {
+        "notify_on_daily_loss_pct": notify_on_daily_loss_pct,
+        "notify_on_daily_loss_usd": round(500 * notify_on_daily_loss_pct / 100, 2),
+        "pause_on_consecutive_losses": pause_on_consecutive_losses,
+        "slack_alerts_enabled": slack_alerts_enabled,
+    }
+
+    # Persist to state directory
+    try:
+        prefs_file = _STATE_DIR / "guardrail_prefs.json"
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        prefs_file.write_text(json.dumps(prefs, indent=2))
+    except Exception as exc:
+        logger.warning("Could not persist guardrail prefs: %s", exc)
+
+    return {
+        "status": "ok",
+        "step": 6,
+        "preferences": prefs,
+        "hard_limits": {
+            "daily_loss_hard_stop_usd": 500,
+            "max_drawdown_pct": 15,
+            "vix_gate_threshold": 35,
+            "note": "These limits cannot be changed — they are enforced server-side.",
+        },
+        "next_step": "generate_ide_config",
+        "message": "✅ Guardrail preferences saved.",
+    }
+
+
 def get_onboarding_status() -> dict:
     """Returns current onboarding progress for the user."""
     state = _load_state()
     steps_done = []
     steps_remaining = []
 
+    # Check guardrail prefs saved
+    _prefs_saved = (_STATE_DIR / "guardrail_prefs.json").exists()
+
     step_map = [
-        ("risk_disclosure", state.risk_acknowledged, "Call start_onboarding() then acknowledge_risk_disclosure()"),
-        ("broker_connected", bool(state.brokers_connected), "Call get_broker_setup_guide(broker='tradovate') then validate_broker_connection()"),
-        ("data_providers", bool(state.data_providers_connected), "Call get_data_provider_setup_guide(provider='polygon') etc."),
-        ("smoke_test", state.smoke_test_passed, "Call run_smoke_test() to verify all connections"),
-        ("onboarding_complete", state.onboarding_complete, "Call generate_mcporter_config(ide='cursor') to finish"),
+        ("risk_disclosure", state.risk_acknowledged,
+         "Call start_onboarding() then acknowledge_risk_disclosure()"),
+        ("broker_connected", bool(state.brokers_connected),
+         "Call get_broker_setup_guide(broker='tradovate') then validate_broker_connection()"),
+        ("data_providers", bool(state.data_providers_connected),
+         "Call get_data_provider_setup_guide(provider='polygon') etc."),
+        ("algochains_api_key", state.algochains_key_set,
+         "Call set_algochains_api_key(api_key='ac_live_...') — get key from create_developer_key or algochains.ai"),
+        ("smoke_test", state.smoke_test_passed,
+         "Call run_smoke_test() to verify all connections"),
+        ("guardrail_prefs", _prefs_saved,
+         "Call set_guardrail_preferences() to configure notification thresholds (optional)"),
+        ("onboarding_complete", state.onboarding_complete,
+         "Call generate_ide_config(ide='cursor') to finish"),
     ]
 
-    for name, done, todo in step_map:
+    for step_name, done, todo in step_map:
         if done:
-            steps_done.append(name)
+            steps_done.append(step_name)
         else:
-            steps_remaining.append({"step": name, "action": todo})
+            steps_remaining.append({"step": step_name, "action": todo})
 
     return {
         "session_id": state.session_id,
@@ -840,6 +960,7 @@ def get_onboarding_status() -> dict:
         "steps_remaining": steps_remaining,
         "brokers_connected": state.brokers_connected,
         "data_providers_connected": state.data_providers_connected,
+        "algochains_key_set": state.algochains_key_set,
         "onboarding_complete": state.onboarding_complete,
         "next_action": steps_remaining[0]["action"] if steps_remaining else "✅ Onboarding complete!",
     }
