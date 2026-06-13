@@ -117,6 +117,21 @@ hard-coded in this repository.**
 | Owner token | `OWNER_API_TOKEN` | Tier 2–3 tools (order exec, bot restart, emergency stop) |
 | Bridge key | `ALGOCHAINS_BRIDGE_API_KEY` | Read-only team access to a bridge you operate |
 
+### Stripe APP — Zero-Browser Developer Tier (free 14-day trial)
+
+Developers can get a free `ac_live_*` key without touching a browser:
+
+```bash
+pip install stripe
+stripe projects link algochains
+```
+
+Stripe calls `/app/provision` → generates `ac_live_*` key automatically → returned as credentials.
+No web signup. No Stripe dashboard visit. 14-day trial, then $29/mo for paper tier.
+
+The `ac_live_*` key unlocks 25 read-only tools: market data, regime detection, backtests,
+Onyx search, marketplace listings. Set as `ALGOCHAINS_BRIDGE_KEY` env var.
+
 ### `owner_token` pattern
 
 Tier 2 and Tier 3 tools require the owner token. **Always ask the user for explicit
@@ -211,6 +226,16 @@ Self-directed paper trading (subscriber — Tier 1, confirm with user first):
 place_paper_order(symbol="MNQ", side="BUY", qty=1, order_type="market")
 cancel_paper_order(order_id="<uuid>")
 get_my_paper_positions()    # pending + recently filled self-directed orders
+```
+
+### "Get access without a browser" (developer Stripe APP flow)
+
+```bash
+# Terminal — zero browser interaction
+stripe projects link algochains
+# → Stripe provisions ac_live_* key and prints it
+export ALGOCHAINS_BRIDGE_KEY=ac_live_...
+algochains detect-market-regime
 ```
 
 ### "Verify the copy-trade pipeline is healthy" (owner/operator — NOT subscriber)
