@@ -2,10 +2,10 @@
 # Lists AlgoChains MCP Server for discovery on Smithery, PulseMCP, Glama, etc.
 name: algochains-mcp-server
 description: >-
-  AI-to-broker trading protocol: 485 tools across 20 domains. Live futures bots
+  AI-to-broker trading protocol: 503 tools across 20 domains. Live futures bots
   (MNQ/CL/MES/NQ) with real fills, copy-trade signals, marketplace strategy
   validation (MCPT), and a hosted paper account that needs zero broker
-  credentials. The only MCP server with real futures execution.
+  credentials. Real fills from the platform's own live futures bots; copy-trade signals are published for subscribers to review and act on (no automated execution).
 homepage: https://algochains.ai
 icon: https://algochains.ai/icon.png
 
@@ -30,7 +30,7 @@ startCommand:
         default: smart
         title: Tool Mode
         description: >-
-          'smart' exposes 148 curated tools (recommended); 'full' exposes all 485.
+          'smart' exposes 168 curated tools (recommended); 'full' exposes all 503.
     required: []
   commandFunction: |-
     (config) => ({

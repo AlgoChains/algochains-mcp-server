@@ -1,7 +1,7 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-478%20full%20%7C%20148%20smart-green?style=flat-square)](#tool-domains)
+[![Tools](https://img.shields.io/badge/tools-503%20full%20%7C%20168%20smart-green?style=flat-square)](#tool-domains)
 [![Version](https://img.shields.io/badge/version-22.5.0-blueviolet?style=flat-square)](#whats-new)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
@@ -10,7 +10,7 @@
 
 ---
 
-> **The only MCP server with live futures bots, real fill data, real-time ML inference, and 478 tools across 19 domains — all backed by real APIs, zero synthetic data.**
+> **The only MCP server with live futures bots, real fill data, real-time ML inference, and 503 tools across 20 domains — all backed by real APIs, zero synthetic data.**
 
 Connect your AI assistant (Claude, Cursor, ChatGPT) to your trading infrastructure in 3 commands. Ask Claude "What's my MNQ P&L today?" — it calls Tradovate, gets the real answer, and tells you.
 
@@ -37,7 +37,7 @@ python scripts/quickstart.py --generate-config cursor
 python scripts/quickstart.py --mode demo
 ```
 
-That's it. Your AI now has 148 tools (smart mode) available immediately. Add broker credentials for live trading access. See [Option C](#option-c-full-live-setup) for live credentials.
+That's it. Your AI now has 168 tools (smart mode) available immediately. Add broker credentials for live trading access. See [Option C](#option-c-full-live-setup) for live credentials.
 
 ---
 
@@ -47,8 +47,8 @@ AlgoChains exposes tools in two tiers, controlled by `ALGOCHAINS_TOOL_MODE`:
 
 | Mode | Tools Exposed | Token Cost | When to Use |
 |------|:---:|:---:|-----|
-| **Smart** (default) | 148 curated | ~4K tokens | Cursor, Windsurf (80-tool limit), everyday use |
-| **Full** (`ALGOCHAINS_TOOL_MODE=full`) | 478 tools | ~40K tokens | Claude Code, full agentic sessions |
+| **Smart** (default) | 168 curated | ~4K tokens | Cursor, Windsurf (80-tool limit), everyday use |
+| **Full** (`ALGOCHAINS_TOOL_MODE=full`) | 503 tools | ~40K tokens | Claude Code, full agentic sessions |
 
 **Smart mode includes:** all live bot tools, market data, signals, research/backtest, Onyx RAG, prop fund pipeline, position sizing, broker management, and order execution. Everything you need 95% of the time.
 
@@ -56,7 +56,7 @@ AlgoChains exposes tools in two tiers, controlled by `ALGOCHAINS_TOOL_MODE`:
 
 ### `discover_tools` — Find Any Tool Without Full Mode
 
-Even in smart mode, you can find and use any of the 478 tools:
+Even in smart mode, you can find and use any of the 503 tools:
 
 ```python
 # Ask the server to find the right tool for your task
@@ -67,13 +67,13 @@ discover_tools("walk-forward validation with leakage check")
 execute_dynamic_tool("walk_forward_test", {"symbol": "MNQ", "lookback_days": 252})
 ```
 
-This provides 99.6% token reduction vs exposing all 478 tools (arXiv:2603.20313).
+This provides 99.6% token reduction vs exposing all 503 tools (arXiv:2603.20313).
 
 ---
 
 ## Tool Domains
 
-All 478 tools organized across 19 domains:
+All 503 tools organized across 21 domains:
 
 | # | Domain | Smart | Full | Key Tools |
 |---|--------|:-----:|:----:|-----------|
@@ -95,8 +95,9 @@ All 478 tools organized across 19 domains:
 | 16 | **Live Bot Intelligence** | 12 | 18 | `get_bot_health`, `get_live_bot_metrics`, `get_bot_position_state`, `get_ai_pipeline_health`, `restart_trading_bot` |
 | 17 | **Desktop Tower / Dispatch** | 4 | 8 | `dispatch_tower_job`, `get_tower_job_status`, `run_tower_backtest`, `sync_to_tower` |
 | 18 | **Performance Reporting** | 4 | 6 | `generate_bot_tearsheet`, `get_bot_metrics_full`, `run_mcpt_pipeline`, `capture_learning_signal` |
-| 19 | **Platform / SaaS** | 8 | 20 | `join_waitlist`, `create_support_ticket`, `track_platform_event`, `get_analytics_summary` |
-| 20 | **AlphaLoop / Evolution** | 12 | 22 | `run_alphaloop_cycle`, `get_alphaloop_results`, `get_algochains_telos`, `send_ntfy_notification` |
+| 19 | **Billing & Subscription** | 12 | 12 | `get_started`, `get_pricing`, `get_checkout_url`, `accept_subscriber_terms`, `get_my_usage`, `create_referral_code`, `get_referral_earnings`, `create_creator_onboarding_link`, `get_my_creator_earnings`, `run_creator_payouts`, `get_my_realized_pnl`, `get_system_status` |
+| 20 | **Platform / SaaS** | 8 | 20 | `join_waitlist`, `create_support_ticket`, `track_platform_event`, `get_analytics_summary` |
+| 21 | **AlphaLoop / Evolution** | 12 | 22 | `run_alphaloop_cycle`, `get_alphaloop_results`, `get_algochains_telos`, `send_ntfy_notification` |
 
 ---
 
@@ -191,6 +192,100 @@ Paper trade:
 
 ---
 
+## Billing & Subscription Funnel (Fully Programmatic)
+
+Every billing action is available as an MCP tool — no browser required after the initial
+Stripe checkout. An agent or a user can go from zero to copy-trading MNQ signals in one
+conversation thread.
+
+### New-user discovery (no auth, always available)
+
+```python
+get_started(goal="subscriber")   # guided next-step map for new users
+get_pricing()                    # transparent tiers, referral %, creator share
+get_system_status()              # platform health, bot roster, live tool count
+```
+
+### Subscribe programmatically
+
+```python
+# 1. Get a Stripe-hosted checkout URL (one call — no browser needed after this)
+get_checkout_url(email="you@example.com", tier="paper")
+# → returns a checkout_url the user visits once to enter payment details
+# → sub_live_... key is emailed automatically after payment
+
+# 2. Set the key and accept the CFTC risk disclosure (required before signals)
+accept_subscriber_terms(
+    subscriber_id="sub_...",
+    acknowledgment="I have read and understand the risk disclosure above. I accept full responsibility for my trading decisions."
+)
+
+# 3. Subscribe to MNQ copy-trade signals (published for you to review and act on)
+join_bot(subscriber_id="sub_...", bot="MNQ", size_multiplier=1.0)
+
+# 4. Check your status and see signals
+get_subscriber_status(subscriber_id="sub_...")
+get_signal_stream()
+```
+
+### Usage metering
+
+```python
+get_my_usage(subscriber_id="sub_...")
+# → calls_this_month, included_quota, overage_calls, projected_overage_usd
+```
+
+### Referral program
+
+```python
+create_referral_code(subscriber_id="sub_...")   # → code: "AC-X7K2NP"
+get_my_referrals(subscriber_id="sub_...")        # attributed sign-ups + commission
+get_referral_earnings(subscriber_id="sub_...")   # total earned, pending payout
+```
+
+### Creator revenue (strategy publishers)
+
+```python
+create_creator_onboarding_link(creator_id="cr_...", creator_email="you@example.com")
+# → Stripe Connect Express onboarding URL (KYC, bank account)
+
+get_my_creator_earnings(creator_id="cr_...")
+# → accrued_usd, paid_usd, pending_payout_usd, next_payout_date
+
+# Owner-gated payout run (requires OWNER_API_TOKEN)
+run_creator_payouts(dry_run=True)   # preview
+run_creator_payouts(dry_run=False, owner_token="tok_...")  # execute transfers
+```
+
+### Realized P&L (live-tier subscribers)
+
+```python
+get_my_realized_pnl(subscriber_id="sub_...")
+# → realized_pnl_usd, trade_count, period, disclaimer (CFTC 4.41(b))
+```
+
+| Tool | Auth | Tier gate |
+|------|------|-----------|
+| `get_started` | None | Public |
+| `get_pricing` | None | Public |
+| `get_system_status` | None | Public |
+| `get_checkout_url` | None | Public (Stripe handles billing) |
+| `accept_subscriber_terms` | `sub_live_*` key | Paper / Live |
+| `get_my_usage` | `sub_live_*` key | Paper / Live |
+| `create_referral_code` | `sub_live_*` key | Paper / Live |
+| `get_my_referrals` | `sub_live_*` key | Paper / Live |
+| `get_referral_earnings` | `sub_live_*` key | Paper / Live |
+| `get_my_realized_pnl` | `sub_live_*` key | Live |
+| `create_creator_onboarding_link` | `OWNER_API_TOKEN` | Owner |
+| `get_my_creator_earnings` | `OWNER_API_TOKEN` | Owner |
+| `run_creator_payouts` | `OWNER_API_TOKEN` | Owner |
+
+> Signals are published for the subscriber to review and act on — no automated execution.
+> Past performance is not indicative of future results. See `accept_subscriber_terms` for
+> the full CFTC risk disclosure.
+
+---
+
 ## Desktop Tower Dispatch
 
 Heavy ML workloads (hyperparameter sweeps, walk-forward validation, feature importance) run on the desktop tower (configured via `ALGOCHAINS_TOWER_HOST`) via `dispatch_tower_job`. The Mac stays clean.
@@ -277,7 +372,7 @@ OWNER_API_TOKEN=your-owner-token-here
 - Complete README rewrite (plain English, team access)
 - `scripts/quickstart.py` — interactive setup wizard with health checks
 - `SAFETY_MODEL.md` — answers "is this safe?" for every failure mode
-- `tool_danger_tiers.py` — machine-readable danger classification (0–3) for the documented 478-tool surface
+- `tool_danger_tiers.py` — machine-readable danger classification (0–3) for the documented 503-tool surface
 - HTTP bridge `/tools` endpoint now returns `danger_tier`, `safe_in_demo_mode`, etc.
 - `get_bot_health` includes `e2e_sentinel`, desktop inference SLO, and decision latency SLO slices for signal-to-fill traceability
 
@@ -327,7 +422,7 @@ Available immediately (no credentials):
 - `get_quote("AAPL")` — live price for any symbol
 - `detect_market_regime()` — trending / ranging / choppy
 - `get_macro_signals()` — macro environment analysis
-- `discover_tools()` — find any of the 478 tools
+- `discover_tools()` — find any of the 503 tools
 - `onyx_ask("any question")` — knowledge base search
 
 ### Option B — AlgoChains Hosted Paper (Free, No Broker Needed)
@@ -492,7 +587,7 @@ Your AI (Claude / Cursor / ChatGPT)
          │ MCP 2025-11-25 (stdio or HTTP + SSE)
          ▼
 AlgoChains MCP Server
-  ├── 478 tools / 148 smart-mode (20 domains)
+  ├── 503 tools / 168 smart-mode (20 domains)
   ├── Trading Guardrails (hard-coded limits, AI loop detection)
   ├── Account Protection (12 pre-trade guards)
   ├── Onyx RAG (semantic search — 400+ docs + 472 skills)

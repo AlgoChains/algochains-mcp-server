@@ -4255,6 +4255,38 @@ TOOLS = [
          annotations=ANNOT_READ_ONLY),
 
     # ── Subscriber Onramp ────────────────────────────────────────────────
+    # ── Onboarding meta-tools (public, no auth — first 30 seconds) ──────────
+    Tool(name="get_started",
+         description=(
+             "START HERE. Guided next-steps for a brand-new user, by goal. No auth, "
+             "no setup. Call get_started(goal='subscriber') for copy-trade signals, "
+             "'creator' to publish a strategy, 'developer' to build on the API, or "
+             "'explore' to look around with zero signup. Returns the exact tool calls to make next."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "goal": {"type": "string", "description": "subscriber | creator | developer | explore (optional — omit for a menu)"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_pricing",
+         description=(
+             "Transparent AlgoChains pricing: paper ($29/mo) and live ($99/mo) tiers, "
+             "what's included, usage overage, the 20%/3-month referral reward, and the "
+             "80% creator revenue share. Flat subscription + usage; no performance fees. "
+             "No auth required."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_system_status",
+         description=(
+             "Consumer-facing platform health: version, live signal-bot roster "
+             "(MNQ/CL/MES/NQ), tool count, and public marketplace listing count. "
+             "No auth, no secrets — safe to call anytime."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
     Tool(name="get_checkout_url",
          description=(
              "Generate a Stripe checkout URL for an AlgoChains subscription. "
@@ -4304,7 +4336,7 @@ TOOLS = [
          ),
          inputSchema={"type": "object", "properties": {
              "bot": {"type": "string", "enum": ["MNQ", "CL", "MES", "NQ"],
-                     "description": "Which copy-trade bot to join"},
+                     "description": "Which strategy's published signals to subscribe to"},
              "size_multiplier": {"type": "number", "default": 1.0,
                                  "description": "Trade-size multiplier vs the master bot (0 < x <= 10)"},
              "max_contracts": {"type": "integer", "default": 10,
@@ -5045,6 +5077,10 @@ TIER1_TOOL_NAMES = {
     "revoke_developer_key",
     "get_developer_key_usage",
     "test_bridge_connection",
+    # Onboarding meta-tools (public)
+    "get_started",
+    "get_pricing",
+    "get_system_status",
     # Subscriber onramp
     "get_checkout_url",
     "generate_payment_link",
@@ -9846,6 +9882,19 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             "price": price,
             "note": "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key> and run get_my_portfolio()",
         })
+
+    elif name in ("get_started", "get_pricing", "get_system_status"):
+        # Public onboarding meta-tools — no auth, never raise.
+        try:
+            from . import onboarding_meta as _om
+            if name == "get_started":
+                return _text(_om.get_started(arguments.get("goal")))
+            elif name == "get_pricing":
+                return _text(_om.get_pricing())
+            else:
+                return _text(_om.get_system_status())
+        except Exception as exc:
+            return _text({"error": str(exc)})
 
     elif name in ("join_bot", "get_subscriber_status", "accept_subscriber_terms",
                   "get_my_usage", "create_referral_code", "get_my_referrals",
