@@ -115,6 +115,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             release/algochains-cli.js
             release/algochains-sdk-${{ env.RELEASE_TAG }}.tar.gz
