@@ -96,12 +96,17 @@ def test_subscribers_route_aggregates_copy_trade_state():
             "subscriber_paper_accounts": [
                 {
                     "subscriber_id": "sub-1",
-                    "current_balance_usd": 10000,
-                    "realized_pnl_usd": 25.5,
+                    "starting_balance_usd": "2500.00",
+                    "current_balance_usd": "2455.00",
+                    "realized_pnl_usd": "-45.00",
                 }
             ],
             "subscriber_heartbeats": [
-                {"subscriber_id": "sub-1", "last_seen": "2026-06-11T00:00:00Z"}
+                {
+                    "subscriber_id": "sub-1",
+                    "last_seen": "2026-06-11T00:00:00Z",
+                    "pnl_today_usd": 0,
+                }
             ],
             "marketplace_botsubscription": [
                 {"subscriber_id": "sub-2", "status": "active", "id": "sub-row-1"}
@@ -121,5 +126,14 @@ def test_subscribers_route_aggregates_copy_trade_state():
     assert body["subscription_count"] == 1
     assert body["active_subscriptions"] == 1
     assert body["paper_account_count"] == 1
+    assert body["paper_pnl_usd"] == -45.0
+    assert body["paper_pnl"] == -45.0
+    assert body["paper_pnl_rollup_usd"] == -45.0
     assert body["heartbeat_count"] == 1
     assert {row["subscriber_id"] for row in body["subscribers"]} == {"sub-1", "sub-2"}
+    sub_1 = next(row for row in body["subscribers"] if row["subscriber_id"] == "sub-1")
+    assert sub_1["heartbeat"]["pnl_today_usd"] == 0
+    assert sub_1["paper_pnl_usd"] == -45.0
+    assert sub_1["paper_pnl"] == -45.0
+    assert sub_1["paper_pnl_rollup_usd"] == -45.0
+    assert sub_1["paper_account"]["paper_pnl_usd"] == -45.0
