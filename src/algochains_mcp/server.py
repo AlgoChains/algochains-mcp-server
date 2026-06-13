@@ -9878,8 +9878,6 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(await _test_bridge(api_key=arguments.get("api_key")))
         except Exception as exc:
             return _text({"error": str(exc)})
-        except Exception as exc:
-            return _text({"error": str(exc)})
 
     elif name == "get_user_bot_metrics":
         try:

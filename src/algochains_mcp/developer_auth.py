@@ -119,10 +119,16 @@ def resolve_developer_key(raw_key: str | None) -> ResolvedDeveloper | None:
         return None
 
     row = rows[0]
+    if row.get("revoked_at") is not None:
+        log.warning("developer_auth: key is revoked — failing closed")
+        with _CACHE_LOCK:
+            _CACHE[key_hash] = (now, ResolvedDeveloper(clerk_user_id="", scopes=(), env="live"))
+        return None
+
     raw_scopes = row.get("scopes") or []
     scopes = tuple(s for s in raw_scopes if isinstance(s, str)) or DEFAULT_DEVELOPER_SCOPES
 
-    clerk_user_id = row.get("clerk_user_id")
+    clerk_user_id = row.get("clerk_user_id") or row.get("user_id")
     if not clerk_user_id:
         log.warning("developer_auth: row returned null clerk_user_id — failing closed")
         with _CACHE_LOCK:

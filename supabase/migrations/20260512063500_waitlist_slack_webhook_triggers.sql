@@ -26,6 +26,7 @@ SET search_path = public, net, pg_temp
 AS $$
 DECLARE
     notify_secret text;
+    functions_base_url text;
     payload jsonb;
 BEGIN
     SELECT secret INTO notify_secret
@@ -37,6 +38,11 @@ BEGIN
         RETURN NEW;
     END IF;
 
+    functions_base_url := COALESCE(
+        NULLIF(current_setting('app.supabase_functions_url', true), ''),
+        'https://trkpzsnwjtmvgppuzlwu.supabase.co/functions/v1'
+    );
+
     payload := jsonb_build_object(
         'type', TG_OP,
         'table', TG_TABLE_NAME,
@@ -46,7 +52,7 @@ BEGIN
     );
 
     PERFORM net.http_post(
-        url := current_setting('app.supabase_functions_url', true) || '/waitlist-slack-notify',
+        url := functions_base_url || '/waitlist-slack-notify',
         body := payload,
         params := '{}'::jsonb,
         headers := jsonb_build_object(

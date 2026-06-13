@@ -819,7 +819,7 @@ def set_algochains_api_key(api_key: str) -> dict:
 
     This key enables marketplace access, bridge connectivity, and the hosted API.
     Create one at algochains.ai/account/developer-keys/ or via create_developer_key MCP tool.
-    The key is validated against the bridge health endpoint before being accepted.
+    The key is validated against an authenticated bridge endpoint before being accepted.
     """
     import re
     if not api_key or not re.match(r"^ac_(live|test)_", api_key):
@@ -829,32 +829,36 @@ def set_algochains_api_key(api_key: str) -> dict:
             "hint": "Get a key at algochains.ai/account/developer-keys/ or call create_developer_key.",
         }
 
-    # Attempt live validation against the bridge health endpoint
+    # Attempt live validation against an authenticated bridge endpoint.
     _bridge_url = os.environ.get("ALGOCHAINS_BRIDGE_URL", "https://api.algochains.ai").rstrip("/")
     validated = False
     validation_detail = "Bridge validation skipped (ALGOCHAINS_BRIDGE_URL not reachable)"
     try:
+        import json
         import urllib.request
+        body = json.dumps({"tool": "detect_market_regime", "arguments": {}}).encode("utf-8")
         req = urllib.request.Request(
-            f"{_bridge_url}/health",
-            headers={"X-Api-Key": api_key},
+            f"{_bridge_url}/api/mcp",
+            data=body,
+            headers={"X-Api-Key": api_key, "Content-Type": "application/json"},
+            method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             if resp.status == 200:
                 validated = True
                 validation_detail = f"Validated against {_bridge_url}"
     except Exception as exc:
-        validation_detail = f"Bridge health check skipped: {exc}"
+        validation_detail = f"Bridge validation failed: {exc}"
 
     state = _load_state()
-    state.algochains_key_set = True
+    state.algochains_key_set = validated
     _save_state(state)
 
     # Set in process env so subsequent tools can use it immediately
     os.environ["AC_DEV_KEY"] = api_key
 
     return {
-        "status": "ok",
+        "status": "ok" if validated else "error",
         "step": 4,
         "api_key_prefix": api_key[:12] + "***",
         "validated_against_bridge": validated,
@@ -862,9 +866,9 @@ def set_algochains_api_key(api_key: str) -> dict:
         "message": (
             "✅ AlgoChains API key configured and validated."
             if validated
-            else "⚠️  API key saved locally. Bridge validation skipped — verify with test_bridge_connection()."
+            else "⚠️  API key format accepted, but bridge validation failed; onboarding progress was not advanced."
         ),
-        "next_step": "run_onboarding_smoke_test",
+        "next_step": "run_onboarding_smoke_test" if validated else "test_bridge_connection",
     }
 
 

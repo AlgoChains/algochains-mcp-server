@@ -274,9 +274,9 @@ def evaluate_dynamic_tool(
             "rotate_api_key",
             "set_byok_key",
         })
-        if tool_name in _SENSITIVE_WRITE_LOCAL and expected_owner_token:
+        if tool_name in _SENSITIVE_WRITE_LOCAL:
             provided_tok = (arguments or {}).get("owner_token", "")
-            if provided_tok != expected_owner_token:
+            if not expected_owner_token or provided_tok != expected_owner_token:
                 return ToolPolicyDecision(
                     False,
                     **base,

@@ -70,6 +70,16 @@ def test_dynamic_policy_allows_read_only_without_token():
     assert decision.allow is True
 
 
+def test_dynamic_policy_blocks_sensitive_write_local_without_owner_secret():
+    decision = evaluate_dynamic_tool(
+        "store_api_key",
+        {},
+        expected_owner_token="",
+    )
+    assert decision.allow is False
+    assert decision.required_secret == "OWNER_API_TOKEN"
+
+
 def test_visible_tools_respects_scope_ceiling():
     visible = visible_tools_for_bridge(
         public_tools=PUBLIC,

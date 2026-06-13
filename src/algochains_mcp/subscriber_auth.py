@@ -126,12 +126,18 @@ def resolve_subscriber_key(raw_key: str | None) -> ResolvedSubscriber | None:
         return None
 
     row = rows[0]
+    if row.get("revoked_at") is not None:
+        log.warning("subscriber_auth: key is revoked — treating as unauthenticated")
+        with _CACHE_LOCK:
+            _CACHE[key_hash] = (now, ResolvedSubscriber(subscriber_id="", scopes=()))
+        return None
+
     raw_scopes = row.get("scopes") or []
     scopes = tuple(s for s in raw_scopes if isinstance(s, str)) or DEFAULT_SUBSCRIBER_SCOPES
     # BUG-19 FIX: str(None) produces the literal string "None", creating a
     # subscriber_id="None" that can match across unrelated rows in authZ checks.
     # Guard explicitly: treat None/falsy subscriber_id as an auth failure.
-    _raw_sid = row.get("subscriber_id")
+    _raw_sid = row.get("subscriber_id") or row.get("user_id")
     if not _raw_sid:
         log.warning("subscriber_auth: row has null/empty subscriber_id — treating as unauthenticated")
         with _CACHE_LOCK:

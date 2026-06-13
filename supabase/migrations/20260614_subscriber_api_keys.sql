@@ -46,10 +46,12 @@ CREATE POLICY "Service role manages subscriber keys" ON subscriber_api_keys
 -- Called by subscriber_auth.py during bridge auth validation.
 -- ─────────────────────────────────────────────────────────────────────────────
 
+DROP FUNCTION IF EXISTS resolve_subscriber_api_key(TEXT);
+
 CREATE OR REPLACE FUNCTION resolve_subscriber_api_key(p_key_hash TEXT)
 RETURNS TABLE (
-    id               UUID,
-    user_id          UUID,
+    key_id           UUID,
+    subscriber_id    UUID,
     bot_slug         TEXT,
     env              TEXT,
     scopes           TEXT[],
@@ -61,15 +63,16 @@ SECURITY DEFINER
 STABLE
 AS $$
     SELECT
-        id,
-        user_id,
-        bot_slug,
-        env,
-        scopes,
-        paper_account_id,
-        revoked_at
-    FROM subscriber_api_keys
-    WHERE key_hash = p_key_hash
+        s.id AS key_id,
+        s.user_id AS subscriber_id,
+        s.bot_slug,
+        s.env,
+        s.scopes,
+        s.paper_account_id,
+        s.revoked_at
+    FROM subscriber_api_keys AS s
+    WHERE s.key_hash = p_key_hash
+      AND s.revoked_at IS NULL
     LIMIT 1;
 $$;
 

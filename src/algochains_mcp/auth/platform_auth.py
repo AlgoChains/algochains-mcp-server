@@ -117,6 +117,54 @@ def _aal_level(session: dict) -> str:
         return "aal1"
 
 
+async def _verify_session_with_supabase(session: dict) -> dict[str, Any] | None:
+    """Validate the stored JWT with Supabase before trusting local claims."""
+    token = session.get("access_token", "")
+    if not token:
+        return {"error": "Not logged in. Call login_algochains first."}
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{_SUPABASE_URL}/auth/v1/user",
+                headers=_auth_headers(token),
+            )
+    except Exception as exc:
+        return {"error": f"Session verification failed: {exc}"}
+
+    if resp.status_code != 200:
+        return {
+            "error": "Session invalid or expired. Please login_algochains again.",
+            "status_code": resp.status_code,
+        }
+
+    data = resp.json()
+    verified_user_id = data.get("id")
+    if not verified_user_id:
+        return {"error": "Session verification failed: Supabase did not return a user id."}
+
+    stored_user_id = session.get("user_id")
+    if stored_user_id and stored_user_id != verified_user_id:
+        return {
+            "error": "Session user mismatch. Please login_algochains again.",
+        }
+
+    if stored_user_id != verified_user_id:
+        session["user_id"] = verified_user_id
+        _save_session(session)
+
+    return None
+
+
+def _invalidate_developer_auth_cache() -> None:
+    try:
+        from ..developer_auth import invalidate_cache
+        invalidate_cache()
+    except Exception:
+        pass
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ACCOUNT TOOLS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -528,8 +576,12 @@ async def remove_mfa_factor(factor_id: str, owner_token: str = "") -> dict[str, 
 # DEVELOPER KEY TOOLS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _check_aal2(session: dict) -> dict | None:
-    """Return error if session is not AAL2 (MFA-verified)."""
+async def _check_aal2(session: dict) -> dict | None:
+    """Return error if the Supabase-verified session is not AAL2."""
+    verify_err = await _verify_session_with_supabase(session)
+    if verify_err:
+        return verify_err
+
     aal = _aal_level(session)
     if aal != "aal2":
         return {
@@ -568,7 +620,7 @@ async def create_developer_key(
     if not session.get("access_token"):
         return {"error": "Not logged in. Call login_algochains first."}
 
-    aal_err = _check_aal2(session)
+    aal_err = await _check_aal2(session)
     if aal_err:
         return aal_err
 
@@ -677,7 +729,7 @@ async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str
     if not session.get("access_token"):
         return {"error": "Not logged in."}
 
-    aal_err = _check_aal2(session)
+    aal_err = await _check_aal2(session)
     if aal_err:
         return aal_err
 
@@ -689,10 +741,14 @@ async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str
                 f"{_SUPABASE_URL}/rest/v1/developer_api_keys?id=eq.{key_id}&select=*",
                 headers={**_service_headers()},
             )
+        if fetch_resp.status_code != 200:
+            return {"error": "Key lookup failed", "status_code": fetch_resp.status_code}
         rows = fetch_resp.json()
         if not rows:
             return {"error": f"Key {key_id} not found."}
         old_key = rows[0]
+        if str(old_key.get("user_id")) != str(session.get("user_id")):
+            return {"error": "Unauthorized: key does not belong to the current user."}
         env = old_key.get("env", "live")
         scopes = old_key.get("scopes", ["read:market_data"])
         new_name = name or old_key.get("name", "default")
@@ -704,11 +760,19 @@ async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str
 
         # 3. Revoke old key
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.patch(
+            revoke_resp = await client.patch(
                 f"{_SUPABASE_URL}/rest/v1/developer_api_keys?id=eq.{key_id}",
                 headers=_service_headers(),
                 json={"revoked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
             )
+        if revoke_resp.status_code not in (200, 204):
+            return {
+                "error": "New key minted but old key revocation failed",
+                "new_key_id": new_result.get("key_id"),
+                "old_key_id": key_id,
+                "status_code": revoke_resp.status_code,
+            }
+        _invalidate_developer_auth_cache()
 
         return {
             "status": "ok",
@@ -735,19 +799,31 @@ async def revoke_developer_key(key_id: str) -> dict[str, Any]:
     if not session.get("access_token"):
         return {"error": "Not logged in."}
 
-    aal_err = _check_aal2(session)
+    aal_err = await _check_aal2(session)
     if aal_err:
         return aal_err
 
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10) as client:
+            fetch_resp = await client.get(
+                f"{_SUPABASE_URL}/rest/v1/developer_api_keys?id=eq.{key_id}&select=id,user_id",
+                headers=_service_headers(),
+            )
+            rows = fetch_resp.json()
+            if fetch_resp.status_code != 200:
+                return {"error": "Revocation lookup failed", "status_code": fetch_resp.status_code}
+            if not rows:
+                return {"error": f"Key {key_id} not found."}
+            if str(rows[0].get("user_id")) != str(session.get("user_id")):
+                return {"error": "Unauthorized: key does not belong to the current user."}
             resp = await client.patch(
                 f"{_SUPABASE_URL}/rest/v1/developer_api_keys?id=eq.{key_id}",
                 headers={**_service_headers(), "Prefer": "return=minimal"},
                 json={"revoked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
             )
         if resp.status_code in (200, 204):
+            _invalidate_developer_auth_cache()
             return {"status": "ok", "message": f"Key {key_id} revoked."}
         return {"error": "Revocation failed", "status_code": resp.status_code}
     except Exception as exc:
@@ -800,22 +876,24 @@ async def test_bridge_connection(api_key: str | None = None) -> dict[str, Any]:
         return {
             "error": "No API key provided. Pass api_key=... or set AC_DEV_KEY env var.",
         }
+    if not key.startswith(("ac_live_", "ac_test_")):
+        return {"error": "Invalid developer key format. Expected ac_live_* or ac_test_*."}
 
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{_BRIDGE_URL}/health",
+            resp = await client.post(
+                f"{_BRIDGE_URL}/api/mcp",
                 headers={"X-Api-Key": key},
+                json={"tool": "detect_market_regime", "arguments": {}},
             )
         if resp.status_code == 200:
             data = resp.json()
             return {
                 "status": "ok",
                 "bridge": _BRIDGE_URL,
-                "auth_mode": data.get("auth_mode"),
-                "scopes": data.get("developer_scopes") or data.get("scopes"),
-                "server_version": data.get("version"),
+                "tool_checked": "detect_market_regime",
+                "result_status": data.get("status") or data.get("regime"),
                 "message": "Bridge connection successful. Your developer key is valid.",
             }
         return {

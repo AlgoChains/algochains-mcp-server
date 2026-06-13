@@ -60,28 +60,31 @@ CREATE POLICY "Service role manages dev key updates" ON developer_api_keys
 -- SECURITY DEFINER so it can run a full-table hash lookup for auth.
 -- ─────────────────────────────────────────────────────────────────────────────
 
+DROP FUNCTION IF EXISTS resolve_developer_api_key(TEXT);
+
 CREATE OR REPLACE FUNCTION resolve_developer_api_key(p_key_hash TEXT)
 RETURNS TABLE (
-    id          UUID,
-    user_id     UUID,
-    name        TEXT,
-    scopes      TEXT[],
-    env         TEXT,
-    revoked_at  TIMESTAMPTZ
+    id             UUID,
+    clerk_user_id  UUID,
+    name           TEXT,
+    scopes         TEXT[],
+    env            TEXT,
+    revoked_at     TIMESTAMPTZ
 )
 LANGUAGE sql
 SECURITY DEFINER
 STABLE
 AS $$
     SELECT
-        id,
-        user_id,
-        name,
-        scopes,
-        env,
-        revoked_at
-    FROM developer_api_keys
-    WHERE key_hash = p_key_hash
+        d.id,
+        d.user_id AS clerk_user_id,
+        d.name,
+        d.scopes,
+        d.env,
+        d.revoked_at
+    FROM developer_api_keys AS d
+    WHERE d.key_hash = p_key_hash
+      AND d.revoked_at IS NULL
     LIMIT 1;
 $$;
 

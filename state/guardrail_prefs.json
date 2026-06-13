@@ -1,6 +1,0 @@
-{
-  "notify_on_daily_loss_pct": 75,
-  "notify_on_daily_loss_usd": 375.0,
-  "pause_on_consecutive_losses": 4,
-  "slack_alerts_enabled": false
-}
