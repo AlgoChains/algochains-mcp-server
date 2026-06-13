@@ -4272,6 +4272,52 @@ TOOLS = [
          }, "required": ["email"]},
          annotations=ANNOT_WRITE_SAFE),
 
+    Tool(name="generate_payment_link",
+         description=(
+             "Return a direct payment link for an AlgoChains subscription tier. "
+             "Unlike get_checkout_url, this returns a pre-configured shareable URL "
+             "that works without entering an email first. "
+             "paper=$29/mo, live=$99/mo. "
+             "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key>."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Subscriber Tools (stdio path — sub key sets ALGOCHAINS_SUBSCRIBER_KEY) ─
+    Tool(name="join_bot",
+         description=(
+             "Assign the authenticated subscriber to an AlgoChains copy-trade bot. "
+             "Available bots: MNQ (micro Nasdaq scalper), CL (crude oil scalper), "
+             "MES (micro S&P swing), NQ (Nasdaq swing). "
+             "Enforces a seat cap per bot — returns bot_at_capacity if the bot is full. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY to be set. "
+             "Re-calling with an existing assignment updates size_multiplier and un-pauses."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "bot": {"type": "string", "enum": ["MNQ", "CL", "MES", "NQ"],
+                     "description": "Which copy-trade bot to join"},
+             "size_multiplier": {"type": "number", "default": 1.0,
+                                 "description": "Trade-size multiplier vs the master bot (0 < x <= 10)"},
+             "max_contracts": {"type": "integer", "default": 10,
+                               "description": "Hard cap on contracts per signal"},
+             "daily_loss_cap_usd": {"type": "number", "default": 5000.0,
+                                    "description": "Daily loss hard limit in USD"},
+         }, "required": ["bot"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_subscriber_status",
+         description=(
+             "Return a full status snapshot for the authenticated subscriber: "
+             "which bots they're assigned to, paper account balance, key_active flag, "
+             "and suggested next_steps based on their current state. "
+             "Good first call after setting ALGOCHAINS_SUBSCRIBER_KEY. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY to be set."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
     # ── Waitlist ──────────────────────────────────────────────────────────
     Tool(name="join_waitlist",
          description="Add an email to the AlgoChains waitlist. Stores in Supabase, sends welcome email via Resend. Returns waitlist position.",
@@ -4876,6 +4922,10 @@ TIER1_TOOL_NAMES = {
     "test_bridge_connection",
     # Subscriber onramp
     "get_checkout_url",
+    "generate_payment_link",
+    # Subscriber tools (stdio path — key from ALGOCHAINS_SUBSCRIBER_KEY)
+    "join_bot",
+    "get_subscriber_status",
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
@@ -9646,17 +9696,67 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": str(exc)})
 
+    elif name == "generate_payment_link":
+        tier = arguments.get("tier", "paper")
+        env_var = "STRIPE_PAPER_LINK" if tier == "paper" else "STRIPE_LIVE_LINK"
+        link = os.environ.get(env_var, "")
+        if not link:
+            link = f"https://algochains.ai/pricing#{tier}"
+        price = "$29/mo" if tier == "paper" else "$99/mo"
+        return _text({
+            "payment_link": link,
+            "tier": tier,
+            "price": price,
+            "note": "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key> and run get_my_portfolio()",
+        })
+
+    elif name in ("join_bot", "get_subscriber_status"):
+        _sub_key = os.environ.get("ALGOCHAINS_SUBSCRIBER_KEY", "")
+        if not _sub_key:
+            return _text({
+                "error": "ALGOCHAINS_SUBSCRIBER_KEY not set. "
+                         "Get a subscriber key from algochains.ai or run get_checkout_url() to subscribe.",
+            })
+        from .subscriber_auth import resolve_subscriber_key as _resolve_sub
+        _sub = _resolve_sub(_sub_key)
+        if not _sub:
+            return _text({"error": "Invalid or expired subscriber key. Check ALGOCHAINS_SUBSCRIBER_KEY."})
+        if name == "join_bot":
+            try:
+                from .subscriber_tools import join_bot as _join_bot
+                return _text(_join_bot(
+                    _sub.subscriber_id,
+                    arguments["bot"],
+                    size_multiplier=float(arguments.get("size_multiplier", 1.0)),
+                    max_contracts=int(arguments.get("max_contracts", 10)),
+                    daily_loss_cap_usd=float(arguments.get("daily_loss_cap_usd", 5000.0)),
+                ))
+            except KeyError as exc:
+                return _text({"error": f"Missing required argument: {exc}"})
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "get_subscriber_status":
+            try:
+                from .subscriber_tools import get_subscriber_status as _get_sub_status
+                return _text(_get_sub_status(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+
     elif name == "join_waitlist":
         try:
             from .waitlist import join_waitlist as _join_waitlist
-            return _text(await _join_waitlist(
+            result = await _join_waitlist(
                 email=arguments["email"],
                 first_name=arguments.get("first_name", ""),
                 last_name=arguments.get("last_name", ""),
                 broker=arguments.get("broker", ""),
                 use_case=arguments.get("use_case", ""),
                 referral_code=arguments.get("referral_code"),
-            ))
+            )
+            # Append checkout link so the user can pay immediately without waiting for an invite
+            result["checkout_url"] = f"https://algochains.ai/pricing?email={arguments['email']}"
+            result["note"] = "Skip the waitlist — subscribe directly at the checkout URL above."
+            return _text(result)
         except KeyError as exc:
             return _text({"error": f"Missing required argument: {exc}"})
         except Exception as exc:
