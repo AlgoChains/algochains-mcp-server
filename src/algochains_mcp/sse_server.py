@@ -68,7 +68,9 @@ logger = logging.getLogger("algochains_mcp.sse_server")
 
 ALLOWED_ORIGINS: list[str] = [
     "https://algochains.ai",
+    "https://www.algochains.ai",
     "https://app.algochains.ai",
+    "https://cc.algochains.io",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:8080",
@@ -554,6 +556,23 @@ def run_sse_server(mcp_server: Optional[Server] = None) -> None:
         ALGOCHAINS_SSE_KEY   API key for auth (empty = no auth in dev)
     """
     app = build_app(mcp_server)
+
+    # Warn-only security guard: alert operators when running in an open/exposed config.
+    # Enforcement (ALGOCHAINS_SSE_REQUIRE_KEY=1) is opt-in to avoid breaking existing deployments.
+    if not SSE_API_KEY:
+        logger.warning(
+            "⚠️  ALGOCHAINS_SSE_KEY is not set — SSE server is running without API key auth. "
+            "This is safe when bound to 127.0.0.1 (default). "
+            "Set ALGOCHAINS_SSE_KEY in production if exposing on a non-localhost interface."
+        )
+    if SSE_HOST not in ("127.0.0.1", "localhost", "::1") and not SSE_API_KEY:
+        logger.warning(
+            "⚠️  SSE server is bound to %s (non-localhost) with no ALGOCHAINS_SSE_KEY set. "
+            "Any client that can reach this host can use the MCP endpoint. "
+            "Set ALGOCHAINS_SSE_KEY to require authentication.",
+            SSE_HOST,
+        )
+
     uvicorn.run(
         app,
         host=SSE_HOST,

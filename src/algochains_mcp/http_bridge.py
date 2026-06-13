@@ -1355,4 +1355,12 @@ if __name__ == "__main__":
     app = create_fastapi_app()
     # Default to localhost only. Set ALGOCHAINS_BRIDGE_HOST=0.0.0.0 intentionally for LAN access.
     host = os.getenv("ALGOCHAINS_BRIDGE_HOST", "127.0.0.1")
+    _bridge_key = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
+    if host not in ("127.0.0.1", "localhost", "::1") and not _bridge_key:
+        log.warning(
+            "⚠️  HTTP bridge bound to %s (non-localhost) with no ALGOCHAINS_BRIDGE_API_KEY set. "
+            "Public tools are accessible without authentication. "
+            "Set ALGOCHAINS_BRIDGE_API_KEY or restrict the bind address.",
+            host,
+        )
     uvicorn.run(app, host=host, port=port, log_level="info")
