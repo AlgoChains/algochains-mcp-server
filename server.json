@@ -1,0 +1,39 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.algochains/algochains-mcp-server",
+  "description": "AI-to-broker trading protocol: 503 tools across 20 domains. Live futures bots (MNQ/CL/MES/NQ) with real fills, copy-trade signals, MCPT strategy validation, and a hosted paper account requiring zero broker credentials.",
+  "version": "22.6.0",
+  "homepage": "https://algochains.ai",
+  "repository": {
+    "url": "https://github.com/AlgoChains/algochains-mcp-server",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "algochains-mcp-server",
+      "version": "22.6.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "ALGOCHAINS_SUBSCRIBER_KEY",
+          "description": "sub_live_* key from algochains.ai (free paper tier).",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "OWNER_API_TOKEN",
+          "description": "Owner token for live trading and destructive tools.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "ALGOCHAINS_TOOL_MODE",
+          "description": "smart (168 tools, default) or full (503 tools).",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

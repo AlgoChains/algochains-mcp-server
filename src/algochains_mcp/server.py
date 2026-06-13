@@ -4254,6 +4254,227 @@ TOOLS = [
          }, "required": []},
          annotations=ANNOT_READ_ONLY),
 
+    # ── Subscriber Onramp ────────────────────────────────────────────────
+    # ── Onboarding meta-tools (public, no auth — first 30 seconds) ──────────
+    Tool(name="get_started",
+         description=(
+             "START HERE. Guided next-steps for a brand-new user, by goal. No auth, "
+             "no setup. Call get_started(goal='subscriber') for copy-trade signals, "
+             "'creator' to publish a strategy, 'developer' to build on the API, or "
+             "'explore' to look around with zero signup. Returns the exact tool calls to make next."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "goal": {"type": "string", "description": "subscriber | creator | developer | explore (optional — omit for a menu)"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_pricing",
+         description=(
+             "Transparent AlgoChains pricing: paper ($29/mo) and live ($99/mo) tiers, "
+             "what's included, usage overage, the 20%/3-month referral reward, and the "
+             "80% creator revenue share. Flat subscription + usage; no performance fees. "
+             "No auth required."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_system_status",
+         description=(
+             "Consumer-facing platform health: version, live signal-bot roster "
+             "(MNQ/CL/MES/NQ), tool count, and public marketplace listing count. "
+             "No auth, no secrets — safe to call anytime."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_checkout_url",
+         description=(
+             "Generate a Stripe checkout URL for an AlgoChains subscription. "
+             "Returns a URL the user clicks once to pay — Stripe handles the payment UI. "
+             "After payment, a sub_live_… key is emailed automatically and the subscriber "
+             "can subscribe to MNQ copy-trade signals (delivered for the subscriber to "
+             "review and act on — no automated execution; the subscriber stays in control). "
+             "Tiers: 'paper' ($29/mo — subscriber tools + MNQ copy-trade signals, simulated "
+             "paper account, no broker needed) or 'live' ($99/mo — subscriber connects their "
+             "own broker and places their own trades). Flat subscription only. "
+             "Set ALGOCHAINS_SUBSCRIBER_KEY=<received_key> to activate."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string", "description": "Email for subscription and key delivery"},
+             "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper",
+                      "description": "paper=$29/mo (MNQ signals + simulated paper, no broker), live=$99/mo (connect your own broker, you place trades)"},
+             "referral_code": {"type": "string", "description": "Optional referral code (AC-XXXXXX) — credits the referrer."},
+         }, "required": ["email"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="generate_payment_link",
+         description=(
+             "Return a direct payment link for an AlgoChains subscription tier. "
+             "Unlike get_checkout_url, this returns a pre-configured shareable URL "
+             "that works without entering an email first. "
+             "paper=$29/mo, live=$99/mo. "
+             "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key>."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Subscriber Tools (stdio path — sub key sets ALGOCHAINS_SUBSCRIBER_KEY) ─
+    Tool(name="join_bot",
+         description=(
+             "Subscribe the authenticated subscriber to a strategy's published "
+             "copy-trade SIGNALS (the subscriber reviews and acts on them — the "
+             "platform does not auto-execute or exercise discretion). The subscriber "
+             "sets their own size and can pause/leave anytime. "
+             "Strategies: MNQ (micro Nasdaq scalper), CL (crude oil scalper), "
+             "MES (micro S&P swing), NQ (Nasdaq swing). "
+             "Enforces a seat cap per strategy — returns bot_at_capacity if full. "
+             "Requires the futures risk disclosure to be acknowledged first "
+             "(accept_subscriber_terms) and ALGOCHAINS_SUBSCRIBER_KEY to be set. "
+             "Re-calling with an existing subscription updates size_multiplier and un-pauses."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "bot": {"type": "string", "enum": ["MNQ", "CL", "MES", "NQ"],
+                     "description": "Which strategy's published signals to subscribe to"},
+             "size_multiplier": {"type": "number", "default": 1.0,
+                                 "description": "Trade-size multiplier vs the master bot (0 < x <= 10)"},
+             "max_contracts": {"type": "integer", "default": 10,
+                               "description": "Hard cap on contracts per signal"},
+             "daily_loss_cap_usd": {"type": "number", "default": 5000.0,
+                                    "description": "Daily loss hard limit in USD"},
+         }, "required": ["bot"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_subscriber_status",
+         description=(
+             "Return a full status snapshot for the authenticated subscriber: "
+             "which bots they're assigned to, paper account balance, key_active flag, "
+             "and suggested next_steps based on their current state. "
+             "Good first call after setting ALGOCHAINS_SUBSCRIBER_KEY. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY to be set."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="accept_subscriber_terms",
+         description=(
+             "Record the authenticated subscriber's explicit acknowledgment of the "
+             "futures risk disclosure and Terms of Service. REQUIRED before active "
+             "copy-trade (join_bot). Call once with no arguments to retrieve the "
+             "disclosure text and the exact acknowledgment phrase, then call again "
+             "with acknowledgment=<phrase> to record consent. CFTC/NFA compliance "
+             "gate. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "acknowledgment": {"type": "string", "description": "Exact risk-acknowledgment phrase to record consent"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_usage",
+         description=(
+             "Your current-month MCP API usage: total metered calls, included quota, "
+             "overage calls, overage cost (USD), and a projected month-end overage cost. "
+             "Read-only; reflects this subscriber's billing tier. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Affiliate / referral system ─────────────────────────────────────────
+    Tool(name="create_referral_code",
+         description=(
+             "Create (or fetch) the authenticated subscriber's shareable referral code. "
+             "Returns the code and a share_url (https://algochains.ai/r/<code>). "
+             "One active code per subscriber. Referrers earn 20% of each referral's "
+             "subscription for their first 3 months. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_referrals",
+         description=(
+             "Return the authenticated subscriber's referral summary: their referral code, "
+             "count of subscribers referred, and commission counts + sums by status. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_referral_earnings",
+         description=(
+             "Return total referral earnings (pending + paid commission_usd) for the "
+             "authenticated subscriber, with the 20%/3-month policy and compliance "
+             "disclaimer. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Creator payouts (Stripe Connect ledger) ─────────────────────────────
+    Tool(name="create_creator_onboarding_link",
+         description=(
+             "Create a Stripe Connect Express onboarding link for a strategy creator. "
+             "Returns a URL where the creator completes KYC and links their bank account "
+             "for payouts, and mirrors the Connect account into the creator ledger. "
+             "Pass creator_id + creator_email."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Creator id."},
+             "creator_email": {"type": "string", "description": "Email for the Stripe Connect account and KYC."},
+         }, "required": ["creator_id", "creator_email"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_creator_earnings",
+         description=(
+             "Read a creator's earnings summary (accrued / paid / reversed totals, 80/20 "
+             "revenue share) plus recent payout history. Read-only. Pass creator_id."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Creator id."},
+         }, "required": ["creator_id"]},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="run_creator_payouts",
+         description=(
+             "Run the creator payout batch: sum accrued earnings per creator and pay out "
+             "those over min_payout_usd via Stripe Connect. MOVES REAL MONEY. "
+             "Defaults to dry_run=true (returns the computed plan, executes nothing). "
+             "REQUIRES owner_token matching OWNER_API_TOKEN. Set dry_run=false to execute."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Optional — scope the run to a single creator."},
+             "dry_run": {"type": "boolean", "default": True, "description": "true (default) = plan only, no money moves."},
+             "min_payout_usd": {"type": "number", "default": 25.0, "description": "Minimum accrued balance to trigger a payout."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required to run."},
+         }, "required": ["owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
+    # ── Realized P&L (live vs paper segregated) ─────────────────────────────
+    Tool(name="get_my_realized_pnl",
+         description=(
+             "Your realized P&L with LIVE (real broker) and PAPER (simulated) results "
+             "STRICTLY segregated. Paper results carry the CFTC Reg. 4.41(b) hypothetical-"
+             "performance disclaimer; they are never co-mingled with live results. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="reconcile_creator_pnl",
+         description=(
+             "Owner reconciliation: attribute subscribers' LIVE net realized P&L to "
+             "strategy creators for a period (per-subscriber then summed; 80/20 share). "
+             "Writes the creator_strategy_pnl ledger; does NOT move money (payout is "
+             "run_creator_payouts). Defaults to dry_run=true. REQUIRES owner_token."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "period_start": {"type": "string", "description": "ISO8601 inclusive period start."},
+             "period_end": {"type": "string", "description": "ISO8601 exclusive period end."},
+             "dry_run": {"type": "boolean", "default": True, "description": "true (default) = plan only."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+         }, "required": ["period_start", "period_end", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
     # ── Waitlist ──────────────────────────────────────────────────────────
     Tool(name="join_waitlist",
          description="Add an email to the AlgoChains waitlist. Stores in Supabase, sends welcome email via Resend. Returns waitlist position.",
@@ -4856,6 +5077,27 @@ TIER1_TOOL_NAMES = {
     "revoke_developer_key",
     "get_developer_key_usage",
     "test_bridge_connection",
+    # Onboarding meta-tools (public)
+    "get_started",
+    "get_pricing",
+    "get_system_status",
+    # Subscriber onramp
+    "get_checkout_url",
+    "generate_payment_link",
+    # Subscriber tools (stdio path — key from ALGOCHAINS_SUBSCRIBER_KEY)
+    "join_bot",
+    "get_subscriber_status",
+    "accept_subscriber_terms",
+    "get_my_usage",
+    # Affiliate / referral
+    "create_referral_code",
+    "get_my_referrals",
+    "get_referral_earnings",
+    # Creator payouts (run_creator_payouts intentionally NOT here — moves money, owner-gated)
+    "create_creator_onboarding_link",
+    "get_my_creator_earnings",
+    # Realized P&L (reconcile_creator_pnl intentionally NOT here — owner-gated)
+    "get_my_realized_pnl",
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
@@ -9613,17 +9855,188 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": str(exc)})
 
+    elif name == "get_checkout_url":
+        try:
+            from .cloud_saas.billing_engine import BillingEngine as _BillingEngine
+            _be = _BillingEngine()
+            return _text(await _be.create_platform_checkout_session(
+                email=arguments["email"],
+                tier=arguments.get("tier", "paper"),
+                referral_code=arguments.get("referral_code"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "generate_payment_link":
+        tier = arguments.get("tier", "paper")
+        env_var = "STRIPE_PAPER_LINK" if tier == "paper" else "STRIPE_LIVE_LINK"
+        link = os.environ.get(env_var, "")
+        if not link:
+            link = f"https://algochains.ai/pricing#{tier}"
+        price = "$29/mo" if tier == "paper" else "$99/mo"
+        return _text({
+            "payment_link": link,
+            "tier": tier,
+            "price": price,
+            "note": "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key> and run get_my_portfolio()",
+        })
+
+    elif name in ("get_started", "get_pricing", "get_system_status"):
+        # Public onboarding meta-tools — no auth, never raise.
+        try:
+            from . import onboarding_meta as _om
+            if name == "get_started":
+                return _text(_om.get_started(arguments.get("goal")))
+            elif name == "get_pricing":
+                return _text(_om.get_pricing())
+            else:
+                return _text(_om.get_system_status())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name in ("join_bot", "get_subscriber_status", "accept_subscriber_terms",
+                  "get_my_usage", "create_referral_code", "get_my_referrals",
+                  "get_referral_earnings", "get_my_realized_pnl"):
+        _sub_key = os.environ.get("ALGOCHAINS_SUBSCRIBER_KEY", "")
+        if not _sub_key:
+            return _text({
+                "error": "ALGOCHAINS_SUBSCRIBER_KEY not set. "
+                         "Get a subscriber key from algochains.ai or run get_checkout_url() to subscribe.",
+            })
+        from .subscriber_auth import resolve_subscriber_key as _resolve_sub
+        _sub = _resolve_sub(_sub_key)
+        if not _sub:
+            return _text({"error": "Invalid or expired subscriber key. Check ALGOCHAINS_SUBSCRIBER_KEY."})
+        if name == "get_my_usage":
+            try:
+                from .subscriber_tools import get_my_usage as _get_my_usage
+                return _text(_get_my_usage(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "get_my_realized_pnl":
+            try:
+                from .cloud_saas.realized_pnl import get_my_realized_pnl as _grp
+                return _text(_grp(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name in ("create_referral_code", "get_my_referrals", "get_referral_earnings"):
+            try:
+                from .cloud_saas import referrals as _referrals
+                if name == "create_referral_code":
+                    return _text(_referrals.create_referral_code(_sub.subscriber_id))
+                elif name == "get_my_referrals":
+                    return _text(_referrals.get_my_referrals(_sub.subscriber_id))
+                else:
+                    return _text(_referrals.get_referral_earnings(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "join_bot":
+            try:
+                from .subscriber_tools import join_bot as _join_bot
+                return _text(_join_bot(
+                    _sub.subscriber_id,
+                    arguments["bot"],
+                    size_multiplier=float(arguments.get("size_multiplier", 1.0)),
+                    max_contracts=int(arguments.get("max_contracts", 10)),
+                    daily_loss_cap_usd=float(arguments.get("daily_loss_cap_usd", 5000.0)),
+                ))
+            except KeyError as exc:
+                return _text({"error": f"Missing required argument: {exc}"})
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "get_subscriber_status":
+            try:
+                from .subscriber_tools import get_subscriber_status as _get_sub_status
+                return _text(_get_sub_status(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "accept_subscriber_terms":
+            try:
+                from .subscriber_tools import accept_subscriber_terms as _accept_terms
+                return _text(_accept_terms(
+                    _sub.subscriber_id,
+                    acknowledgment=arguments.get("acknowledgment"),
+                ))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+
+    elif name == "create_creator_onboarding_link":
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            _creator_id = arguments.get("creator_id", "")
+            if not _creator_id:
+                return _text({"error": "creator_id required."})
+            return _text(await _cp.create_creator_onboarding_link(
+                creator_id=_creator_id,
+                creator_email=arguments["creator_email"],
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_my_creator_earnings":
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            _creator_id = arguments.get("creator_id", "")
+            if not _creator_id:
+                return _text({"error": "creator_id required."})
+            return _text(_cp.get_my_creator_earnings(_creator_id))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "run_creator_payouts":
+        # OWNER-GATED — moves real money. Fails closed when OWNER_API_TOKEN unset.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "run_creator_payouts requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            return _text(await _cp.run_creator_payouts(
+                creator_id=arguments.get("creator_id"),
+                dry_run=bool(arguments.get("dry_run", True)),
+                min_payout_usd=float(arguments.get("min_payout_usd", 25.0)),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "reconcile_creator_pnl":
+        # OWNER-GATED — writes the creator earnings ledger. Fails closed.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "reconcile_creator_pnl requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas.realized_pnl import reconcile_creator_pnl as _rec
+            return _text(await _rec(
+                arguments["period_start"],
+                arguments["period_end"],
+                dry_run=bool(arguments.get("dry_run", True)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
     elif name == "join_waitlist":
         try:
             from .waitlist import join_waitlist as _join_waitlist
-            return _text(await _join_waitlist(
+            result = await _join_waitlist(
                 email=arguments["email"],
                 first_name=arguments.get("first_name", ""),
                 last_name=arguments.get("last_name", ""),
                 broker=arguments.get("broker", ""),
                 use_case=arguments.get("use_case", ""),
                 referral_code=arguments.get("referral_code"),
-            ))
+            )
+            # Append checkout link so the user can pay immediately without waiting for an invite
+            from urllib.parse import quote as _url_quote
+            result["checkout_url"] = f"https://algochains.ai/pricing?email={_url_quote(arguments['email'], safe='')}"
+            result["note"] = "Skip the waitlist — subscribe directly at the checkout URL above."
+            return _text(result)
         except KeyError as exc:
             return _text({"error": f"Missing required argument: {exc}"})
         except Exception as exc:
