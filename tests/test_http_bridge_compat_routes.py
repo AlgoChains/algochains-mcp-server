@@ -123,3 +123,45 @@ def test_subscribers_route_aggregates_copy_trade_state():
     assert body["paper_account_count"] == 1
     assert body["heartbeat_count"] == 1
     assert {row["subscriber_id"] for row in body["subscribers"]} == {"sub-1", "sub-2"}
+
+
+def test_subscribers_route_exposes_account_level_paper_pnl_rollup():
+    client = _client()
+    sb = _Supabase(
+        {
+            "subscriber_bot_assignments": [
+                {"subscriber_id": "sub-1", "bot": "MNQ", "paused": False},
+            ],
+            "subscriber_paper_accounts": [
+                {
+                    "subscriber_id": "sub-1",
+                    "starting_balance_usd": "2768.00",
+                    "current_balance_usd": "2723.00",
+                    "realized_pnl_usd": "-45.00",
+                }
+            ],
+            "subscriber_heartbeats": [
+                {
+                    "subscriber_id": "sub-1",
+                    "pnl_today_usd": 0,
+                    "last_seen": "2026-06-13T00:02:17Z",
+                }
+            ],
+            "marketplace_botsubscription": [],
+        }
+    )
+
+    with patch("algochains_mcp.marketplace.supabase_tools._get_sb_client", return_value=sb):
+        resp = client.get("/api/subscribers", headers={"X-Api-Key": OWNER_KEY})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["paper_pnl_usd"] == -45
+    assert body["paper_pnl"] == -45
+    assert body["paper_pnl_rollup_usd"] == -45
+    subscriber = body["subscribers"][0]
+    assert subscriber["heartbeat"]["pnl_today_usd"] == 0
+    assert subscriber["paper_pnl_usd"] == -45
+    assert subscriber["paper_pnl"] == -45
+    assert subscriber["paper_pnl_rollup_usd"] == -45
+    assert subscriber["paper_account"]["paper_pnl_usd"] == -45

@@ -25,6 +25,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path as _PathGlobal
 
 # FastAPI imports at module level so inner functions can resolve Request type
@@ -64,6 +65,48 @@ from .otel_tracing import redacted_argument_hash, trace_span
 from .paths import default_control_tower
 
 log = logging.getLogger(__name__)
+
+
+def _decimal_or_none(value: object) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _round_cents(value: Decimal) -> float:
+    return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _paper_account_pnl_usd(paper_account: dict[str, object] | None) -> float | None:
+    if not paper_account:
+        return None
+
+    realized = _decimal_or_none(paper_account.get("realized_pnl_usd"))
+    if realized is not None:
+        return _round_cents(realized)
+
+    current = _decimal_or_none(paper_account.get("current_balance_usd"))
+    starting = _decimal_or_none(paper_account.get("starting_balance_usd"))
+    if current is None or starting is None:
+        return None
+    return _round_cents(current - starting)
+
+
+def _paper_pnl_aliases(paper_account: dict[str, object] | None) -> dict[str, float | None]:
+    paper_pnl = _paper_account_pnl_usd(paper_account)
+    return {
+        "paper_pnl_usd": paper_pnl,
+        "paper_pnl": paper_pnl,
+        "paper_pnl_rollup_usd": paper_pnl,
+    }
+
+
+def _sum_money(values: list[float]) -> float:
+    total = sum(Decimal(str(value)) for value in values)
+    return _round_cents(total)
 
 # Single source of truth: read version from pyproject.toml at startup.
 # Prevents version drift between FastAPI /docs and package metadata
@@ -819,7 +862,11 @@ def create_fastapi_app():
             sub = _ensure_subscriber(row)
             if sub is None:
                 continue
-            sub["paper_account"] = row
+            paper_account = dict(row)
+            aliases = _paper_pnl_aliases(paper_account)
+            paper_account.update(aliases)
+            sub["paper_account"] = paper_account
+            sub.update(aliases)
 
         for row in heartbeats:
             sub = _ensure_subscriber(row)
@@ -834,6 +881,14 @@ def create_fastapi_app():
             sub["marketplace_subscription_count"] += 1
             if row.get("status") == "active":
                 sub["active_marketplace_subscription_count"] += 1
+
+        paper_pnl_values = [
+            value
+            for row in subscribers.values()
+            for value in [row.get("paper_pnl_usd")]
+            if isinstance(value, int | float)
+        ]
+        paper_pnl_rollup = _sum_money(paper_pnl_values) if paper_pnl_values else None
 
         return {
             "subscribers": list(subscribers.values()),
@@ -851,6 +906,9 @@ def create_fastapi_app():
             "subscription_count": len(subscriptions),
             "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
             "paper_account_count": len(paper_accounts),
+            "paper_pnl_usd": paper_pnl_rollup,
+            "paper_pnl": paper_pnl_rollup,
+            "paper_pnl_rollup_usd": paper_pnl_rollup,
             "heartbeat_count": len(heartbeats),
             "query_errors": {
                 key: value
