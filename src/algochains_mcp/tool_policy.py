@@ -226,8 +226,8 @@ def evaluate_bridge_tool(
         expected = os.environ.get("OWNER_API_TOKEN", "")
         provided = (arguments or {}).get("owner_token", "")
         if not expected or provided != expected:
-            import logging as _log
-            _log.getLogger("algochains_mcp.tool_policy").warning(
+            import logging
+            logging.getLogger("algochains_mcp.tool_policy").warning(
                 "[bridge] ORDER_EXEC tool '%s' called without matching owner_token "
                 "(ALGOCHAINS_BRIDGE_REQUIRE_OWNER_TOKEN=1 is active). "
                 "Pass owner_token in arguments.",
@@ -274,9 +274,12 @@ def evaluate_dynamic_tool(
             "rotate_api_key",
             "set_byok_key",
         })
-        if tool_name in _SENSITIVE_WRITE_LOCAL and expected_owner_token:
+        if tool_name in _SENSITIVE_WRITE_LOCAL:
             provided_tok = (arguments or {}).get("owner_token", "")
-            if provided_tok != expected_owner_token:
+            # Fail-closed: if OWNER_API_TOKEN is not configured, deny credential-writing
+            # tools entirely (mirrors ORDER_EXEC behavior). Allowing them when the token
+            # is unset would let any stdio attacker write to .env / key store.
+            if not expected_owner_token or provided_tok != expected_owner_token:
                 return ToolPolicyDecision(
                     False,
                     **base,
@@ -284,7 +287,8 @@ def evaluate_dynamic_tool(
                     reason=(
                         f"execute_dynamic_tool: '{tool_name}' writes credentials and "
                         "requires owner_token authorization even at WRITE_LOCAL tier. "
-                        "Pass a matching owner_token inside the 'arguments' payload."
+                        "Set OWNER_API_TOKEN in .env and pass a matching owner_token "
+                        "inside the 'arguments' payload."
                     ),
                 )
         return ToolPolicyDecision(True, **base)

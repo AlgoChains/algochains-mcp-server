@@ -7426,6 +7426,23 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         if not decision.allow:
             return _text(decision.as_error())
+
+        # Demo mode guard: also stub ORDER_EXEC+ tools dispatched via execute_dynamic_tool.
+        # call_tool stubs direct calls; this catches the dynamic dispatch path.
+        if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
+            from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_OE, get_danger_tier as _gdt
+            if _gdt(inner_name) >= _TIER_OE:
+                return _text({
+                    "status": "demo_mode_stub",
+                    "tool": inner_name,
+                    "message": (
+                        f"Tool '{inner_name}' is an order/execution tool (tier≥2) and is stubbed "
+                        "in demo mode. No broker API call was made. "
+                        "Remove ALGOCHAINS_DEMO_MODE to enable live execution."
+                    ),
+                    "demo_mode": True,
+                })
+
         return await _execute_tool_with_runtime_guards(
             inner_name,
             inner_args,
@@ -9876,8 +9893,6 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .auth.platform_auth import test_bridge_connection as _test_bridge
             return _text(await _test_bridge(api_key=arguments.get("api_key")))
-        except Exception as exc:
-            return _text({"error": str(exc)})
         except Exception as exc:
             return _text({"error": str(exc)})
 
