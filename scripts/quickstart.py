@@ -205,6 +205,11 @@ def prompt_subscriber_onramp() -> None:
     print(f"  {WARN}  {YELLOW}No subscriber key found. Get one at algochains.ai or generate a checkout URL:{RESET}")
     print()
 
+    if not sys.stdin.isatty():
+        print(f"  {INFO} Non-interactive environment detected — visit: {CYAN}https://algochains.ai/pricing{RESET}")
+        print(f"  {INFO} Then set: {CYAN}ALGOCHAINS_SUBSCRIBER_KEY=sub_live_…{RESET}")
+        return
+
     stripe_key = _env("STRIPE_SECRET_KEY")
     if stripe_key:
         # Attempt to generate a checkout session via BillingEngine
@@ -311,16 +316,19 @@ def run_subscriber_status() -> bool:
     try:
         from algochains_mcp.cloud_saas.supabase_client import get_supabase_client
         sb = get_supabase_client()
-        row = sb.table("subscriber_portfolios").select("paper_balance, bots_assigned").eq(
+        acct = sb.table("subscriber_paper_accounts").select("current_balance_usd").eq(
             "subscriber_id", sub.subscriber_id
         ).maybe_single().execute()
-        if row and row.data:
-            balance = row.data.get("paper_balance")
-            bots = row.data.get("bots_assigned", [])
+        if acct and acct.data:
+            balance = acct.data.get("current_balance_usd")
             if balance is not None:
                 _ok("Paper balance", f"${float(balance):,.2f}")
-            if bots:
-                _ok("Bots assigned", ", ".join(bots) if isinstance(bots, list) else str(bots))
+        bots_resp = sb.table("subscriber_bot_assignments").select("bot").eq(
+            "subscriber_id", sub.subscriber_id
+        ).eq("paused", False).execute()
+        bots = [r["bot"] for r in (getattr(bots_resp, "data", None) or [])]
+        if bots:
+            _ok("Bots assigned", ", ".join(bots))
     except Exception:
         _info("Supabase portfolio lookup unavailable (optional)")
 

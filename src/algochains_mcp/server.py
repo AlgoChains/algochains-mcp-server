@@ -9754,7 +9754,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 referral_code=arguments.get("referral_code"),
             )
             # Append checkout link so the user can pay immediately without waiting for an invite
-            result["checkout_url"] = f"https://algochains.ai/pricing?email={arguments['email']}"
+            from urllib.parse import quote as _url_quote
+            result["checkout_url"] = f"https://algochains.ai/pricing?email={_url_quote(arguments['email'], safe='')}"
             result["note"] = "Skip the waitlist — subscribe directly at the checkout URL above."
             return _text(result)
         except KeyError as exc:

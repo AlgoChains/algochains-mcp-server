@@ -392,12 +392,15 @@ program
 
     // Open URL in the default browser cross-platform
     const { execSync } = await import("child_process");
-    const openCmd =
-      process.platform === "darwin" ? "open" :
-      process.platform === "win32"  ? "start" :
-      "xdg-open";
     try {
-      execSync(`${openCmd} "${checkoutUrl}"`, { stdio: "ignore" });
+      if (process.platform === "darwin") {
+        execSync(`open "${checkoutUrl}"`, { stdio: "ignore" });
+      } else if (process.platform === "win32") {
+        // start requires an empty title string before the URL on Windows
+        execSync(`start "" "${checkoutUrl}"`, { stdio: "ignore", shell: true });
+      } else {
+        execSync(`xdg-open "${checkoutUrl}"`, { stdio: "ignore" });
+      }
     } catch {
       console.log(`  (Could not auto-open browser — paste the URL above manually)`);
     }
@@ -436,7 +439,7 @@ program
         console.error(`  Invalid --size: ${opts.size}. Must be between 0.0 and 1.0.`);
         process.exit(1);
       }
-      args.size = size;
+      args.size_multiplier = size;
     }
     if (opts.maxContracts !== undefined) {
       const mc = parseInt(opts.maxContracts, 10);

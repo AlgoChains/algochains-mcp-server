@@ -681,6 +681,27 @@ def join_bot(
             "max_seats": bot_max_seats,
         }
 
+    # ── Check for existing row (re-join should preserve prior size settings) ──
+    _caller_supplied_size = size_multiplier != 1.0 or max_contracts != 10 or daily_loss_cap_usd != 5000.0
+    try:
+        existing = (
+            sb.table("subscriber_bot_assignments")
+            .select("size_multiplier,max_contracts,daily_loss_cap_usd")
+            .eq("subscriber_id", subscriber_id)
+            .eq("bot", bot_upper)
+            .maybe_single()
+            .execute()
+        )
+        existing_row = getattr(existing, "data", None)
+    except Exception:
+        existing_row = None
+
+    if existing_row and not _caller_supplied_size:
+        # Re-join with defaults → just un-pause, preserve prior settings
+        sm = float(existing_row.get("size_multiplier", sm))
+        max_contracts = int(existing_row.get("max_contracts", max_contracts))
+        daily_loss_cap_usd = float(existing_row.get("daily_loss_cap_usd", daily_loss_cap_usd))
+
     # ── Upsert assignment ────────────────────────────────────────────────────
     payload = {
         "subscriber_id": subscriber_id,
@@ -689,7 +710,6 @@ def join_bot(
         "max_contracts": int(max_contracts),
         "daily_loss_cap_usd": float(daily_loss_cap_usd),
         "paused": False,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     try:
         sb.table("subscriber_bot_assignments").upsert(
@@ -703,6 +723,7 @@ def join_bot(
         "bot": bot_upper,
         "subscriber_id": subscriber_id,
         "size_multiplier": sm,
+        "rejoined": bool(existing_row),
     }
 
 
@@ -756,7 +777,6 @@ def get_subscriber_status(subscriber_id: str) -> dict[str, Any]:
 
     return {
         "subscriber_id": subscriber_id,
-        "key_active": True,
         "bots_assigned": bots_assigned,
         "paper_account": paper_account,
         "next_steps": next_steps,

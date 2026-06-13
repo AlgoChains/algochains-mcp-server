@@ -470,15 +470,14 @@ class BillingEngine:
         email: str,
         tier: str,
         checkout_session_id: str,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], str]:
         """
         Generate a sub_live_* key, write hash to subscriber_api_keys, create a
         paper account, and assign the subscriber to the MNQ bot by default.
 
-        Called from process_stripe_webhook() after checkout.session.completed
-        for platform_subscription checkouts. The plaintext key is returned in
-        the result dict and should be emailed to the subscriber immediately —
-        it is not stored anywhere after this function returns.
+        Returns (result_dict, raw_key) as a tuple. The raw_key is kept out of
+        the result dict to prevent it from appearing in logs or tracebacks.
+        The caller must email it immediately and then del/overwrite the variable.
         """
         raw_key = f"sub_live_{secrets.token_urlsafe(32)}"
         key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
@@ -491,72 +490,72 @@ class BillingEngine:
         errors: list[str] = []
 
         if not (_SUPABASE_URL and _SUPABASE_SERVICE_KEY):
-            logger.error("_provision_subscriber_key: Supabase not configured — key generated but not stored")
-            return {
-                "provisioned": False,
-                "error": "supabase_not_configured",
-                "raw_key": raw_key,
-            }
+            logger.error("_provision_subscriber_key: Supabase not configured — key NOT stored")
+            return (
+                {"provisioned": False, "error": "supabase_not_configured",
+                 "subscriber_id": subscriber_id, "key_prefix": key_prefix, "tier": tier, "errors": []},
+                raw_key,
+            )
 
         try:
-            import httpx as _httpx
-            hdrs = _supabase_headers()
+            async with __import__("httpx").AsyncClient() as _hx:
+                hdrs = _supabase_headers()
 
-            # 1. Write hashed key to subscriber_api_keys
-            key_resp = _httpx.post(
-                f"{_SUPABASE_URL}/rest/v1/subscriber_api_keys",
-                json={
-                    "key_hash": key_hash,
-                    "key_prefix": key_prefix,
-                    "subscriber_id": subscriber_id,
-                    "tier": tier,
-                    "active": True,
-                    "created_at": now_iso,
-                },
-                headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
-                timeout=8,
-            )
-            if key_resp.status_code not in (200, 201, 409):
-                errors.append(f"subscriber_api_keys:{key_resp.status_code}")
-                logger.error("subscriber_api_keys insert failed: %s", key_resp.status_code)
+                # 1. Write hashed key to subscriber_api_keys
+                key_resp = await _hx.post(
+                    f"{_SUPABASE_URL}/rest/v1/subscriber_api_keys",
+                    json={
+                        "key_hash": key_hash,
+                        "key_prefix": key_prefix,
+                        "subscriber_id": subscriber_id,
+                        "tier": tier,
+                        "active": True,
+                        "created_at": now_iso,
+                    },
+                    headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                    timeout=8,
+                )
+                if key_resp.status_code not in (200, 201, 204, 409):
+                    errors.append(f"subscriber_api_keys:{key_resp.status_code}")
+                    logger.error("subscriber_api_keys insert failed: %s", key_resp.status_code)
 
-            # 2. Create paper account ($100K starting balance)
-            acct_resp = _httpx.post(
-                f"{_SUPABASE_URL}/rest/v1/subscriber_paper_accounts",
-                json={
-                    "subscriber_id": subscriber_id,
-                    "starting_balance_usd": 100000.00,
-                    "current_balance_usd": 100000.00,
-                    "realized_pnl_usd": 0.00,
-                    "fills_count": 0,
-                    "created_at": now_iso,
-                    "updated_at": now_iso,
-                },
-                headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
-                timeout=8,
-            )
-            if acct_resp.status_code not in (200, 201, 409):
-                errors.append(f"subscriber_paper_accounts:{acct_resp.status_code}")
-                logger.error("subscriber_paper_accounts insert failed: %s", acct_resp.status_code)
+                # 2. Create paper account ($100K starting balance)
+                acct_resp = await _hx.post(
+                    f"{_SUPABASE_URL}/rest/v1/subscriber_paper_accounts",
+                    json={
+                        "subscriber_id": subscriber_id,
+                        "starting_balance_usd": 100000.00,
+                        "current_balance_usd": 100000.00,
+                        "realized_pnl_usd": 0.00,
+                        "fills_count": 0,
+                        "created_at": now_iso,
+                        "updated_at": now_iso,
+                    },
+                    headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                    timeout=8,
+                )
+                if acct_resp.status_code not in (200, 201, 204, 409):
+                    errors.append(f"subscriber_paper_accounts:{acct_resp.status_code}")
+                    logger.error("subscriber_paper_accounts insert failed: %s", acct_resp.status_code)
 
-            # 3. Assign to MNQ bot by default
-            assign_resp = _httpx.post(
-                f"{_SUPABASE_URL}/rest/v1/subscriber_bot_assignments",
-                json={
-                    "subscriber_id": subscriber_id,
-                    "bot": "MNQ",
-                    "size_multiplier": 1.0,
-                    "max_contracts": 10,
-                    "daily_loss_cap_usd": 5000.00,
-                    "paused": False,
-                    "assigned_at": now_iso,
-                },
-                headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
-                timeout=8,
-            )
-            if assign_resp.status_code not in (200, 201, 409):
-                errors.append(f"subscriber_bot_assignments:{assign_resp.status_code}")
-                logger.error("subscriber_bot_assignments insert failed: %s", assign_resp.status_code)
+                # 3. Assign to MNQ bot by default
+                assign_resp = await _hx.post(
+                    f"{_SUPABASE_URL}/rest/v1/subscriber_bot_assignments",
+                    json={
+                        "subscriber_id": subscriber_id,
+                        "bot": "MNQ",
+                        "size_multiplier": 1.0,
+                        "max_contracts": 10,
+                        "daily_loss_cap_usd": 5000.00,
+                        "paused": False,
+                        "assigned_at": now_iso,
+                    },
+                    headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                    timeout=8,
+                )
+                if assign_resp.status_code not in (200, 201, 204, 409):
+                    errors.append(f"subscriber_bot_assignments:{assign_resp.status_code}")
+                    logger.error("subscriber_bot_assignments insert failed: %s", assign_resp.status_code)
 
         except Exception as exc:
             errors.append(f"exception:{exc}")
@@ -574,14 +573,14 @@ class BillingEngine:
                 subscriber_id, errors,
             )
 
-        return {
+        result = {
             "provisioned": provisioned,
             "subscriber_id": subscriber_id,
             "key_prefix": key_prefix,
-            "raw_key": raw_key,  # caller must email this — never stored
             "tier": tier,
             "errors": errors,
         }
+        return result, raw_key
 
     async def process_stripe_webhook(self, payload: str, sig_header: str) -> dict[str, Any]:
         """
@@ -600,27 +599,32 @@ class BillingEngine:
         event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
 
         # P0-1 idempotency gate: insert into webhook_events BEFORE any handler logic.
-        # ON CONFLICT DO NOTHING returns 0 rows if already processed → discard.
+        # Hard-fail if the insert cannot be confirmed — Stripe retries on 5xx.
+        # Bug fix: column is stripe_event_id (not provider_event_id).
+        # Bug fix: use return=representation so 201+body=new, 201+empty=duplicate.
         if _SUPABASE_URL and _SUPABASE_SERVICE_KEY:
-            try:
-                import httpx as _httpx
-                _idm_url = f"{_SUPABASE_URL}/rest/v1/webhook_events"
-                _idm_body = {
-                    "provider": "stripe",
-                    "provider_event_id": event.id,
-                    "event_type": event.type,
-                }
-                _idm_headers = {**_supabase_headers(), "Prefer": "return=minimal,resolution=ignore-duplicates"}
-                _resp = _httpx.post(_idm_url, json=_idm_body, headers=_idm_headers, timeout=5)
-                if _resp.status_code == 409 or (
-                    _resp.status_code in (200, 201) and _resp.content == b""
-                ):
-                    # Already processed (conflict) — discard to prevent double-activation
-                    logger.info("webhook_events: duplicate %s %s — discarded", event.type, event.id)
-                    return {"event": event.type, "processed": False, "reason": "duplicate"}
-                _resp.raise_for_status()
-            except Exception as _idm_err:
-                logger.warning("webhook_events idempotency insert failed (non-fatal): %s", _idm_err)
+            import httpx as _httpx
+            _idm_url = f"{_SUPABASE_URL}/rest/v1/webhook_events"
+            _idm_body = {
+                "stripe_event_id": event.id,
+                "event_type": event.type,
+                "status": "received",
+            }
+            _idm_headers = {
+                **_supabase_headers(),
+                "Prefer": "return=representation,resolution=ignore-duplicates",
+            }
+            _resp = _httpx.post(_idm_url, json=_idm_body, headers=_idm_headers, timeout=5)
+            if _resp.status_code not in (200, 201):
+                # Hard failure — force Stripe to retry rather than double-provision.
+                raise RuntimeError(
+                    f"webhook_events idempotency insert failed: {_resp.status_code} {_resp.text[:200]}"
+                )
+            _idm_data = _resp.json() if _resp.content else []
+            if not _idm_data:
+                # Empty body → ON CONFLICT DO NOTHING fired → already processed.
+                logger.info("webhook_events: duplicate %s %s — discarded", event.type, event.id)
+                return {"event": event.type, "processed": False, "reason": "duplicate"}
 
         if event.type == "checkout.session.completed":
             session = event.data.object
@@ -640,12 +644,13 @@ class BillingEngine:
             # P0.2: Platform subscription → auto-provision sub_live_* key + paper account + MNQ
             if checkout_type == "platform_subscription":
                 tier = session.metadata.get("tier", "paper")
-                provision_result = await self._provision_subscriber_key(
+                # raw_key is returned out-of-band (not in the dict) to prevent it
+                # from appearing in logs or exception tracebacks.
+                provision_result, raw_key = await self._provision_subscriber_key(
                     email=subscriber_email,
                     tier=tier,
                     checkout_session_id=session.id,
                 )
-                raw_key = provision_result.pop("raw_key", "")
 
                 # Deliver key via email if Resend is configured
                 _key_delivered = False
@@ -681,6 +686,21 @@ class BillingEngine:
                             logger.error("Key email failed: %s %s", _email_resp.status_code, _email_resp.text[:200])
                     except Exception as _email_err:
                         logger.error("Key email exception: %s", _email_err)
+
+                # If delivery failed, log enough context for support to issue a replacement key.
+                # The raw key cannot be recovered — support must revoke this key_prefix and
+                # re-provision via POST /admin/resend-key or by deleting the key row + re-running
+                # _provision_subscriber_key for the same email (409 on api_keys row → revoke first).
+                if not _key_delivered and raw_key:
+                    logger.critical(
+                        "KEY_DELIVERY_FAILED subscriber_email=%s subscriber_id=%s key_prefix=%s "
+                        "session_id=%s tier=%s — admin must revoke key_prefix and re-provision.",
+                        subscriber_email,
+                        provision_result.get("subscriber_id", "unknown"),
+                        raw_key[:16],
+                        session.id,
+                        tier,
+                    )
 
                 return {
                     "event": "platform_subscription_provisioned",
