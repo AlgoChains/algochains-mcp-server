@@ -4260,15 +4260,17 @@ TOOLS = [
              "Generate a Stripe checkout URL for an AlgoChains subscription. "
              "Returns a URL the user clicks once to pay — Stripe handles the payment UI. "
              "After payment, a sub_live_… key is emailed automatically and the subscriber "
-             "is assigned to the MNQ copy-trade bot. "
-             "Tiers: 'paper' ($29/mo — 9 subscriber tools, copy-trade MNQ signals, no broker needed) "
-             "or 'live' ($99/mo — full Tradovate/Alpaca live execution). "
+             "can subscribe to MNQ copy-trade signals (delivered for the subscriber to "
+             "review and act on — no automated execution; the subscriber stays in control). "
+             "Tiers: 'paper' ($29/mo — subscriber tools + MNQ copy-trade signals, simulated "
+             "paper account, no broker needed) or 'live' ($99/mo — subscriber connects their "
+             "own broker and places their own trades). Flat subscription only. "
              "Set ALGOCHAINS_SUBSCRIBER_KEY=<received_key> to activate."
          ),
          inputSchema={"type": "object", "properties": {
              "email": {"type": "string", "description": "Email for subscription and key delivery"},
              "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper",
-                      "description": "paper=$29/mo (copy-trade, no broker), live=$99/mo (live execution)"},
+                      "description": "paper=$29/mo (MNQ signals + simulated paper, no broker), live=$99/mo (connect your own broker, you place trades)"},
              "referral_code": {"type": "string", "description": "Optional referral code (AC-XXXXXX) — credits the referrer."},
          }, "required": ["email"]},
          annotations=ANNOT_WRITE_SAFE),
@@ -4289,12 +4291,16 @@ TOOLS = [
     # ── Subscriber Tools (stdio path — sub key sets ALGOCHAINS_SUBSCRIBER_KEY) ─
     Tool(name="join_bot",
          description=(
-             "Assign the authenticated subscriber to an AlgoChains copy-trade bot. "
-             "Available bots: MNQ (micro Nasdaq scalper), CL (crude oil scalper), "
+             "Subscribe the authenticated subscriber to a strategy's published "
+             "copy-trade SIGNALS (the subscriber reviews and acts on them — the "
+             "platform does not auto-execute or exercise discretion). The subscriber "
+             "sets their own size and can pause/leave anytime. "
+             "Strategies: MNQ (micro Nasdaq scalper), CL (crude oil scalper), "
              "MES (micro S&P swing), NQ (Nasdaq swing). "
-             "Enforces a seat cap per bot — returns bot_at_capacity if the bot is full. "
-             "Requires ALGOCHAINS_SUBSCRIBER_KEY to be set. "
-             "Re-calling with an existing assignment updates size_multiplier and un-pauses."
+             "Enforces a seat cap per strategy — returns bot_at_capacity if full. "
+             "Requires the futures risk disclosure to be acknowledged first "
+             "(accept_subscriber_terms) and ALGOCHAINS_SUBSCRIBER_KEY to be set. "
+             "Re-calling with an existing subscription updates size_multiplier and un-pauses."
          ),
          inputSchema={"type": "object", "properties": {
              "bot": {"type": "string", "enum": ["MNQ", "CL", "MES", "NQ"],

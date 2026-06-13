@@ -211,7 +211,51 @@ any CFTC action.
 
 ---
 
-## 8. Open questions for counsel (priority order)
+## 8. Outside counsel guidance received (Start to Finish Law — privileged)
+
+Outside counsel (Eric R. Preston, Start to Finish Law, PLLC) reviewed the
+architecture and product (May 2026). Key guidance, which this codebase is built
+to honor:
+
+- **Compensation:** *"Avoid performance fees and transaction-based compensation
+  in favor of flat fees."* → Implemented: performance fees are **disabled by
+  default** (`ALGOCHAINS_PERFORMANCE_FEE_RATE=0.0`); revenue is flat subscription
+  + usage. **Do not enable performance fees without counsel sign-off.**
+- **Framing:** *"Avoid claims of facilitating/automating trades and focus on
+  signals publishing."* *"'Publishing of ideas and providing technology tools'
+  framing will fare better long term than 'curated strategies and automated
+  trading.'"* → Product copy and tool descriptions should describe **signals the
+  subscriber chooses to act on**, not platform-automated execution.
+- **No discretion / user control:** verify users select algos, review info, set
+  allocations/parameters, and can start/stop anytime. → Subscriber-initiated
+  `join_bot`/leave, subscriber-set sizing, paused-by-default, explicit risk
+  acknowledgment. Leaderboards "draw more scrutiny."
+- **Substantiation:** keep logs/DB records backing every measurable claim
+  (win rate, Sharpe, returns) and run periodic audits. → Audit trails +
+  net-of-fees presentation + §4.41(b)/2-29 disclaimers.
+- **Credentials:** trade-only API permissions (no withdrawal), OAuth over stored
+  keys, encryption, vault, 2FA; study the **3Commas** incident.
+- **Scope:** US-only at launch; assets = Equities/Options/Crypto first, FOREX +
+  Futures soon after. (The live MNQ/CL/MES/NQ bots are the platform's *own*
+  trading; the regulated surface is advice/signals to subscribers.)
+- **Recent enforcement (counsel-cited):** **CFTC Release 8770-23 (2023)** — a
+  platform offering trade **signals *plus* automating trading** was found to be
+  an **unregistered CTA** (permanent injunction; ~$100k). Note the **Pham
+  dissent** and guidance that pure tech providers of signals + order-submission
+  software may not require licensing — an **evolving, grey area**. Counsel's
+  steer: be conservative in structure and marketing; *"consider not taking
+  compensation until growth is sufficient to mitigate risk further — you can
+  always flip that switch later."*
+- **Real-world signal:** **Alpaca denied AlgoChains's API application**,
+  classifying the platform as a **copy-trade system** (against their policy,
+  May 2026). Concrete evidence that the "automated copy-trade" framing carries
+  real consequences — reinforcing the signals-publishing posture.
+
+> This section summarizes privileged attorney–client communications for internal
+> engineering traceability only. It is not a substitute for counsel's full
+> written advice, and the T&Cs / Privacy Policy drafts were still in progress.
+
+## 9. Open questions for counsel (priority order)
 
 1. **Is live copy-trade subscriber-initiated or platform-directed?** (Likely
    dispositive under *Vartuli*.)
