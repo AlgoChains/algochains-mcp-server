@@ -342,6 +342,27 @@ _TOOL_TIERS: dict[str, int] = {
     # Requires NUMERAI_ALLOW_LIVE=1 AND model_id. Gated in submit.py gate logic.
     "numerai_upload_predictions": TIER_ORDER_EXEC,
 
+    # ── Programmatic account / MFA / developer key tools ─────────────────────
+    # Account tools: write session state locally, no broker/order execution
+    "signup_algochains": TIER_WRITE_LOCAL,
+    "verify_email_otp": TIER_WRITE_LOCAL,
+    "login_algochains": TIER_WRITE_LOCAL,
+    "refresh_session": TIER_READ_ONLY,
+    "logout_algochains": TIER_WRITE_LOCAL,
+    # MFA tools
+    "enroll_mfa": TIER_WRITE_LOCAL,
+    "challenge_mfa": TIER_WRITE_LOCAL,
+    "verify_mfa": TIER_WRITE_LOCAL,
+    "list_mfa_factors": TIER_READ_ONLY,
+    "remove_mfa_factor": TIER_ORDER_EXEC,  # Destructive — removes security factor
+    # Developer key lifecycle
+    "create_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
+    "list_developer_keys": TIER_READ_ONLY,
+    "rotate_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
+    "revoke_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
+    "get_developer_key_usage": TIER_READ_ONLY,
+    "test_bridge_connection": TIER_READ_ONLY,
+
     # ── Subscriber tools (HTTP bridge SUBSCRIBER_TOOLS surface) ──────────────
     # Read-only subscriber views
     "get_signal_stream": TIER_READ_ONLY,

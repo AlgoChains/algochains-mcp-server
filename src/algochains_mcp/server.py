@@ -4138,6 +4138,108 @@ TOOLS = [
          }, "required": ["broker","user_id"]},
          annotations=ANNOT_WRITE_SAFE),
 
+    # ── Programmatic Account / MFA / Developer Key Tools ─────────────────
+    # Account creation & session management (Supabase Auth wrappers)
+    Tool(name="signup_algochains",
+         description="Create a new AlgoChains account with email + password via Supabase Auth. Returns session on success or requires_email_confirm. Next step: verify_email_otp → enroll_mfa → create_developer_key.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string", "description": "Account email address"},
+             "password": {"type": "string", "description": "Password (min 8 chars)"},
+         }, "required": ["email", "password"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="verify_email_otp",
+         description="Verify the email OTP token from the AlgoChains confirmation email. Activates your account and starts a session.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "token": {"type": "string", "description": "6-digit or link token from confirmation email"},
+         }, "required": ["email", "token"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="login_algochains",
+         description="Login to AlgoChains with email + password. Stores session locally for subsequent MFA and key operations.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "password": {"type": "string"},
+         }, "required": ["email", "password"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="refresh_session",
+         description="Refresh an expiring AlgoChains session using the stored refresh_token. Call before session expires to stay logged in.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="logout_algochains",
+         description="Revoke current AlgoChains session and clear stored credentials.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    # MFA enrollment and verification
+    Tool(name="enroll_mfa",
+         description="Enroll a new MFA factor (TOTP authenticator app or SMS). Returns QR code URI for TOTP — scan with Google Authenticator, Authy, etc. Then call verify_mfa to complete and upgrade session to AAL2.",
+         inputSchema={"type": "object", "properties": {
+             "factor_type": {"type": "string", "enum": ["totp", "phone"], "default": "totp"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="challenge_mfa",
+         description="Create an MFA challenge for login step-up verification. Required before verify_mfa during subsequent logins.",
+         inputSchema={"type": "object", "properties": {
+             "factor_id": {"type": "string", "description": "Factor ID from list_mfa_factors"},
+         }, "required": ["factor_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="verify_mfa",
+         description="Verify MFA code to complete enrollment or step up to AAL2 session. AAL2 is required for create_developer_key, rotate_developer_key, revoke_developer_key.",
+         inputSchema={"type": "object", "properties": {
+             "factor_id": {"type": "string"},
+             "code": {"type": "string", "description": "6-digit TOTP or SMS code"},
+             "challenge_id": {"type": "string", "description": "Challenge ID from challenge_mfa (required for login step-up, not for enrollment)"},
+         }, "required": ["factor_id", "code"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_mfa_factors",
+         description="List enrolled MFA factors for the current session.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="remove_mfa_factor",
+         description="Remove an enrolled MFA factor. Requires owner_token — destructive, downgrades session to AAL1.",
+         inputSchema={"type": "object", "properties": {
+             "factor_id": {"type": "string"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN"},
+         }, "required": ["factor_id", "owner_token"]},
+         annotations=ANNOT_WRITE_SAFE),
+    # Developer key lifecycle (self-serve ac_live_* / ac_test_* keys)
+    Tool(name="create_developer_key",
+         description="Mint a new ac_live_* or ac_test_* developer API key. Requires AAL2 session (enroll_mfa + verify_mfa first). Plaintext key returned ONCE ONLY — save immediately.",
+         inputSchema={"type": "object", "properties": {
+             "name": {"type": "string", "description": "Friendly name for the key", "default": "default"},
+             "scopes": {"type": "array", "items": {"type": "string"}, "description": "e.g. ['read:market_data','read:signals']"},
+             "env": {"type": "string", "enum": ["live", "test"], "default": "live"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_developer_keys",
+         description="List your developer API keys (masked — plaintext never returned after creation).",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="rotate_developer_key",
+         description="Atomically rotate a developer key (revoke old, mint new). Requires AAL2 session. New plaintext returned ONCE ONLY.",
+         inputSchema={"type": "object", "properties": {
+             "key_id": {"type": "string", "description": "UUID of the key to rotate"},
+             "name": {"type": "string", "description": "Name for the new key (defaults to old key's name)"},
+         }, "required": ["key_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="revoke_developer_key",
+         description="Revoke (soft-delete) a developer API key. Requires AAL2 session.",
+         inputSchema={"type": "object", "properties": {
+             "key_id": {"type": "string"},
+         }, "required": ["key_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_developer_key_usage",
+         description="Get usage metadata for a developer key (last used, scopes, active status).",
+         inputSchema={"type": "object", "properties": {
+             "key_id": {"type": "string"},
+         }, "required": ["key_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="test_bridge_connection",
+         description="Test a developer API key against the hosted AlgoChains bridge (mcp.algochains.ai). Returns auth status and scopes.",
+         inputSchema={"type": "object", "properties": {
+             "api_key": {"type": "string", "description": "Developer key to test (or set AC_DEV_KEY env var)"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
     # ── Waitlist ──────────────────────────────────────────────────────────
     Tool(name="join_waitlist",
          description="Add an email to the AlgoChains waitlist. Stores in Supabase, sends welcome email via Resend. Returns waitlist position.",
@@ -4721,6 +4823,23 @@ TIER1_TOOL_NAMES = {
     "get_broker_oauth_status",
     "get_connected_brokers",
     "revoke_broker_connection",
+    # Programmatic account / MFA / developer key tools
+    "signup_algochains",
+    "verify_email_otp",
+    "login_algochains",
+    "refresh_session",
+    "logout_algochains",
+    "enroll_mfa",
+    "challenge_mfa",
+    "verify_mfa",
+    "list_mfa_factors",
+    "remove_mfa_factor",
+    "create_developer_key",
+    "list_developer_keys",
+    "rotate_developer_key",
+    "revoke_developer_key",
+    "get_developer_key_usage",
+    "test_bridge_connection",
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
@@ -9585,6 +9704,146 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .auth.password_reset import get_password_policy as _get_pwd_policy
             return _text(await _get_pwd_policy())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    # ── Programmatic Account / MFA / Developer Key Tools ─────────────────
+    elif name == "signup_algochains":
+        try:
+            from .auth.platform_auth import signup_algochains as _signup
+            return _text(await _signup(
+                email=arguments["email"],
+                password=arguments["password"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "verify_email_otp":
+        try:
+            from .auth.platform_auth import verify_email_otp as _verify_email
+            return _text(await _verify_email(
+                email=arguments["email"],
+                token=arguments["token"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "login_algochains":
+        try:
+            from .auth.platform_auth import login_algochains as _login
+            return _text(await _login(
+                email=arguments["email"],
+                password=arguments["password"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "refresh_session":
+        try:
+            from .auth.platform_auth import refresh_session as _refresh_session
+            return _text(await _refresh_session())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "logout_algochains":
+        try:
+            from .auth.platform_auth import logout_algochains as _logout
+            return _text(await _logout())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "enroll_mfa":
+        try:
+            from .auth.platform_auth import enroll_mfa as _enroll_mfa
+            return _text(await _enroll_mfa(
+                factor_type=arguments.get("factor_type", "totp"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "challenge_mfa":
+        try:
+            from .auth.platform_auth import challenge_mfa as _challenge_mfa
+            return _text(await _challenge_mfa(factor_id=arguments["factor_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "verify_mfa":
+        try:
+            from .auth.platform_auth import verify_mfa as _verify_mfa
+            return _text(await _verify_mfa(
+                factor_id=arguments["factor_id"],
+                code=arguments["code"],
+                challenge_id=arguments.get("challenge_id"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "list_mfa_factors":
+        try:
+            from .auth.platform_auth import list_mfa_factors as _list_factors
+            return _text(await _list_factors())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "remove_mfa_factor":
+        try:
+            from .auth.platform_auth import remove_mfa_factor as _remove_factor
+            return _text(await _remove_factor(
+                factor_id=arguments["factor_id"],
+                owner_token=arguments.get("owner_token", ""),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "create_developer_key":
+        try:
+            from .auth.platform_auth import create_developer_key as _create_key
+            return _text(await _create_key(
+                name=arguments.get("name", "default"),
+                scopes=arguments.get("scopes"),
+                env=arguments.get("env", "live"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "list_developer_keys":
+        try:
+            from .auth.platform_auth import list_developer_keys as _list_keys
+            return _text(await _list_keys())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "rotate_developer_key":
+        try:
+            from .auth.platform_auth import rotate_developer_key as _rotate_key
+            return _text(await _rotate_key(
+                key_id=arguments["key_id"],
+                name=arguments.get("name"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "revoke_developer_key":
+        try:
+            from .auth.platform_auth import revoke_developer_key as _revoke_key
+            return _text(await _revoke_key(key_id=arguments["key_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_developer_key_usage":
+        try:
+            from .auth.platform_auth import get_developer_key_usage as _key_usage
+            return _text(await _key_usage(key_id=arguments["key_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "test_bridge_connection":
+        try:
+            from .auth.platform_auth import test_bridge_connection as _test_bridge
+            return _text(await _test_bridge(api_key=arguments.get("api_key")))
+        except Exception as exc:
+            return _text({"error": str(exc)})
         except Exception as exc:
             return _text({"error": str(exc)})
 
