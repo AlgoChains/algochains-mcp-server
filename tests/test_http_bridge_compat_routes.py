@@ -121,5 +121,53 @@ def test_subscribers_route_aggregates_copy_trade_state():
     assert body["subscription_count"] == 1
     assert body["active_subscriptions"] == 1
     assert body["paper_account_count"] == 1
+    assert body["paper_pnl_usd"] == 25.5
+    assert body["paper_pnl"] == 25.5
+    assert body["paper_pnl_rollup_usd"] == 25.5
     assert body["heartbeat_count"] == 1
     assert {row["subscriber_id"] for row in body["subscribers"]} == {"sub-1", "sub-2"}
+
+
+def test_subscribers_route_uses_paper_account_pnl_for_owner_snapshot():
+    client = _client()
+    sb = _Supabase(
+        {
+            "subscriber_bot_assignments": [
+                {"subscriber_id": "sub-1", "bot": "MNQ", "paused": False},
+            ],
+            "subscriber_paper_accounts": [
+                {
+                    "subscriber_id": "sub-1",
+                    "starting_balance_usd": "2500.00",
+                    "current_balance_usd": "2455.00",
+                    "realized_pnl_usd": "-45.00",
+                    "fills_count": 3,
+                }
+            ],
+            "subscriber_heartbeats": [
+                {
+                    "subscriber_id": "sub-1",
+                    "last_seen": "2026-06-13T02:33:55Z",
+                    "fills_today": 0,
+                    "pnl_today_usd": 0,
+                }
+            ],
+            "marketplace_botsubscription": [],
+        }
+    )
+
+    with patch("algochains_mcp.marketplace.supabase_tools._get_sb_client", return_value=sb):
+        resp = client.get("/api/subscribers", headers={"X-Api-Key": OWNER_KEY})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["paper_pnl_usd"] == -45
+    assert body["paper_pnl"] == -45
+    assert body["paper_pnl_rollup_usd"] == -45
+
+    subscriber = body["subscribers"][0]
+    assert subscriber["heartbeat"]["pnl_today_usd"] == 0
+    assert subscriber["paper_pnl_usd"] == -45
+    assert subscriber["paper_pnl"] == -45
+    assert subscriber["paper_pnl_rollup_usd"] == -45
+    assert subscriber["paper_account"]["paper_pnl_usd"] == -45

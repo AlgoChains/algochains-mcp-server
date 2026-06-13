@@ -25,6 +25,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path as _PathGlobal
 
 # FastAPI imports at module level so inner functions can resolve Request type
@@ -44,6 +45,7 @@ from .subscriber_auth import (
 from .subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
+    _paper_pnl_aliases,
     call_subscriber_tool,
 )
 from .developer_auth import (
@@ -819,7 +821,9 @@ def create_fastapi_app():
             sub = _ensure_subscriber(row)
             if sub is None:
                 continue
-            sub["paper_account"] = row
+            pnl_aliases = _paper_pnl_aliases(row)
+            sub["paper_account"] = {**row, **pnl_aliases}
+            sub.update(pnl_aliases)
 
         for row in heartbeats:
             sub = _ensure_subscriber(row)
@@ -834,6 +838,17 @@ def create_fastapi_app():
             sub["marketplace_subscription_count"] += 1
             if row.get("status") == "active":
                 sub["active_marketplace_subscription_count"] += 1
+
+        paper_pnl_values = [
+            Decimal(str(row["paper_pnl_usd"]))
+            for row in subscribers.values()
+            if row.get("paper_pnl_usd") is not None
+        ]
+        paper_pnl_rollup = (
+            float(sum(paper_pnl_values).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            if paper_pnl_values
+            else None
+        )
 
         return {
             "subscribers": list(subscribers.values()),
@@ -851,6 +866,9 @@ def create_fastapi_app():
             "subscription_count": len(subscriptions),
             "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
             "paper_account_count": len(paper_accounts),
+            "paper_pnl_usd": paper_pnl_rollup,
+            "paper_pnl": paper_pnl_rollup,
+            "paper_pnl_rollup_usd": paper_pnl_rollup,
             "heartbeat_count": len(heartbeats),
             "query_errors": {
                 key: value
