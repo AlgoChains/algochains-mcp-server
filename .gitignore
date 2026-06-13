@@ -32,3 +32,5 @@ state/onboarding_state.json
 # Node toolchain artifacts (CLI builds use bun; npm install is local-only)
 node_modules/
 src/cli/package-lock.json
+state/guardrail_prefs.json
+state/platform_session.json
