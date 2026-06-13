@@ -30,7 +30,7 @@ jobs:
       - name: Install AlgoChains MCP + MCPorter
         run: |
           pip install -e ".[dev]"
-          npm install -g mcporter
+          npm install -g mcporter@0.12.0
 
       - name: Extract tag (strip leading v)
         id: tag
@@ -189,7 +189,7 @@ jobs:
         run: |
           # @vercel/pkg was unpublished from npm (404) — @yao-pkg/pkg is the
           # maintained fork with the same `pkg` CLI and node18 targets
-          npm install -g @yao-pkg/pkg
+          npm install -g @yao-pkg/pkg@6.20.0
           pkg algochains-cli.js \
             --target ${{ matrix.target.pkg_target }} \
             --output ${{ matrix.target.output }} \
@@ -263,7 +263,7 @@ jobs:
       - name: Install AlgoChains MCP + MCPorter
         run: |
           pip install -e ".[dev]"
-          npm install -g mcporter
+          npm install -g mcporter@0.12.0
 
       # mcporter resolves named servers from config/mcporter.json (cwd) or
       # ~/.mcporter/config.json (global) — without this, emit-ts fails with

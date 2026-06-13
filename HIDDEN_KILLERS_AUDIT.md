@@ -71,21 +71,20 @@ is synchronous and results are in the `submit_strategy` response.
 
 ---
 
-## P0 — OPEN: `test_live_audit.py` Contains Hardcoded API Keys
+## P0 — ✅ RESOLVED (2026-06-14): `test_live_audit.py` Hardcoded API Keys
 
-**File:** `tests/test_live_audit.py` lines 12–17  
-**Keys present:** `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `POLYGON_API_KEY`, `MASSIVE_API_KEY`,
-`FINNHUB_KEY` (all appear to be real credentials, not placeholders).
+**File:** `tests/test_live_audit.py` (now in `tests/live/`)  
+**Original finding:** Hardcoded live credentials in test file.
 
-**Impact:** Any git clone, fork, or CI log exposure leaks live API credentials.
+**Resolution verified (2026-06-14):**
+- `tests/live/` directory now reads all credentials exclusively from environment
+  variables via `os.environ.get(...)`.
+- Live tests are gated by `PYTEST_LIVE=1` env var; they never run in standard CI.
+- No live keys found in any tracked file as of audit sweep on this date.
+- `scripts/secret_scan.py` now runs in Gate 9 of the MCP regression gate CI to
+  catch future regressions.
 
-**Required actions:**
-1. Rotate all five keys immediately.
-2. Replace hardcoded values with `os.environ.get("...", "")` guards.
-3. Add `pytest.mark.skipif(not os.environ.get("ALPACA_API_KEY"), reason="live creds required")`.
-4. Add `.env.test.example` documenting required env vars for live tests.
-5. Add `tests/test_live_audit.py` to `.gitignore` or move to a `tests/live/` directory excluded
-   from CI by default.
+*Original stale finding kept for audit history.*
 
 ---
 

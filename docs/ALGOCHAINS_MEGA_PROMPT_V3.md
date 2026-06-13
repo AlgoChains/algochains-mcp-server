@@ -128,7 +128,7 @@ Prevents creators from inflating metrics by injecting fake signals. Each `signal
 - **Mac M3 Max (treycsa):** 4 live bots, Token Guardian, MCP server, Cursor
 - **Desktop Tower (localhost):** Onyx RAG stack, PostgreSQL, Redis, GPU backtesting
 - **Django API:** https://algochains.ai
-- **Supabase:** trkpzsnwjtmvgppuzlwu (marketplace DB)
+- **Supabase:** `$SUPABASE_PROJECT_REF` (marketplace DB)
 
 ---
 

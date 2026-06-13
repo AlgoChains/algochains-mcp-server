@@ -218,6 +218,32 @@ def evaluate_bridge_tool(
                 "Pass confirm=true in arguments to execute."
             ),
         )
+
+    # Opt-in: ALGOCHAINS_BRIDGE_REQUIRE_OWNER_TOKEN=1 requires owner_token in
+    # arguments for ORDER_EXEC+ tools. Off by default — warn-only until frontend
+    # clients have been updated to pass the token.
+    if tier >= TIER_ORDER_EXEC and os.environ.get("ALGOCHAINS_BRIDGE_REQUIRE_OWNER_TOKEN", "0") == "1":
+        expected = os.environ.get("OWNER_API_TOKEN", "")
+        provided = (arguments or {}).get("owner_token", "")
+        if not expected or provided != expected:
+            import logging as _log
+            _log.getLogger("algochains_mcp.tool_policy").warning(
+                "[bridge] ORDER_EXEC tool '%s' called without matching owner_token "
+                "(ALGOCHAINS_BRIDGE_REQUIRE_OWNER_TOKEN=1 is active). "
+                "Pass owner_token in arguments.",
+                tool_name,
+            )
+            return ToolPolicyDecision(
+                False,
+                **base,
+                required_secret="OWNER_API_TOKEN",
+                reason=(
+                    f"Tool '{tool_name}' requires owner_token in arguments "
+                    "(ALGOCHAINS_BRIDGE_REQUIRE_OWNER_TOKEN=1). "
+                    "Pass matching OWNER_API_TOKEN value as owner_token."
+                ),
+            )
+
     return ToolPolicyDecision(True, **base)
 
 
@@ -238,6 +264,29 @@ def evaluate_dynamic_tool(
         tier_source=source,
     )
     if tier < TIER_ORDER_EXEC:
+        # Sensitive WRITE_LOCAL tools that mutate credentials/env are gated behind
+        # owner_token in dynamic dispatch even though they're below ORDER_EXEC tier.
+        # This prevents attackers with stdio MCP access from writing to .env or
+        # harvesting masked key metadata without operator approval.
+        _SENSITIVE_WRITE_LOCAL = frozenset({
+            "provision_key",
+            "store_api_key",
+            "rotate_api_key",
+            "set_byok_key",
+        })
+        if tool_name in _SENSITIVE_WRITE_LOCAL and expected_owner_token:
+            provided_tok = (arguments or {}).get("owner_token", "")
+            if provided_tok != expected_owner_token:
+                return ToolPolicyDecision(
+                    False,
+                    **base,
+                    required_secret="OWNER_API_TOKEN",
+                    reason=(
+                        f"execute_dynamic_tool: '{tool_name}' writes credentials and "
+                        "requires owner_token authorization even at WRITE_LOCAL tier. "
+                        "Pass a matching owner_token inside the 'arguments' payload."
+                    ),
+                )
         return ToolPolicyDecision(True, **base)
 
     provided = (arguments or {}).get("owner_token", "")

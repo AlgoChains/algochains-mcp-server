@@ -363,7 +363,7 @@ MCP standard endpoint: `http://localhost:8765/mcp` (Streamable HTTP, MCP 2025-03
 
 7. **Credential redaction.** Never log, print, or return API keys, tokens, or passwords. The `REDACTION_PATTERNS` in middleware catches 18 patterns. Add to it if you find new ones.
 
-8. **Owner verification.** For destructive actions, verify the Slack user ID is `U09B9M94C3F` (Tyler Reynolds). Display names can be spoofed. User IDs cannot.
+8. **Owner verification.** For destructive actions, verify the Slack user ID matches `OWNER_SLACK_USER_ID` (set in `.env`). Display names can be spoofed. User IDs cannot.
 
 9. **Post-action verification.** After restarting a bot, verify PID exists. After flattening positions, verify 0 open positions. Never report success based only on command being sent.
 
