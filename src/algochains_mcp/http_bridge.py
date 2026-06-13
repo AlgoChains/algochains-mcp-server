@@ -44,6 +44,7 @@ from .subscriber_auth import (
 from .subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
+    _paper_account_pnl_usd,
     call_subscriber_tool,
 )
 from .developer_auth import (
@@ -819,7 +820,11 @@ def create_fastapi_app():
             sub = _ensure_subscriber(row)
             if sub is None:
                 continue
+            paper_pnl = _paper_account_pnl_usd(row)
             sub["paper_account"] = row
+            sub["paper_pnl_usd"] = paper_pnl
+            sub["paper_pnl"] = paper_pnl
+            sub["paper_pnl_rollup_usd"] = paper_pnl
 
         for row in heartbeats:
             sub = _ensure_subscriber(row)
@@ -834,6 +839,13 @@ def create_fastapi_app():
             sub["marketplace_subscription_count"] += 1
             if row.get("status") == "active":
                 sub["active_marketplace_subscription_count"] += 1
+
+        paper_pnl_values = [
+            row["paper_pnl_usd"]
+            for row in subscribers.values()
+            if row.get("paper_pnl_usd") is not None
+        ]
+        paper_pnl_total = round(sum(paper_pnl_values), 2) if paper_pnl_values else None
 
         return {
             "subscribers": list(subscribers.values()),
@@ -850,6 +862,9 @@ def create_fastapi_app():
             "subscriptions": subscriptions,
             "subscription_count": len(subscriptions),
             "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
+            "paper_pnl_usd": paper_pnl_total,
+            "paper_pnl": paper_pnl_total,
+            "paper_pnl_rollup_usd": paper_pnl_total,
             "paper_account_count": len(paper_accounts),
             "heartbeat_count": len(heartbeats),
             "query_errors": {
