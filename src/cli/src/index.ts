@@ -26,6 +26,11 @@ import React from "react";
 
 import { runDoctorCheck, printDoctorResults } from "./commands/doctor.js";
 import { authSet, authList, authRotate, authClear, authTest } from "./commands/auth_cmd.js";
+import {
+  accountSignup, accountLogin, accountLogout, accountStatus,
+  mfaEnroll, mfaVerify, mfaList, mfaRemove,
+} from "./commands/account_cmd.js";
+import { keysCreate, keysList, keysRotate, keysRevoke, keysTest } from "./commands/keys_cmd.js";
 import { daemonStart, daemonStop, daemonStatus, daemonLogs, daemonInstall, daemonUninstall, startDaemonServer } from "./commands/daemon.js";
 import { killswitchOn, killswitchOff, killswitchStatus } from "./commands/killswitch.js";
 import { generateBashCompletion, generateFishCompletion, generatePowershellCompletion, generateZshCompletion } from "./commands/completion.js";
@@ -416,6 +421,142 @@ program.on("command:*", async ([toolName, ...rest]: string[]) => {
     process.exit(1);
   }
 });
+
+// ── account ────────────────────────────────────────────────────────────────────
+const accountCmd = program
+  .command("account")
+  .description("AlgoChains platform account management (signup, login, logout, status)");
+
+accountCmd
+  .command("signup")
+  .description("Create a new AlgoChains account")
+  .option("--email <email>", "Email address")
+  .option("--no-mfa", "Skip MFA enrollment guidance")
+  .option("--json", "Output JSON")
+  .action(async (opts) => {
+    await accountSignup({ email: opts.email, noMfa: opts.noMfa, json: opts.json });
+  });
+
+accountCmd
+  .command("login")
+  .description("Login to AlgoChains")
+  .option("--email <email>", "Email address")
+  .option("--json", "Output JSON")
+  .action(async (opts) => {
+    await accountLogin({ email: opts.email, json: opts.json });
+  });
+
+accountCmd
+  .command("logout")
+  .description("Logout from AlgoChains")
+  .option("--json", "Output JSON")
+  .action(async (opts) => {
+    await accountLogout({ json: opts.json });
+  });
+
+accountCmd
+  .command("status")
+  .description("Show current onboarding status, MFA factors, and session info")
+  .option("--json", "Output JSON")
+  .action(async (opts) => {
+    await accountStatus({ json: opts.json });
+  });
+
+// ── auth mfa subcommands ────────────────────────────────────────────────────────
+// Extend the existing 'auth' command with an 'mfa' subcommand group
+
+const authCmd = program.commands.find(c => c.name() === "auth");
+if (authCmd) {
+  const mfaCmd = authCmd
+    .command("mfa")
+    .description("Multi-factor authentication (TOTP/SMS enrollment and management)");
+
+  mfaCmd
+    .command("enroll")
+    .description("Enroll a new MFA factor (TOTP authenticator or SMS)")
+    .option("--type <type>", "Factor type: totp or phone", "totp")
+    .option("--json", "Output JSON")
+    .action(async (opts) => {
+      await mfaEnroll({ type: opts.type, json: opts.json });
+    });
+
+  mfaCmd
+    .command("verify <code>")
+    .description("Verify MFA code to complete enrollment or step up to AAL2")
+    .requiredOption("--factor-id <id>", "Factor ID from 'algochains auth mfa list'")
+    .option("--challenge-id <id>", "Challenge ID (for login step-up)")
+    .option("--json", "Output JSON")
+    .action(async (code, opts) => {
+      await mfaVerify(code, { factorId: opts.factorId, challengeId: opts.challengeId, json: opts.json });
+    });
+
+  mfaCmd
+    .command("list")
+    .description("List enrolled MFA factors")
+    .option("--json", "Output JSON")
+    .action(async (opts) => {
+      await mfaList({ json: opts.json });
+    });
+
+  mfaCmd
+    .command("remove <factor-id>")
+    .description("Remove an enrolled MFA factor (requires OWNER_API_TOKEN)")
+    .requiredOption("--owner-token <token>", "Owner API token")
+    .option("--json", "Output JSON")
+    .action(async (factorId, opts) => {
+      await mfaRemove(factorId, opts.ownerToken, { json: opts.json });
+    });
+}
+
+// ── keys ────────────────────────────────────────────────────────────────────────
+const keysCmd = program
+  .command("keys")
+  .description("Developer API key lifecycle (create, list, rotate, revoke, test)");
+
+keysCmd
+  .command("create")
+  .description("Create a new developer API key (requires AAL2 session)")
+  .option("--name <name>", "Friendly name for the key", "default")
+  .option("--scopes <scopes...>", "Scopes e.g. read:market_data read:signals")
+  .option("--env <env>", "Key environment: live or test", "live")
+  .option("--json", "Output JSON")
+  .action(async (opts) => {
+    await keysCreate({ name: opts.name, scopes: opts.scopes, env: opts.env, json: opts.json });
+  });
+
+keysCmd
+  .command("list")
+  .description("List developer API keys (masked)")
+  .option("--json", "Output JSON")
+  .action(async (opts) => {
+    await keysList({ json: opts.json });
+  });
+
+keysCmd
+  .command("rotate <key-id>")
+  .description("Rotate a developer API key (revoke old, mint new; requires AAL2)")
+  .option("--name <name>", "Name for the new key")
+  .option("--json", "Output JSON")
+  .action(async (keyId, opts) => {
+    await keysRotate(keyId, { name: opts.name, json: opts.json });
+  });
+
+keysCmd
+  .command("revoke <key-id>")
+  .description("Revoke a developer API key (requires AAL2)")
+  .option("--json", "Output JSON")
+  .action(async (keyId, opts) => {
+    await keysRevoke(keyId, { json: opts.json });
+  });
+
+keysCmd
+  .command("test")
+  .description("Test a developer API key against the AlgoChains bridge")
+  .option("--key <key>", "Key to test (defaults to AC_DEV_KEY env var)")
+  .option("--json", "Output JSON")
+  .action(async (opts) => {
+    await keysTest({ key: opts.key, json: opts.json });
+  });
 
 // ── Parse ──────────────────────────────────────────────────────────────────────
 program.parse();
