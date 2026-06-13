@@ -26,6 +26,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path as _PathGlobal
+from typing import Any
 
 # FastAPI imports at module level so inner functions can resolve Request type
 try:
