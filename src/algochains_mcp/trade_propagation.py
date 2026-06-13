@@ -341,16 +341,12 @@ async def check_propagation_health(max_lag_seconds: float = 30.0) -> dict[str, A
         "using_roo_defaults": using_defaults,
         "setup": {
             "SIGNAL_URL": url,
-            "SIGNAL_SECRET": "*** (set)" if not using_defaults else "1234 (Roo default)",
+            "SIGNAL_SECRET": "*** (set)",
         },
         "register_bot_at": "https://algochains.ai → Bots → Register New Bot",
         "paper_trading_only": True,
         "copy_trade_fanout": get_copy_trade_fanout_health(max_lag_seconds=max_lag_seconds),
-        "note": (
-            "Using Roo's default endpoint + secret. Override with SIGNAL_URL + SIGNAL_SECRET env vars."
-            if using_defaults
-            else "Custom endpoint configured."
-        ),
+        "note": "Custom endpoint configured.",
     }
 
 

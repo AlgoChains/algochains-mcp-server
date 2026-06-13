@@ -3554,7 +3554,7 @@ TOOLS = [
              "click_url": {"type": "string", "description": "URL to open when notification is tapped"},
          }, "required": ["title", "message"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="propagate_trade_signal", description="POST a signed trade signal to the AlgoChains Django propagation service (Roo architecture). Uses live endpoint http://172.232.170.168/signals/signal/ by default. Subscribers receive execution on connected PAPER Alpaca accounts. Register your bot at algochains.ai first.",
+    Tool(name="propagate_trade_signal", description="POST a signed trade signal to the AlgoChains Django propagation service. Requires ALGOCHAINS_SIGNAL_URL and ALGOCHAINS_SIGNAL_SECRET env vars — fails closed when unset. Subscribers receive execution on connected PAPER Alpaca accounts. Register your bot at algochains.ai first.",
          inputSchema={"type": "object", "properties": {
              "strategy_name": {"type": "string", "description": "Must match bot name on algochains.ai exactly (case-sensitive)"},
              "symbol": {"type": "string", "description": "e.g. BTC/USD, SPY, AAPL"},
