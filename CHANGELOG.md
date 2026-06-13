@@ -6,6 +6,121 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+---
+
+## [22.6.0] — 2026-06-13
+
+### Added — Revenue platform (WS1–WS6), legal defense & onboarding
+
+#### Onboarding meta-tools (zero-auth "wow" tools)
+- `get_started(goal?)` — guided next-step map for brand-new users: subscriber /
+  creator / developer / explore personas; no auth, no signup required.
+- `get_pricing()` — transparent tier pricing ($29/$99/mo), referral %, creator
+  80% revenue share — single source of truth (`onboarding_meta.py`).
+- `get_system_status()` — platform health, live bot roster, tool count; no auth,
+  best-effort, never raises.
+
+#### Billing & subscription funnel (12 new MCP tools)
+- `get_checkout_url` — Stripe-hosted checkout URL; no auth needed; sub_live_* key
+  emailed automatically after payment.
+- `accept_subscriber_terms` — CFTC risk-disclosure consent gate (required before
+  `join_bot`); consent persisted and audit-trailed.
+- `get_my_usage` — calls this month, included quota, projected overage cost.
+- `create_referral_code` / `get_my_referrals` / `get_referral_earnings` —
+  full referral program (20% commission, 3 months, first-touch, self-referral blocked).
+- `create_creator_onboarding_link` / `get_my_creator_earnings` —
+  Stripe Connect Express KYC + earnings dashboard for strategy creators.
+- `run_creator_payouts` — owner-gated, dry-run default, idempotency-keyed batch
+  payout run via Stripe Connect transfers.
+- `get_my_realized_pnl` — live/paper-segregated P&L; all outputs carry CFTC 4.41(b)
+  hypothetical disclaimer.
+
+### Added — Revenue platform (WS1–WS6) & legal defense
+
+- **Legal defense memo** (`docs/LEGAL_COMPLIANCE_AUDIT.md`) — researched CFTC/NFA
+  precedent (Lowe v. SEC, Taucher v. Born, CFTC v. Vartuli, Reg. 4.14(a)(9),
+  4.41(b)). Anchors the "impersonal, subscriber-initiated signals" defense and
+  flags auto-execution as the principal liability. Not legal advice.
+- **CFTC Reg. 4.41(b)** hypothetical-performance disclaimer on all paper/simulated
+  outputs; general past-performance disclaimer everywhere else.
+- **Creator payouts (WS1)** — `connect_payouts.py` over the existing Stripe Connect
+  engine + `creator_earnings`/`creator_payouts` ledger; tools
+  `create_creator_onboarding_link`, `get_my_creator_earnings`,
+  `run_creator_payouts` (owner-gated, dry-run default, idempotency-keyed).
+- **Usage metering (WS2)** — `usage_metering.py` (Stripe Meters v2 model, fail-open)
+  + `get_my_usage`. Write-side middleware wiring is a documented phased step.
+- **Referrals (WS3)** — `referrals.py` (first-touch, self-referral block, 20%/3mo);
+  `create_referral_code`, `get_my_referrals`, `get_referral_earnings`. Attribution
+  is recorded from the Stripe webhook when `get_checkout_url(referral_code=…)` was
+  used (best-effort, fail-open).
+- **Realized P&L + HWM (WS4)** — `realized_pnl.py`: `get_my_realized_pnl`
+  (live/paper segregated), owner-gated `reconcile_creator_pnl`, and
+  `compute_hwm_performance_fee` (high-water-mark; **performance fees DISABLED by
+  default** for CTA-registration reasons — enable only after counsel).
+- **OAuth 2.1 resource server (WS5)** — `auth/oauth_resource.py` JWT validation
+  (JWKS + aud/iss/exp/scope, sub→identity, app_metadata.tenant_id→tenant); RFC 9728
+  metadata + `WWW-Authenticate` discovery in `http_transport.py`. AS delegated to
+  an external IdP.
+- **Multi-tenant (WS6)** — `tenants`, `current_tenant_id()` RLS helper, null-safe
+  permissive policy templates, request-lifecycle tenant context
+  (`multi_tenant/isolation.py`). Phased per-table RLS rollout documented.
+- **Tests** — `tests/test_revenue_compliance.py` (15 hermetic tests: disclaimers,
+  HWM math, OAuth fail-closed, tenant context, fail-open metering, tool-registration
+  invariants incl. money tools never in smart mode).
+
+### Added — Compliance, Discovery & CI
+
+#### Compliance (CFTC/NFA posture)
+- `compliance/disclosures.py` — canonical, versioned risk disclosure, ToS, and
+  past-performance disclaimer (single source of truth; reuses the broker-onboarding
+  futures risk disclosure text).
+- `accept_subscriber_terms` MCP tool — records a subscriber's explicit futures
+  risk-disclosure + ToS acknowledgment; persisted and audit-trailed.
+- `join_bot` now **fails closed** with `consent_required` (returns the disclosure
+  text) until the subscriber has acknowledged the current risk-disclosure version.
+- Provision-time auto-MNQ assignment now starts **paused** — no copy-trade before
+  explicit risk acknowledgment. ToS consent is stamped from the Stripe checkout
+  click-through; the futures risk disclosure must be explicitly accepted.
+- Past-performance / not-advice disclaimer attached to all performance-bearing
+  subscriber outputs (`get_my_pnl`, `get_my_portfolio`, `get_subscriber_status`,
+  `get_marketplace_listings`).
+- Migration `20260525_subscriber_consent.sql` — consent columns on
+  `subscriber_api_keys`, append-only `subscriber_consent_log`, and the
+  `record_subscriber_consent()` SECURITY DEFINER RPC.
+
+#### Build plans (future revenue levers)
+- `docs/MANAGED_CLOUD_PROVISIONING_BUILD_PLAN.md` — Pulumi Automation API per-tenant
+  IaC (resale + BYOC), AWS ExternalId / GCP WIF / Azure Lighthouse federation,
+  6 new MCP tools, P0→P2 phased delivery.
+- `docs/GPU_COMPUTE_RENTAL_BUILD_PLAN.md` — RTX 5080 GPU rental marketplace:
+  gVisor+nvproxy sandboxing, Tailscale/Headscale federation, Stripe Connect operator
+  payouts (70/30), 10 new MCP tools, 3-phase delivery grounded in `dispatch_tower_job`.
+
+#### Docs / domain table
+- README: new "Billing & Subscription Funnel" section; domain table now 21 domains;
+  smart-mode count corrected to 168.
+- AGENTS.md: billing domain row; full billing workflow patterns (discovery → checkout
+  → consent → join_bot → signals); `accept_subscriber_terms` gate documented as agent
+  safety rule; tool counts corrected (168 smart, 503 full).
+
+#### Discovery
+- `smithery.yaml` + `server.json` — registry manifests for Smithery and the
+  official MCP Registry (registry.modelcontextprotocol.io).
+
+#### CI/CD
+- `.github/workflows/test.yml` — pytest matrix (3.11/3.12), hermetic.
+- `.github/workflows/lint.yml` — ruff error-level gate + advisory full check.
+- `.github/workflows/migrations.yml` — replays all Supabase migrations on a fresh DB.
+- `.github/workflows/security.yml` — CodeQL + gitleaks secret scanning.
+
+#### Payment-path safety
+- `create_platform_checkout_session` validates the Stripe Price (recurring USD)
+  and logs CRITICAL if `RESEND_API_KEY` is absent before taking a payment.
+
+---
+
 ## [22.4.0] — 2026-04-06
 
 ### Added
@@ -53,8 +168,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `order_flow/kalshi_slack_notifier.py` — Pushes Kalshi signals + fills to #openclaw Slack channel
 
 #### Subscriber Auth + Tools
-- `src/algochains_mcp/subscriber_auth.py` (142 lines) — JWT-based subscriber token issuance and validation; rate-limit guards per tier (free / paper / live)
-- `src/algochains_mcp/subscriber_tools.py` (381 lines) — Subscriber-facing read-only tools: `get_subscriber_portfolio`, `get_subscriber_bot_metrics`, `get_marketplace_listings`, `subscribe_to_bot`, `unsubscribe_from_bot`
+- `src/algochains_mcp/subscriber_auth.py` — Subscriber key resolution (`sub_live_…` / `sub_test_…` prefixes) via Supabase SECURITY DEFINER RPC; 60-second cache; key plaintext never leaves process
+- `src/algochains_mcp/subscriber_tools.py` — 9 subscriber-scoped tools: `get_my_portfolio`, `get_signal_stream`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `get_marketplace_listings`, `place_paper_order`, `cancel_paper_order`, `get_my_paper_positions`; all scoped to the resolved `subscriber_id` — no cross-subscriber data access possible
 
 #### Unified Path Resolution
 - `src/algochains_mcp/paths.py` (120 lines) — `default_control_tower()` resolver: honours `ALGOCHAINS_CONTROL_TOWER` env first, then `ALGOCHAINS_CONTROL_TOWER_PATH`, then Mac/WSL/desktop legacy paths. Eliminates layout-specific `parents[N]` chains that broke on desktop tower WSL2.

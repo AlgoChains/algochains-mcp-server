@@ -352,6 +352,187 @@ configCmd.command("generate <target>")
     }
   });
 
+// ── subscribe ─────────────────────────────────────────────────────────────────
+program
+  .command("subscribe")
+  .description("Get a Stripe checkout URL for an AlgoChains subscription tier")
+  .requiredOption("--tier <tier>", "subscription tier: paper|live")
+  .requiredOption("--email <email>", "email address for key delivery")
+  .option("--json", "output structured JSON")
+  .action(async (opts: { tier: string; email: string; json?: boolean }) => {
+    const config = loadConfig();
+    const bridgeUrl =
+      process.env.ALGOCHAINS_BRIDGE_URL
+      ?? config.mcp?.bridge_url
+      ?? "https://mcp.algochains.ai";
+    const mcp = createMcpClient(bridgeUrl, config.mcp?.timeout_ms ?? 30_000);
+
+    let checkoutUrl: string | undefined;
+    try {
+      const result = await mcp.callTool("get_checkout_url", { tier: opts.tier, email: opts.email });
+      if (result.isError) {
+        console.error(`  Error: ${extractText(result)}`);
+        process.exit(1);
+      }
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        process.exit(0);
+      }
+      const text = extractText(result);
+      // Extract URL from tool response — expect a bare URL or JSON with a url field
+      const urlMatch = text.match(/https:\/\/checkout\.stripe\.com\/[^\s"')]+/);
+      checkoutUrl = urlMatch ? urlMatch[0] : text.trim();
+    } catch (e) {
+      console.error(`  Error contacting MCP server: ${e}`);
+      process.exit(1);
+    }
+
+    console.log(`  ✓ Checkout URL: ${checkoutUrl}`);
+    console.log(`  → Opening in browser...`);
+
+    // Open URL in the default browser cross-platform
+    const { execSync } = await import("child_process");
+    try {
+      if (process.platform === "darwin") {
+        execSync(`open "${checkoutUrl}"`, { stdio: "ignore" });
+      } else if (process.platform === "win32") {
+        // start requires an empty title string before the URL on Windows
+        execSync(`start "" "${checkoutUrl}"`, { stdio: "ignore", shell: true });
+      } else {
+        execSync(`xdg-open "${checkoutUrl}"`, { stdio: "ignore" });
+      }
+    } catch {
+      console.log(`  (Could not auto-open browser — paste the URL above manually)`);
+    }
+
+    console.log(`  → After payment, your sub_live_… key will be emailed to ${opts.email}`);
+    console.log(`  → Then run: export ALGOCHAINS_SUBSCRIBER_KEY=<your-key>`);
+    console.log(`  → Verify:   algochains subscriber-status`);
+    process.exit(0);
+  });
+
+// ── join-bot ───────────────────────────────────────────────────────────────────
+program
+  .command("join-bot <bot>")
+  .description("Subscribe to copy-trade signals from a live bot (e.g. mnq, cl, mes, nq)")
+  .option("--size <fraction>", "position-size multiplier (0.0–1.0), default 1.0")
+  .option("--max-contracts <n>", "maximum contracts per signal")
+  .option("--json", "output structured JSON")
+  .action(async (bot: string, opts: { size?: string; maxContracts?: string; json?: boolean }) => {
+    const subscriberKey = process.env.ALGOCHAINS_SUBSCRIBER_KEY;
+    if (!subscriberKey) {
+      console.error("  Set ALGOCHAINS_SUBSCRIBER_KEY first. Run: algochains subscribe");
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    const bridgeUrl =
+      process.env.ALGOCHAINS_BRIDGE_URL
+      ?? config.mcp?.bridge_url
+      ?? "https://mcp.algochains.ai";
+    const mcp = createMcpClient(bridgeUrl, config.mcp?.timeout_ms ?? 30_000);
+
+    const args: Record<string, unknown> = { bot: bot.toLowerCase() };
+    if (opts.size !== undefined) {
+      const size = parseFloat(opts.size);
+      if (!Number.isFinite(size) || size <= 0 || size > 1) {
+        console.error(`  Invalid --size: ${opts.size}. Must be between 0.0 and 1.0.`);
+        process.exit(1);
+      }
+      args.size_multiplier = size;
+    }
+    if (opts.maxContracts !== undefined) {
+      const mc = parseInt(opts.maxContracts, 10);
+      if (!Number.isFinite(mc) || mc <= 0) {
+        console.error(`  Invalid --max-contracts: ${opts.maxContracts}. Must be a positive integer.`);
+        process.exit(1);
+      }
+      args.max_contracts = mc;
+    }
+
+    try {
+      const result = await mcp.callTool("join_bot", args);
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        process.exit(result.isError ? 1 : 0);
+      }
+      if (result.isError) {
+        const msg = extractText(result);
+        // Surface capacity error with a helpful hint
+        if (/capacity|full|max.*subscriber/i.test(msg)) {
+          const botUpper = bot.toUpperCase();
+          console.error(`  ${botUpper} bot is at capacity (20 subscribers). Try CL, MES, or NQ.`);
+        } else {
+          console.error(`  Error: ${msg}`);
+        }
+        process.exit(1);
+      }
+      const botDisplay = bot.toUpperCase();
+      // Try to extract the canonical bot name from the response if present
+      const text = extractText(result);
+      const nameMatch = text.match(/[A-Z]{2,}_[A-Za-z_]+/);
+      const displayName = nameMatch ? nameMatch[0] : `${botDisplay}_Scalper`;
+      console.log(`  ✓ Subscribed to ${displayName}`);
+      console.log(`  → Copy-trade signals active immediately`);
+      console.log(`  → Run: algochains signal-stream  (to see live signals)`);
+      process.exit(0);
+    } catch (e) {
+      console.error(`  Error: ${e}`);
+      process.exit(1);
+    }
+  });
+
+// ── subscriber-status ──────────────────────────────────────────────────────────
+program
+  .command("subscriber-status")
+  .description("Show subscriber key info, tier, bot assignments, paper balance, and fills today")
+  .option("--json", "output structured JSON")
+  .action(async (opts: { json?: boolean }) => {
+    const subscriberKey = process.env.ALGOCHAINS_SUBSCRIBER_KEY;
+    if (!subscriberKey) {
+      console.error("  Set ALGOCHAINS_SUBSCRIBER_KEY first. Run: algochains subscribe");
+      process.exit(1);
+    }
+
+    const config = loadConfig();
+    const bridgeUrl =
+      process.env.ALGOCHAINS_BRIDGE_URL
+      ?? config.mcp?.bridge_url
+      ?? "https://mcp.algochains.ai";
+    const mcp = createMcpClient(bridgeUrl, config.mcp?.timeout_ms ?? 30_000);
+
+    try {
+      const result = await mcp.callTool("get_subscriber_status", {});
+      if (opts.json) {
+        console.log(JSON.stringify(result, null, 2));
+        process.exit(result.isError ? 1 : 0);
+      }
+      if (result.isError) {
+        console.error(`  Error: ${extractText(result)}`);
+        process.exit(1);
+      }
+      // Pretty-print key fields if we got structured data; otherwise dump text
+      const text = extractText(result);
+      let parsed: Record<string, unknown> | null = null;
+      try { parsed = JSON.parse(text); } catch { /* not JSON */ }
+
+      if (parsed) {
+        const keyPrefix = String(parsed.key ?? parsed.subscriber_key ?? subscriberKey).slice(0, 16) + "…";
+        console.log(`  Key prefix    : ${keyPrefix}`);
+        if (parsed.tier)           console.log(`  Tier          : ${parsed.tier}`);
+        if (parsed.bots_assigned)  console.log(`  Bots assigned : ${parsed.bots_assigned}`);
+        if (parsed.paper_balance !== undefined) console.log(`  Paper balance : $${parsed.paper_balance}`);
+        if (parsed.fills_today !== undefined)   console.log(`  Fills today   : ${parsed.fills_today}`);
+      } else {
+        console.log(text);
+      }
+      process.exit(0);
+    } catch (e) {
+      console.error(`  Error: ${e}`);
+      process.exit(1);
+    }
+  });
+
 // ── Direct tool pass-through ───────────────────────────────────────────────────
 // Any unrecognized command is treated as an MCP tool call
 program.on("command:*", async ([toolName, ...rest]: string[]) => {

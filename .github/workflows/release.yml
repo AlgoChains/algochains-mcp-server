@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to release (e.g. v22.6.0) — must already exist as a git tag"
+        required: true
+        type: string
 
 permissions:
   contents: write
