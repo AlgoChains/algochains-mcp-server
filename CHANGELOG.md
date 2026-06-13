@@ -8,6 +8,35 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+---
+
+## [22.6.0] — 2026-06-13
+
+### Added — Revenue platform (WS1–WS6), legal defense & onboarding
+
+#### Onboarding meta-tools (zero-auth "wow" tools)
+- `get_started(goal?)` — guided next-step map for brand-new users: subscriber /
+  creator / developer / explore personas; no auth, no signup required.
+- `get_pricing()` — transparent tier pricing ($29/$99/mo), referral %, creator
+  80% revenue share — single source of truth (`onboarding_meta.py`).
+- `get_system_status()` — platform health, live bot roster, tool count; no auth,
+  best-effort, never raises.
+
+#### Billing & subscription funnel (12 new MCP tools)
+- `get_checkout_url` — Stripe-hosted checkout URL; no auth needed; sub_live_* key
+  emailed automatically after payment.
+- `accept_subscriber_terms` — CFTC risk-disclosure consent gate (required before
+  `join_bot`); consent persisted and audit-trailed.
+- `get_my_usage` — calls this month, included quota, projected overage cost.
+- `create_referral_code` / `get_my_referrals` / `get_referral_earnings` —
+  full referral program (20% commission, 3 months, first-touch, self-referral blocked).
+- `create_creator_onboarding_link` / `get_my_creator_earnings` —
+  Stripe Connect Express KYC + earnings dashboard for strategy creators.
+- `run_creator_payouts` — owner-gated, dry-run default, idempotency-keyed batch
+  payout run via Stripe Connect transfers.
+- `get_my_realized_pnl` — live/paper-segregated P&L; all outputs carry CFTC 4.41(b)
+  hypothetical disclaimer.
+
 ### Added — Revenue platform (WS1–WS6) & legal defense
 
 - **Legal defense memo** (`docs/LEGAL_COMPLIANCE_AUDIT.md`) — researched CFTC/NFA
@@ -60,6 +89,21 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - Migration `20260525_subscriber_consent.sql` — consent columns on
   `subscriber_api_keys`, append-only `subscriber_consent_log`, and the
   `record_subscriber_consent()` SECURITY DEFINER RPC.
+
+#### Build plans (future revenue levers)
+- `docs/MANAGED_CLOUD_PROVISIONING_BUILD_PLAN.md` — Pulumi Automation API per-tenant
+  IaC (resale + BYOC), AWS ExternalId / GCP WIF / Azure Lighthouse federation,
+  6 new MCP tools, P0→P2 phased delivery.
+- `docs/GPU_COMPUTE_RENTAL_BUILD_PLAN.md` — RTX 5080 GPU rental marketplace:
+  gVisor+nvproxy sandboxing, Tailscale/Headscale federation, Stripe Connect operator
+  payouts (70/30), 10 new MCP tools, 3-phase delivery grounded in `dispatch_tower_job`.
+
+#### Docs / domain table
+- README: new "Billing & Subscription Funnel" section; domain table now 21 domains;
+  smart-mode count corrected to 168.
+- AGENTS.md: billing domain row; full billing workflow patterns (discovery → checkout
+  → consent → join_bot → signals); `accept_subscriber_terms` gate documented as agent
+  safety rule; tool counts corrected (168 smart, 503 full).
 
 #### Discovery
 - `smithery.yaml` + `server.json` — registry manifests for Smithery and the

@@ -140,7 +140,7 @@ def get_system_status() -> dict[str, Any]:
         from . import __version__ as _v  # type: ignore
         status["version"] = _v
     except Exception:
-        status["version"] = os.environ.get("ALGOCHAINS_VERSION", "22.5.0")
+        status["version"] = os.environ.get("ALGOCHAINS_VERSION", "22.6.0")
 
     # Best-effort public marketplace listing count (RLS-filtered; no secrets).
     try:
