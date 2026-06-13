@@ -26,6 +26,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path as _PathGlobal
+from typing import Any
 
 # FastAPI imports at module level so inner functions can resolve Request type
 try:
@@ -45,6 +46,7 @@ from .subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    _paper_account_pnl_usd,
 )
 from .developer_auth import (
     ResolvedDeveloper,
@@ -806,6 +808,14 @@ def create_fastapi_app():
                 },
             )
 
+        def _paper_pnl_aliases(paper_account: dict[str, Any] | None) -> dict[str, float | None]:
+            paper_pnl = _paper_account_pnl_usd(paper_account)
+            return {
+                "paper_pnl_usd": paper_pnl,
+                "paper_pnl": paper_pnl,
+                "paper_pnl_rollup_usd": paper_pnl,
+            }
+
         for row in assignments:
             sub = _ensure_subscriber(row)
             if sub is None:
@@ -820,6 +830,7 @@ def create_fastapi_app():
             if sub is None:
                 continue
             sub["paper_account"] = row
+            sub.update(_paper_pnl_aliases(row))
 
         for row in heartbeats:
             sub = _ensure_subscriber(row)
@@ -835,6 +846,13 @@ def create_fastapi_app():
             if row.get("status") == "active":
                 sub["active_marketplace_subscription_count"] += 1
 
+        paper_pnl_values = [
+            value
+            for value in (_paper_account_pnl_usd(row) for row in paper_accounts)
+            if value is not None
+        ]
+        paper_pnl_rollup = round(sum(paper_pnl_values), 2) if paper_pnl_values else None
+
         return {
             "subscribers": list(subscribers.values()),
             "total": len(subscribers),
@@ -847,6 +865,9 @@ def create_fastapi_app():
             "assignments": assignments,
             "assignment_count": len(assignments),
             "active_assignments": sum(1 for row in assignments if not row.get("paused")),
+            "paper_pnl_usd": paper_pnl_rollup,
+            "paper_pnl": paper_pnl_rollup,
+            "paper_pnl_rollup_usd": paper_pnl_rollup,
             "subscriptions": subscriptions,
             "subscription_count": len(subscriptions),
             "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
