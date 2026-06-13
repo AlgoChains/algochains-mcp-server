@@ -135,6 +135,15 @@ def summarize_e2e_sentinel_state(raw: Mapping[str, Any] | None) -> dict[str, Any
 
 
 _SUCCESS_STATUSES = {"ok", "success", "succeeded", "completed", "resolved"}
+_STALE_SIGNAL_RECONCILIATION_MARKERS = (
+    "signal_submitted_pending",
+    "stale_signal",
+    "stale signal",
+    "stale submitted",
+    "submitted signal",
+    "no fill/exit",
+    "sentinel_reconciled_stale",
+)
 
 
 def _iter_action_candidates(value: Any) -> Iterable[Mapping[str, Any]]:
@@ -187,6 +196,42 @@ def find_successful_stale_reconciliation(
     return None
 
 
+def _active_issue_matches_stale_reconciliation(
+    summary: Mapping[str, Any],
+    raw_state: Mapping[str, Any],
+    *,
+    state_key: str,
+) -> bool:
+    """Return true when the current classification is the stale-signal issue.
+
+    Successful reconcile actions may remain in the sentinel payload after the
+    control tower later classifies a different warning. Only the active
+    stale-signal incident should be downgraded to effectively resolved.
+    """
+    classification = _as_mapping(raw_state.get("classification"))
+    candidates = (
+        summary.get("issue_class"),
+        summary.get("reason"),
+        summary.get("description"),
+        summary.get("why"),
+        summary.get(state_key),
+        summary.get("outcome"),
+        classification.get("issue_class"),
+        classification.get("reason"),
+        classification.get("description"),
+        classification.get("why"),
+        classification.get("outcome"),
+        classification.get("state"),
+    )
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).lower()
+        if any(marker in text for marker in _STALE_SIGNAL_RECONCILIATION_MARKERS):
+            return True
+    return False
+
+
 def apply_effective_sentinel_resolution(
     summary: Mapping[str, Any],
     raw_state: Mapping[str, Any],
@@ -209,6 +254,8 @@ def apply_effective_sentinel_resolution(
 
     action = find_successful_stale_reconciliation(raw_state)
     if action is None:
+        return out
+    if not _active_issue_matches_stale_reconciliation(summary, raw_state, state_key=state_key):
         return out
 
     out[state_key] = "resolved"

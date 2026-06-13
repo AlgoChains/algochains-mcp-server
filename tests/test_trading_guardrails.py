@@ -1,8 +1,10 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from algochains_mcp import trading_guardrails as tg
+from algochains_mcp.server import _compute_consecutive_losses_from_fills
 
 
 @pytest.fixture
@@ -44,6 +46,43 @@ def test_expired_ai_loop_breaker_is_cleared_after_restart(isolated_guardrails, m
     assert status["all_clear"] is True
     assert status["broker_circuit_breakers"] == {}
     assert json.loads(state_path.read_text()) == {}
+
+
+def test_latest_winning_fill_is_authoritative_zero_loss_streak():
+    """Fresh broker fills must not be overwritten by stale signal_health state."""
+    losses, authoritative = _compute_consecutive_losses_from_fills(
+        [
+            SimpleNamespace(realized_pnl=-12.50),
+            SimpleNamespace(realized_pnl=8.25),
+        ]
+    )
+
+    assert losses == 0
+    assert authoritative is True
+
+
+def test_latest_breakeven_fill_is_not_treated_as_missing_pnl():
+    losses, authoritative = _compute_consecutive_losses_from_fills(
+        [
+            SimpleNamespace(realized_pnl=-12.50),
+            SimpleNamespace(realized_pnl=0.0),
+        ]
+    )
+
+    assert losses == 0
+    assert authoritative is True
+
+
+def test_unparseable_latest_fill_allows_reconciliation_fallback():
+    losses, authoritative = _compute_consecutive_losses_from_fills(
+        [
+            SimpleNamespace(realized_pnl=-12.50),
+            SimpleNamespace(realized_pnl=None),
+        ]
+    )
+
+    assert losses == 0
+    assert authoritative is False
 
 
 def test_unexpired_ai_loop_breaker_survives_restart(isolated_guardrails, monkeypatch):
