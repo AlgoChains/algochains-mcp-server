@@ -4410,6 +4410,32 @@ TOOLS = [
          }, "required": ["owner_token"]},
          annotations=ANNOT_DESTRUCTIVE),
 
+    # ── Realized P&L (live vs paper segregated) ─────────────────────────────
+    Tool(name="get_my_realized_pnl",
+         description=(
+             "Your realized P&L with LIVE (real broker) and PAPER (simulated) results "
+             "STRICTLY segregated. Paper results carry the CFTC Reg. 4.41(b) hypothetical-"
+             "performance disclaimer; they are never co-mingled with live results. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="reconcile_creator_pnl",
+         description=(
+             "Owner reconciliation: attribute subscribers' LIVE net realized P&L to "
+             "strategy creators for a period (per-subscriber then summed; 80/20 share). "
+             "Writes the creator_strategy_pnl ledger; does NOT move money (payout is "
+             "run_creator_payouts). Defaults to dry_run=true. REQUIRES owner_token."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "period_start": {"type": "string", "description": "ISO8601 inclusive period start."},
+             "period_end": {"type": "string", "description": "ISO8601 exclusive period end."},
+             "dry_run": {"type": "boolean", "default": True, "description": "true (default) = plan only."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+         }, "required": ["period_start", "period_end", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
     # ── Waitlist ──────────────────────────────────────────────────────────
     Tool(name="join_waitlist",
          description="Add an email to the AlgoChains waitlist. Stores in Supabase, sends welcome email via Resend. Returns waitlist position.",
@@ -5027,6 +5053,8 @@ TIER1_TOOL_NAMES = {
     # Creator payouts (run_creator_payouts intentionally NOT here — moves money, owner-gated)
     "create_creator_onboarding_link",
     "get_my_creator_earnings",
+    # Realized P&L (reconcile_creator_pnl intentionally NOT here — owner-gated)
+    "get_my_realized_pnl",
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
@@ -9813,7 +9841,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name in ("join_bot", "get_subscriber_status", "accept_subscriber_terms",
                   "get_my_usage", "create_referral_code", "get_my_referrals",
-                  "get_referral_earnings"):
+                  "get_referral_earnings", "get_my_realized_pnl"):
         _sub_key = os.environ.get("ALGOCHAINS_SUBSCRIBER_KEY", "")
         if not _sub_key:
             return _text({
@@ -9828,6 +9856,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             try:
                 from .subscriber_tools import get_my_usage as _get_my_usage
                 return _text(_get_my_usage(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "get_my_realized_pnl":
+            try:
+                from .cloud_saas.realized_pnl import get_my_realized_pnl as _grp
+                return _text(_grp(_sub.subscriber_id))
             except Exception as exc:
                 return _text({"error": str(exc)})
         elif name in ("create_referral_code", "get_my_referrals", "get_referral_earnings"):
@@ -9909,6 +9943,24 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 dry_run=bool(arguments.get("dry_run", True)),
                 min_payout_usd=float(arguments.get("min_payout_usd", 25.0)),
             ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "reconcile_creator_pnl":
+        # OWNER-GATED — writes the creator earnings ledger. Fails closed.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "reconcile_creator_pnl requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas.realized_pnl import reconcile_creator_pnl as _rec
+            return _text(await _rec(
+                arguments["period_start"],
+                arguments["period_end"],
+                dry_run=bool(arguments.get("dry_run", True)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
         except Exception as exc:
             return _text({"error": str(exc)})
 

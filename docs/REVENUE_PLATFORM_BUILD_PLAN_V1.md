@@ -14,14 +14,35 @@ legal memo is `docs/LEGAL_COMPLIANCE_AUDIT.md`.
 
 ## Workstream Index
 
-| # | Workstream | New module | Migration | Money? | Owner-gated |
-|---|-----------|-----------|-----------|--------|-------------|
-| 1 | Creator payouts (Stripe Connect) | `cloud_saas/connect_payouts.py` | `20260526` | ✅ real | ✅ |
-| 2 | Usage-based metered billing | `cloud_saas/usage_metering.py` | `20260527` | ✅ real | partial |
-| 3 | Affiliate / referral program | `cloud_saas/referrals.py` | `20260528` | ✅ real | partial |
-| 4 | Realized-P&L payout hooks | `cloud_saas/realized_pnl.py` | `20260529` | ✅ real | ✅ |
-| 5 | OAuth 2.1 (Claude.ai native) | `auth/oauth_server.py` | `20260530` | ❌ | ❌ |
-| 6 | Multi-tenant isolation | `multi_tenant/isolation.py` | `20260531` | ❌ | ❌ |
+| # | Workstream | New module | Migration | Money? | Owner-gated | Status |
+|---|-----------|-----------|-----------|--------|-------------|--------|
+| 1 | Creator payouts (Stripe Connect) | `cloud_saas/connect_payouts.py` | `20260528` | ✅ real | ✅ | ✅ built |
+| 2 | Usage-based metered billing | `cloud_saas/usage_metering.py` | `20260527` | ✅ real | partial | ✅ built |
+| 3 | Affiliate / referral program | `cloud_saas/referrals.py` | `20260526` | ✅ real | partial | ✅ built |
+| 4 | Realized-P&L + HWM perf-fee | `cloud_saas/realized_pnl.py` | `20260529` | ✅ real | ✅ | ✅ built (perf-fee OFF) |
+| 5 | OAuth 2.1 (Claude.ai native) | `auth/oauth_resource.py` + `http_transport.py` | — | ❌ | ❌ | ✅ RS done; AS delegated |
+| 6 | Multi-tenant isolation | `multi_tenant/isolation.py` | `20260530`, `20260531` | ❌ | ❌ | ✅ foundation + context wired |
+
+### Completion notes (WS4–6)
+- **WS4** — `get_my_realized_pnl` (subscriber, live/paper segregated, 4.41(b) on paper)
+  and `reconcile_creator_pnl` (owner-gated, per-subscriber→creator attribution,
+  net realized, positive-only, period-scoped). `compute_hwm_performance_fee()`
+  implements the researched HWM formula but **performance fees are DISABLED by
+  default** (`ALGOCHAINS_PERFORMANCE_FEE_RATE=0.0`) — per legal research a perf
+  fee on directed/copied trading reads as discretionary CTA activity. Enable only
+  after counsel sign-off + incentive-fee conflict disclosure.
+- **WS5** — Resource-server side complete: RFC 9728 PRM + `WWW-Authenticate`
+  discovery (`http_transport.py`) and JWT validation (`auth/oauth_resource.py`:
+  JWKS signature + `aud`/`iss`/`exp`/scope, `sub`→identity, `app_metadata.tenant_id`
+  →tenant). The Authorization Server (`/authorize`, `/token`, PKCE, DCR) is
+  **delegated to an external IdP** (Supabase Auth / WorkOS) per the MCP spec —
+  set `ALGOCHAINS_OAUTH_ISSUER` + `ALGOCHAINS_OAUTH_JWKS_URI` to enable.
+- **WS6** — `current_tenant_id()` RLS helper, `tenant_id` columns, null-safe
+  permissive RLS policy templates (`20260531`), and request-lifecycle tenant
+  context (`isolation.py` contextvar set from the validated token claim in
+  `http_transport._auth`). Full per-table RLS-enforced rollout is **phased**
+  (do not flip live trading tables to FORCE in one step — checklist in
+  `20260531_tenant_rls_policies.sql`).
 
 ---
 

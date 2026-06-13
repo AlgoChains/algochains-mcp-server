@@ -181,7 +181,31 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
         logger.info("AlgoChains MCP HTTP transport started")
 
     def _auth(request: Request) -> None:
-        if not _verify_bearer_token(request.headers.get("Authorization")):
+        authz = request.headers.get("Authorization")
+
+        # Path 1 — OAuth 2.1 access token (MCP spec 2025-06-18). When an external
+        # IdP is configured, validate the JWT (signature/aud/iss/exp/scope) and
+        # bind tenant context for the request. Set once, from the token claim —
+        # never from caller input (OWASP API1:2023 BOLA).
+        if authz and authz.startswith("Bearer "):
+            try:
+                from .auth.oauth_resource import oauth_enabled, validate_oauth_token
+                if oauth_enabled():
+                    principal = validate_oauth_token(authz[len("Bearer "):])
+                    if principal is not None:
+                        try:
+                            from .multi_tenant.isolation import set_tenant
+                            set_tenant(principal.tenant_id)
+                        except Exception:
+                            pass
+                        request.state.oauth_subject = principal.subject
+                        request.state.tenant_id = principal.tenant_id
+                        return
+            except Exception:
+                pass  # fall through to static-secret path
+
+        # Path 2 — static transport secret (existing behavior / dev mode).
+        if not _verify_bearer_token(authz):
             # RFC 9728 §5.1: include the resource_metadata discovery pointer so
             # MCP clients (Claude.ai) can find the authorization server.
             raise HTTPException(
