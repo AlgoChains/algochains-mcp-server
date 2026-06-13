@@ -97,7 +97,7 @@ jobs:
           cp scripts/install.sh release/install.sh 2>/dev/null || true
 
       - name: Upload CLI artifact (shared with binary + PyPI jobs)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-bundle
           path: dist/algochains-cli.js
@@ -218,7 +218,7 @@ jobs:
           python -m build
 
       - name: Upload Python distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-dists
           path: dist/*.tar.gz
@@ -407,7 +407,7 @@ jobs:
           ls manifests/a/AlgoChains/algochains/${VER}/
 
       - name: Upload winget manifests as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: winget-manifests
           path: manifests/
