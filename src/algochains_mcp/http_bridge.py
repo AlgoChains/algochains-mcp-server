@@ -25,6 +25,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path as _PathGlobal
 
 # FastAPI imports at module level so inner functions can resolve Request type
@@ -45,6 +46,7 @@ from .subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    _paper_pnl_aliases,
 )
 from .developer_auth import (
     ResolvedDeveloper,
@@ -806,6 +808,17 @@ def create_fastapi_app():
                 },
             )
 
+        def _money_total(values: list[float | None]) -> float:
+            total = Decimal("0")
+            for value in values:
+                if value is None:
+                    continue
+                try:
+                    total += Decimal(str(value))
+                except (InvalidOperation, ValueError, TypeError):
+                    continue
+            return float(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
         for row in assignments:
             sub = _ensure_subscriber(row)
             if sub is None:
@@ -819,7 +832,10 @@ def create_fastapi_app():
             sub = _ensure_subscriber(row)
             if sub is None:
                 continue
+            aliases = _paper_pnl_aliases(row)
+            row.update(aliases)
             sub["paper_account"] = row
+            sub.update(aliases)
 
         for row in heartbeats:
             sub = _ensure_subscriber(row)
@@ -834,6 +850,14 @@ def create_fastapi_app():
             sub["marketplace_subscription_count"] += 1
             if row.get("status") == "active":
                 sub["active_marketplace_subscription_count"] += 1
+
+        paper_pnl_rollup_usd = _money_total(
+            [
+                sub.get("paper_pnl_rollup_usd")
+                for sub in subscribers.values()
+                if isinstance(sub.get("paper_pnl_rollup_usd"), (int, float))
+            ]
+        )
 
         return {
             "subscribers": list(subscribers.values()),
@@ -852,6 +876,9 @@ def create_fastapi_app():
             "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
             "paper_account_count": len(paper_accounts),
             "heartbeat_count": len(heartbeats),
+            "paper_pnl_usd": paper_pnl_rollup_usd,
+            "paper_pnl": paper_pnl_rollup_usd,
+            "paper_pnl_rollup_usd": paper_pnl_rollup_usd,
             "query_errors": {
                 key: value
                 for key, value in {
