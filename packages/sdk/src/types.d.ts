@@ -1400,5 +1400,129 @@ export interface AlgochainsTools {
    * @param user_message The user's message to analyze for data needs
    */
   prefetch_context(user_message: string): Promise<CallResult>;
+
+  // ─── Programmatic Account / MFA / Developer Key Tools ────────────────────────
+  // Added 2026-06-14: Full programmatic developer experience flow.
+  // Requires SUPABASE_URL + SUPABASE_ANON_KEY in environment.
+
+  /** Create a new AlgoChains account. Returns session or requires_email_confirm. */
+  signup_algochains(params: { email: string; password: string }): Promise<CallResult>;
+
+  /** Verify email OTP token from confirmation email. */
+  verify_email_otp(params: { email: string; token: string }): Promise<CallResult>;
+
+  /** Login with email + password. Stores session locally. */
+  login_algochains(params: { email: string; password: string }): Promise<CallResult>;
+
+  /** Refresh an expiring JWT session using stored refresh_token. */
+  refresh_session(params?: {}): Promise<CallResult>;
+
+  /** Revoke current session and clear stored credentials. */
+  logout_algochains(params?: {}): Promise<CallResult>;
+
+  /**
+   * Enroll a new MFA factor. Returns QR code URI for TOTP.
+   * @param factor_type 'totp' (default) or 'phone'
+   */
+  enroll_mfa(params?: { factor_type?: 'totp' | 'phone' }): Promise<CallResult>;
+
+  /** Create an MFA challenge for login step-up. */
+  challenge_mfa(params: { factor_id: string }): Promise<CallResult>;
+
+  /**
+   * Verify MFA code. Upgrades session to AAL2 (required for key operations).
+   * @param challenge_id Required for login step-up; omit during enrollment.
+   */
+  verify_mfa(params: { factor_id: string; code: string; challenge_id?: string }): Promise<CallResult>;
+
+  /** List enrolled MFA factors for the current session. */
+  list_mfa_factors(params?: {}): Promise<CallResult>;
+
+  /** Remove an enrolled MFA factor. Requires owner_token. */
+  remove_mfa_factor(params: { factor_id: string; owner_token: string }): Promise<CallResult>;
+
+  /**
+   * Mint a new developer API key (ac_live_* or ac_test_*).
+   * Requires AAL2 session. Plaintext key returned ONCE ONLY.
+   */
+  create_developer_key(params?: {
+    name?: string;
+    scopes?: string[];
+    env?: 'live' | 'test';
+  }): Promise<CallResult>;
+
+  /** List developer keys (masked — no plaintext after creation). */
+  list_developer_keys(params?: {}): Promise<CallResult>;
+
+  /**
+   * Rotate a developer key (revoke old, mint new). Requires AAL2.
+   * New plaintext returned ONCE ONLY.
+   */
+  rotate_developer_key(params: { key_id: string; name?: string }): Promise<CallResult>;
+
+  /** Soft-delete a developer key. Requires AAL2. */
+  revoke_developer_key(params: { key_id: string }): Promise<CallResult>;
+
+  /** Get usage metadata for a developer key. */
+  get_developer_key_usage(params: { key_id: string }): Promise<CallResult>;
+
+  /** Test a developer API key against the hosted bridge. */
+  test_bridge_connection(params?: { api_key?: string }): Promise<CallResult>;
+
+  // ─── Onboarding Steps 4 + 6 ────────────────────────────────────────────────
+
+  /**
+   * Step 4: Configure your AlgoChains developer API key.
+   * Validates against bridge health endpoint and persists to onboarding state.
+   */
+  set_algochains_api_key(params: { api_key: string }): Promise<CallResult>;
+
+  /**
+   * Step 6: Configure guardrail notification thresholds.
+   * Hard-coded safety limits cannot be changed via this tool.
+   */
+  set_guardrail_preferences(params?: {
+    notify_on_daily_loss_pct?: number;
+    pause_on_consecutive_losses?: number;
+    slack_alerts_enabled?: boolean;
+  }): Promise<CallResult>;
 }
+
+// ─── HTTP Bridge Client ────────────────────────────────────────────────────────
+// Use this for programmatic access to the hosted AlgoChains bridge without
+// the MCP stdio transport (useful for CI/CD, backend services, scripts).
+
+export interface BridgeClientOptions {
+  /** Developer API key (ac_live_* or ac_test_*). Falls back to AC_DEV_KEY env var. */
+  apiKey?: string;
+  /** Bridge base URL. Defaults to https://api.algochains.ai */
+  baseUrl?: string;
+  /** Request timeout in milliseconds. Default: 30000. */
+  timeoutMs?: number;
+}
+
+export interface BridgeCallResult {
+  ok: boolean;
+  status: number;
+  data: unknown;
+  error?: string;
+}
+
+/**
+ * Create a typed HTTP bridge client pre-configured with your developer API key.
+ * Sends requests directly to the AlgoChains hosted bridge without stdio MCP.
+ *
+ * @example
+ * ```typescript
+ * const { createBridgeClient } = require("@algochains/sdk");
+ * const bridge = createBridgeClient({ apiKey: process.env.AC_DEV_KEY });
+ * const regime = await bridge.call("detect_market_regime", {});
+ * ```
+ */
+export declare function createBridgeClient(options?: BridgeClientOptions): {
+  /** Call any tool on the hosted bridge by name. */
+  call(toolName: string, params?: Record<string, unknown>): Promise<BridgeCallResult>;
+  /** Check bridge health and validate API key. */
+  health(): Promise<BridgeCallResult>;
+};
 
