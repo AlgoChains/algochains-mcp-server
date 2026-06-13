@@ -96,8 +96,9 @@ def test_subscribers_route_aggregates_copy_trade_state():
             "subscriber_paper_accounts": [
                 {
                     "subscriber_id": "sub-1",
-                    "current_balance_usd": 10000,
-                    "realized_pnl_usd": 25.5,
+                    "starting_balance_usd": 2500,
+                    "current_balance_usd": 2455,
+                    "realized_pnl_usd": -45.0,
                 }
             ],
             "subscriber_heartbeats": [
@@ -121,5 +122,12 @@ def test_subscribers_route_aggregates_copy_trade_state():
     assert body["subscription_count"] == 1
     assert body["active_subscriptions"] == 1
     assert body["paper_account_count"] == 1
+    assert body["paper_pnl_usd"] == -45.0
+    assert body["paper_pnl"] == -45.0
+    assert body["paper_pnl_rollup_usd"] == -45.0
     assert body["heartbeat_count"] == 1
-    assert {row["subscriber_id"] for row in body["subscribers"]} == {"sub-1", "sub-2"}
+    subscribers = {row["subscriber_id"]: row for row in body["subscribers"]}
+    assert set(subscribers) == {"sub-1", "sub-2"}
+    assert subscribers["sub-1"]["paper_pnl_usd"] == -45.0
+    assert subscribers["sub-1"]["paper_pnl"] == -45.0
+    assert subscribers["sub-1"]["paper_pnl_rollup_usd"] == -45.0
