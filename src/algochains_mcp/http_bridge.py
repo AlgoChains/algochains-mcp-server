@@ -26,6 +26,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path as _PathGlobal
+from typing import Any
 
 # FastAPI imports at module level so inner functions can resolve Request type
 try:
@@ -45,6 +46,7 @@ from .subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    _paper_account_pnl_usd,
 )
 from .developer_auth import (
     ResolvedDeveloper,
@@ -820,6 +822,10 @@ def create_fastapi_app():
             if sub is None:
                 continue
             sub["paper_account"] = row
+            paper_pnl = _paper_account_pnl_usd(row)
+            sub["paper_pnl_usd"] = paper_pnl
+            sub["paper_pnl"] = paper_pnl
+            sub["paper_pnl_rollup_usd"] = paper_pnl
 
         for row in heartbeats:
             sub = _ensure_subscriber(row)
@@ -834,6 +840,13 @@ def create_fastapi_app():
             sub["marketplace_subscription_count"] += 1
             if row.get("status") == "active":
                 sub["active_marketplace_subscription_count"] += 1
+
+        paper_pnl_values: list[float] = []
+        for row in paper_accounts:
+            paper_pnl = _paper_account_pnl_usd(row)
+            if paper_pnl is not None:
+                paper_pnl_values.append(paper_pnl)
+        paper_pnl_rollup = round(sum(paper_pnl_values), 2) if paper_pnl_values else None
 
         return {
             "subscribers": list(subscribers.values()),
@@ -851,6 +864,9 @@ def create_fastapi_app():
             "subscription_count": len(subscriptions),
             "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
             "paper_account_count": len(paper_accounts),
+            "paper_pnl_usd": paper_pnl_rollup,
+            "paper_pnl": paper_pnl_rollup,
+            "paper_pnl_rollup_usd": paper_pnl_rollup,
             "heartbeat_count": len(heartbeats),
             "query_errors": {
                 key: value
