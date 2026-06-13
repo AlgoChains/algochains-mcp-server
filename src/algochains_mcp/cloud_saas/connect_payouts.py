@@ -246,7 +246,8 @@ async def run_creator_payouts(
             continue
         bucket = grouped.setdefault(cid, {"total": 0.0, "earning_ids": []})
         bucket["total"] += float(row.get("creator_share_usd") or 0.0)
-        bucket["earning_ids"].append(row.get("id"))
+        if row.get("id"):
+            bucket["earning_ids"].append(row.get("id"))
 
     plan: list[dict[str, Any]] = []
     executed: list[dict[str, Any]] = []
@@ -273,6 +274,9 @@ async def run_creator_payouts(
         # DRY RUN: plan only, no money moves, no rows written.
         if dry_run:
             continue
+        if not bucket["earning_ids"]:
+            executed.append({**plan_entry, "status": "failed", "reason": "missing_earning_ids"})
+            continue
 
         # ── EXECUTE ──────────────────────────────────────────────────────────
         # 2a. Gate on payouts_enabled (fail closed if we can't confirm it).
@@ -292,11 +296,16 @@ async def run_creator_payouts(
         if not acct_rows or not acct_rows[0].get("payouts_enabled"):
             executed.append({**plan_entry, "status": "skipped", "reason": "payouts_not_enabled"})
             continue
+        stripe_account_id = acct_rows[0].get("stripe_account_id")
+        if not stripe_account_id:
+            executed.append({**plan_entry, "status": "failed", "reason": "missing_stripe_account_id"})
+            continue
 
         # 2b. Confirm live Stripe balance before transferring.
         try:
             from .billing_engine import BillingEngine
             be = BillingEngine()
+            be._creator_accounts[cid] = stripe_account_id
             balance = await be.get_creator_balance(cid)
             available = float(balance.get("available_usd") or 0.0)
         except Exception as exc:
@@ -326,12 +335,45 @@ async def run_creator_payouts(
                 }
             ).execute()
         except Exception as exc:
-            # Most likely a UNIQUE violation on idempotency_key → already paid.
-            executed.append(
-                {**plan_entry, "status": "skipped",
-                 "reason": "duplicate_payout_period_guard", "detail": str(exc)[:200]}
-            )
-            continue
+            try:
+                existing_resp = (
+                    sb.table("creator_payouts")
+                    .select("status,stripe_transfer_id")
+                    .eq("idempotency_key", idempotency_key)
+                    .limit(1)
+                    .execute()
+                )
+                existing_rows = getattr(existing_resp, "data", None) or []
+            except Exception as lookup_exc:
+                executed.append(
+                    {**plan_entry, "status": "skipped",
+                     "reason": "duplicate_payout_period_guard", "detail": str(lookup_exc)[:200]}
+                )
+                continue
+
+            existing_status = existing_rows[0].get("status") if existing_rows else None
+            if existing_status != "failed":
+                executed.append(
+                    {**plan_entry, "status": "skipped",
+                     "reason": "duplicate_payout_period_guard", "detail": str(exc)[:200]}
+                )
+                continue
+
+            try:
+                sb.table("creator_payouts").update(
+                    {
+                        "amount_usd": total,
+                        "status": "planned",
+                        "dry_run": False,
+                        "updated_at": _now_iso(),
+                    }
+                ).eq("idempotency_key", idempotency_key).execute()
+            except Exception as reset_exc:
+                executed.append(
+                    {**plan_entry, "status": "failed",
+                     "reason": f"failed_payout_retry_reset_failed: {reset_exc}"}
+                )
+                continue
 
         # 2d. Trigger the real transfer.
         amount_cents = int(round(total * 100))
@@ -359,11 +401,11 @@ async def run_creator_payouts(
 
         earnings_paid = 0
         try:
-            # Status guard: only flip rows that are still 'accrued'.
+            # Status guard: only flip rows included in this payout snapshot.
             upd = (
                 sb.table("creator_earnings")
                 .update({"status": "paid"})
-                .eq("creator_id", cid)
+                .in_("id", list(bucket["earning_ids"]))
                 .eq("status", "accrued")
                 .execute()
             )

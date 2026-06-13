@@ -187,22 +187,39 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
         # IdP is configured, validate the JWT (signature/aud/iss/exp/scope) and
         # bind tenant context for the request. Set once, from the token claim —
         # never from caller input (OWASP API1:2023 BOLA).
-        if authz and authz.startswith("Bearer "):
-            try:
-                from .auth.oauth_resource import oauth_enabled, validate_oauth_token
-                if oauth_enabled():
-                    principal = validate_oauth_token(authz[len("Bearer "):])
-                    if principal is not None:
-                        try:
-                            from .multi_tenant.isolation import set_tenant
-                            set_tenant(principal.tenant_id)
-                        except Exception:
-                            pass
-                        request.state.oauth_subject = principal.subject
-                        request.state.tenant_id = principal.tenant_id
-                        return
-            except Exception:
-                pass  # fall through to static-secret path
+        try:
+            from .auth.oauth_resource import oauth_enabled, validate_oauth_token
+            if oauth_enabled():
+                if not authz or not authz.startswith("Bearer "):
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Unauthorized",
+                        headers=oauth_challenge_header(),
+                    )
+                principal = validate_oauth_token(authz[len("Bearer "):])
+                if principal is None:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Unauthorized",
+                        headers=oauth_challenge_header(),
+                    )
+                try:
+                    from .multi_tenant.isolation import set_tenant
+                    set_tenant(principal.tenant_id)
+                except Exception:
+                    pass
+                request.state.oauth_subject = principal.subject
+                request.state.tenant_id = principal.tenant_id
+                return
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("OAuth validation setup failed closed: %s", exc)
+            raise HTTPException(
+                status_code=401,
+                detail="Unauthorized",
+                headers=oauth_challenge_header(),
+            )
 
         # Path 2 — static transport secret (existing behavior / dev mode).
         if not _verify_bearer_token(authz):

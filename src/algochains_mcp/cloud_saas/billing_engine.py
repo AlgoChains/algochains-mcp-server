@@ -646,73 +646,106 @@ class BillingEngine:
             )
 
         event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-
-        # P0-1 idempotency gate: insert into webhook_events BEFORE any handler logic.
-        # Hard-fail if the insert cannot be confirmed — Stripe retries on 5xx.
-        # Bug fix: column is stripe_event_id (not provider_event_id).
-        # Bug fix: use return=representation so 201+body=new, 201+empty=duplicate.
-        if _SUPABASE_URL and _SUPABASE_SERVICE_KEY:
-            import httpx as _httpx
-            _idm_url = f"{_SUPABASE_URL}/rest/v1/webhook_events"
-            _idm_body = {
-                "stripe_event_id": event.id,
-                "event_type": event.type,
-                "status": "received",
-            }
-            _idm_headers = {
-                **_supabase_headers(),
-                "Prefer": "return=representation,resolution=ignore-duplicates",
-            }
-            _resp = _httpx.post(_idm_url, json=_idm_body, headers=_idm_headers, timeout=5)
-            if _resp.status_code not in (200, 201):
-                # Hard failure — force Stripe to retry rather than double-provision.
-                raise RuntimeError(
-                    f"webhook_events idempotency insert failed: {_resp.status_code} {_resp.text[:200]}"
-                )
-            _idm_data = _resp.json() if _resp.content else []
-            if not _idm_data:
-                # Empty body → ON CONFLICT DO NOTHING fired → already processed.
-                logger.info("webhook_events: duplicate %s %s — discarded", event.type, event.id)
-                return {"event": event.type, "processed": False, "reason": "duplicate"}
-
-        if event.type == "checkout.session.completed":
-            session = event.data.object
-            checkout_type = (session.metadata or {}).get("checkout_type", "marketplace")
-            strategy_id = session.metadata.get("strategy_id", "")
-            subscriber_email = session.customer_email or session.metadata.get("subscriber_email", "")
-            customer_id = getattr(session, "customer", "") or ""
-            subscription_id = getattr(session, "subscription", "") or ""
-            amount_usd = (session.amount_total or 0) / 100
-            user_id = session.metadata.get("user_id", "")
-
-            logger.info(
-                "Payment confirmed: session=%s type=%s subscriber=%s",
-                session.id, checkout_type, subscriber_email,
+        if not (_SUPABASE_URL and _SUPABASE_SERVICE_KEY):
+            raise RuntimeError(
+                "webhook_events idempotency requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY"
             )
 
-            # P0.2: Platform subscription → auto-provision sub_live_* key + paper account + MNQ
-            if checkout_type == "platform_subscription":
-                tier = session.metadata.get("tier", "paper")
-                # raw_key is returned out-of-band (not in the dict) to prevent it
-                # from appearing in logs or exception tracebacks.
-                provision_result, raw_key = await self._provision_subscriber_key(
-                    email=subscriber_email,
-                    tier=tier,
-                    checkout_session_id=session.id,
+        import httpx as _httpx
+        _idm_url = f"{_SUPABASE_URL}/rest/v1/webhook_events"
+
+        def _now_iso() -> str:
+            return __import__("datetime").datetime.utcnow().isoformat() + "Z"
+
+        def _mark_webhook_event(status: str, last_error: str | None = None) -> None:
+            body: dict[str, Any] = {"status": status, "last_error": last_error[:1000] if last_error else None}
+            if status == "processed":
+                body["processed_at"] = _now_iso()
+            try:
+                _httpx.patch(
+                    _idm_url,
+                    params={"stripe_event_id": f"eq.{event.id}"},
+                    json=body,
+                    headers={**_supabase_headers(), "Prefer": "return=minimal"},
+                    timeout=5,
+                )
+            except Exception as _mark_err:  # pragma: no cover - best effort
+                logger.warning("webhook_events status update failed: %s", _mark_err)
+
+        _claim_resp = _httpx.post(
+            _idm_url,
+            json={"stripe_event_id": event.id, "event_type": event.type, "status": "processing", "attempts": 1},
+            headers={**_supabase_headers(), "Prefer": "return=representation,resolution=ignore-duplicates"},
+            timeout=5,
+        )
+        if _claim_resp.status_code not in (200, 201):
+            raise RuntimeError(
+                f"webhook_events idempotency insert failed: {_claim_resp.status_code} {_claim_resp.text[:200]}"
+            )
+        _claim_rows = _claim_resp.json() if _claim_resp.content else []
+        if not _claim_rows:
+            _existing_resp = _httpx.get(
+                _idm_url,
+                params={"select": "status,attempts", "stripe_event_id": f"eq.{event.id}", "limit": "1"},
+                headers=_supabase_headers(),
+                timeout=5,
+            )
+            if _existing_resp.status_code != 200:
+                raise RuntimeError(
+                    f"webhook_events idempotency lookup failed: "
+                    f"{_existing_resp.status_code} {_existing_resp.text[:200]}"
+                )
+            _rows = _existing_resp.json() if _existing_resp.content else []
+            _status = (_rows[0].get("status") if _rows else "") or ""
+            if _status in ("processed", "skipped"):
+                logger.info("webhook_events: duplicate %s %s — discarded", event.type, event.id)
+                return {"event": event.type, "processed": False, "reason": "duplicate"}
+            _attempts = int((_rows[0].get("attempts") if _rows else 0) or 0) + 1
+            _retry_claim = _httpx.patch(
+                _idm_url,
+                params={"stripe_event_id": f"eq.{event.id}"},
+                json={"status": "processing", "attempts": _attempts, "last_error": None},
+                headers={**_supabase_headers(), "Prefer": "return=minimal"},
+                timeout=5,
+            )
+            if _retry_claim.status_code not in (200, 204):
+                raise RuntimeError(
+                    f"webhook_events retry claim failed: {_retry_claim.status_code} {_retry_claim.text[:200]}"
                 )
 
-                # Deliver key via email if Resend is configured
-                _key_delivered = False
-                _resend_key = os.environ.get("RESEND_API_KEY", "")
-                if raw_key and subscriber_email and _resend_key:
+        try:
+            if event.type == "checkout.session.completed":
+                session = event.data.object
+                metadata = session.metadata or {}
+                checkout_type = metadata.get("checkout_type", "marketplace")
+                strategy_id = metadata.get("strategy_id", "")
+                subscriber_email = session.customer_email or metadata.get("subscriber_email", "")
+                customer_id = getattr(session, "customer", "") or ""
+                subscription_id = getattr(session, "subscription", "") or ""
+                amount_usd = (session.amount_total or 0) / 100
+                user_id = metadata.get("user_id", "")
+
+                logger.info("Payment confirmed: session=%s type=%s subscriber=%s", session.id, checkout_type, subscriber_email)
+
+                if checkout_type == "platform_subscription":
+                    tier = metadata.get("tier", "paper")
+                    provision_result, raw_key = await self._provision_subscriber_key(
+                        email=subscriber_email,
+                        tier=tier,
+                        checkout_session_id=session.id,
+                    )
+                    if not provision_result.get("provisioned"):
+                        raise RuntimeError(f"subscriber_provisioning_failed: {provision_result.get('errors')}")
+
+                    _key_delivered = False
+                    _resend_key = os.environ.get("RESEND_API_KEY", "")
+                    if not (raw_key and subscriber_email and _resend_key):
+                        raise RuntimeError("subscriber_key_delivery_not_configured")
                     try:
                         import httpx as _rx
                         _email_resp = _rx.post(
                             "https://api.resend.com/emails",
-                            headers={
-                                "Authorization": f"Bearer {_resend_key}",
-                                "Content-Type": "application/json",
-                            },
+                            headers={"Authorization": f"Bearer {_resend_key}", "Content-Type": "application/json"},
                             json={
                                 "from": "AlgoChains <noreply@algochains.ai>",
                                 "to": [subscriber_email],
@@ -720,168 +753,149 @@ class BillingEngine:
                                 "html": (
                                     f"<p>Welcome to AlgoChains!</p>"
                                     f"<p>Your <strong>{tier}</strong> subscriber key:</p>"
-                                    f"<pre style='background:#f4f4f4;padding:12px;border-radius:4px'>"
-                                    f"{raw_key}</pre>"
+                                    f"<pre style='background:#f4f4f4;padding:12px;border-radius:4px'>{raw_key}</pre>"
                                     f"<p>Set it in your terminal:</p>"
                                     f"<pre>export ALGOCHAINS_SUBSCRIBER_KEY={raw_key}</pre>"
                                     f"<p>Then run: <code>get_my_portfolio()</code> in Claude to verify.</p>"
-                                    f"<p>MNQ copy-trade signals are active immediately.</p>"
+                                    f"<p>MNQ copy-trade is paused until you accept the futures risk disclosure "
+                                    f"with <code>accept_subscriber_terms()</code>.</p>"
                                 ),
                             },
                             timeout=10,
                         )
                         _key_delivered = _email_resp.status_code in (200, 201, 202)
-                        if not _key_delivered:
-                            logger.error("Key email failed: %s %s", _email_resp.status_code, _email_resp.text[:200])
                     except Exception as _email_err:
                         logger.error("Key email exception: %s", _email_err)
 
-                # If delivery failed, log enough context for support to issue a replacement key.
-                # The raw key cannot be recovered — support must revoke this key_prefix and
-                # re-provision via POST /admin/resend-key or by deleting the key row + re-running
-                # _provision_subscriber_key for the same email (409 on api_keys row → revoke first).
-                if not _key_delivered and raw_key:
-                    logger.critical(
-                        "KEY_DELIVERY_FAILED subscriber_email=%s subscriber_id=%s key_prefix=%s "
-                        "session_id=%s tier=%s — admin must revoke key_prefix and re-provision.",
-                        subscriber_email,
-                        provision_result.get("subscriber_id", "unknown"),
-                        raw_key[:16],
-                        session.id,
-                        tier,
-                    )
+                    if not _key_delivered:
+                        logger.critical(
+                            "KEY_DELIVERY_FAILED subscriber_email=%s subscriber_id=%s key_prefix=%s "
+                            "session_id=%s tier=%s — admin must revoke key_prefix and re-provision.",
+                            subscriber_email,
+                            provision_result.get("subscriber_id", "unknown"),
+                            raw_key[:16],
+                            session.id,
+                            tier,
+                        )
+                        raise RuntimeError("subscriber_key_delivery_failed")
 
-                # Record referral attribution (first-touch) if the checkout
-                # carried a referral_code. Best-effort, fail-open — a referral
-                # bookkeeping miss must never fail a paid provisioning.
-                _ref_code = (session.metadata or {}).get("referral_code") or ""
-                _sub_id = provision_result.get("subscriber_id")
-                if _ref_code and _sub_id:
-                    try:
-                        from .referrals import record_referral_attribution
-                        record_referral_attribution(_sub_id, _ref_code)
-                    except Exception as _ref_err:
-                        logger.warning("referral attribution failed (non-fatal): %s", _ref_err)
+                    _ref_code = metadata.get("referral_code") or ""
+                    _sub_id = provision_result.get("subscriber_id")
+                    if _ref_code and _sub_id:
+                        try:
+                            from .referrals import record_referral_attribution
+                            record_referral_attribution(_sub_id, _ref_code)
+                        except Exception as _ref_err:
+                            logger.warning("referral attribution failed (non-fatal): %s", _ref_err)
 
-                return {
-                    "event": "platform_subscription_provisioned",
-                    "session_id": session.id,
-                    "tier": tier,
-                    "subscriber": subscriber_email,
-                    "amount_usd": amount_usd,
-                    "key_delivered_by_email": _key_delivered,
-                    **provision_result,
-                }
-
-            # HK-billing fix: Write the full entitlement chain to Supabase.
-            # Previously this handler only logged and returned — users who paid
-            # had no row in billing_accounts, stripe_subscriptions, or
-            # subscription_entitlements, making their subscription invisible to
-            # the platform's entitlement checks.
-            _write_errors: list[str] = []
-            if _SUPABASE_URL and _SUPABASE_SERVICE_KEY:
-                try:
-                    import httpx as _httpx
-                    _hdrs = _supabase_headers()
-                    _now_iso = __import__("datetime").datetime.utcnow().isoformat() + "Z"
-
-                    # 1. billing_accounts — record the payment event
-                    _ba_payload = {
-                        "user_id": user_id or None,
-                        "stripe_customer_id": customer_id or None,
-                        "stripe_subscription_id": subscription_id or None,
-                        "subscriber_email": subscriber_email,
-                        "checkout_session_id": session.id,
+                    result = {
+                        "event": "platform_subscription_provisioned",
+                        "session_id": session.id,
+                        "tier": tier,
+                        "subscriber": subscriber_email,
                         "amount_usd": amount_usd,
-                        "strategy_id": strategy_id or None,
-                        "status": "active",
-                        "created_at": _now_iso,
-                        "updated_at": _now_iso,
+                        "key_delivered_by_email": _key_delivered,
+                        **provision_result,
                     }
-                    _ba_resp = _httpx.post(
-                        f"{_SUPABASE_URL}/rest/v1/billing_accounts",
-                        json=_ba_payload,
-                        headers={**_hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
-                        timeout=8,
-                    )
-                    if _ba_resp.status_code not in (200, 201, 409):
-                        _write_errors.append(f"billing_accounts:{_ba_resp.status_code}")
-                        logger.error("billing_accounts write failed: %s %s", _ba_resp.status_code, _ba_resp.text[:200])
-
-                    # 2. stripe_subscriptions — track the Stripe subscription object
-                    if subscription_id:
-                        _ss_payload = {
+                else:
+                    _write_errors: list[str] = []
+                    try:
+                        _hdrs = _supabase_headers()
+                        _now = _now_iso()
+                        _ba_payload = {
                             "user_id": user_id or None,
-                            "stripe_subscription_id": subscription_id,
                             "stripe_customer_id": customer_id or None,
+                            "stripe_subscription_id": subscription_id or None,
+                            "subscriber_email": subscriber_email,
+                            "checkout_session_id": session.id,
+                            "amount_usd": amount_usd,
                             "strategy_id": strategy_id or None,
                             "status": "active",
-                            "checkout_session_id": session.id,
-                            "created_at": _now_iso,
-                            "updated_at": _now_iso,
+                            "created_at": _now,
+                            "updated_at": _now,
                         }
-                        _ss_resp = _httpx.post(
-                            f"{_SUPABASE_URL}/rest/v1/stripe_subscriptions",
-                            json=_ss_payload,
+                        _ba_resp = _httpx.post(
+                            f"{_SUPABASE_URL}/rest/v1/billing_accounts",
+                            json=_ba_payload,
                             headers={**_hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
                             timeout=8,
                         )
-                        if _ss_resp.status_code not in (200, 201, 409):
-                            _write_errors.append(f"stripe_subscriptions:{_ss_resp.status_code}")
-                            logger.error("stripe_subscriptions write failed: %s", _ss_resp.status_code)
+                        if _ba_resp.status_code not in (200, 201, 409):
+                            _write_errors.append(f"billing_accounts:{_ba_resp.status_code}")
+                            logger.error("billing_accounts write failed: %s %s", _ba_resp.status_code, _ba_resp.text[:200])
 
-                    # 3. subscription_entitlements — the gate that controls feature access
-                    if user_id and strategy_id:
-                        _se_payload = {
-                            "user_id": user_id,
-                            "strategy_id": strategy_id,
-                            "stripe_subscription_id": subscription_id or None,
-                            "checkout_session_id": session.id,
-                            "entitled": True,
-                            "granted_at": _now_iso,
-                            "expires_at": None,  # recurring — revoked on cancellation
-                        }
-                        _se_resp = _httpx.post(
-                            f"{_SUPABASE_URL}/rest/v1/subscription_entitlements",
-                            json=_se_payload,
-                            headers={**_hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
-                            timeout=8,
-                        )
-                        if _se_resp.status_code not in (200, 201, 409):
-                            _write_errors.append(f"subscription_entitlements:{_se_resp.status_code}")
-                            logger.error("subscription_entitlements write failed: %s", _se_resp.status_code)
-                    else:
-                        logger.warning(
-                            "checkout.session.completed: missing user_id=%r or strategy_id=%r — "
-                            "subscription_entitlements row NOT written; check metadata sent to Stripe Checkout.",
-                            user_id, strategy_id,
-                        )
-                except Exception as _be_err:
-                    _write_errors.append(f"exception:{_be_err}")
-                    logger.error("checkout.session.completed DB write exception: %s", _be_err, exc_info=True)
+                        if subscription_id:
+                            _ss_payload = {
+                                "user_id": user_id or None,
+                                "stripe_subscription_id": subscription_id,
+                                "stripe_customer_id": customer_id or None,
+                                "strategy_id": strategy_id or None,
+                                "status": "active",
+                                "checkout_session_id": session.id,
+                                "created_at": _now,
+                                "updated_at": _now,
+                            }
+                            _ss_resp = _httpx.post(
+                                f"{_SUPABASE_URL}/rest/v1/stripe_subscriptions",
+                                json=_ss_payload,
+                                headers={**_hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                                timeout=8,
+                            )
+                            if _ss_resp.status_code not in (200, 201, 409):
+                                _write_errors.append(f"stripe_subscriptions:{_ss_resp.status_code}")
+                                logger.error("stripe_subscriptions write failed: %s", _ss_resp.status_code)
+
+                        if user_id and strategy_id:
+                            _se_payload = {
+                                "user_id": user_id,
+                                "strategy_id": strategy_id,
+                                "stripe_subscription_id": subscription_id or None,
+                                "checkout_session_id": session.id,
+                                "entitled": True,
+                                "granted_at": _now,
+                                "expires_at": None,
+                            }
+                            _se_resp = _httpx.post(
+                                f"{_SUPABASE_URL}/rest/v1/subscription_entitlements",
+                                json=_se_payload,
+                                headers={**_hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                                timeout=8,
+                            )
+                            if _se_resp.status_code not in (200, 201, 409):
+                                _write_errors.append(f"subscription_entitlements:{_se_resp.status_code}")
+                                logger.error("subscription_entitlements write failed: %s", _se_resp.status_code)
+                        else:
+                            logger.warning(
+                                "checkout.session.completed: missing user_id=%r or strategy_id=%r — "
+                                "subscription_entitlements row NOT written; check metadata sent to Stripe Checkout.",
+                                user_id, strategy_id,
+                            )
+                    except Exception as _be_err:
+                        _write_errors.append(f"exception:{_be_err}")
+                        logger.error("checkout.session.completed DB write exception: %s", _be_err, exc_info=True)
+
+                    result = {
+                        "event": "payment_confirmed",
+                        "session_id": session.id,
+                        "strategy_id": strategy_id,
+                        "subscriber": subscriber_email,
+                        "amount_usd": amount_usd,
+                        "db_write_errors": _write_errors,
+                    }
+                    if _write_errors:
+                        result["warning"] = "One or more Supabase writes failed — manual entitlement review required"
+            elif event.type == "payout.paid":
+                payout = event.data.object
+                logger.info("Payout completed: %s $%.2f", payout.id, payout.amount / 100)
+                result = {"event": "payout_paid", "payout_id": payout.id, "amount_usd": payout.amount / 100}
             else:
-                logger.warning(
-                    "checkout.session.completed: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — "
-                    "entitlement rows NOT written. Payment confirmed in Stripe but platform cannot grant access."
-                )
+                result = {"event": event.type, "processed": True}
 
-            result = {
-                "event": "payment_confirmed",
-                "session_id": session.id,
-                "strategy_id": strategy_id,
-                "subscriber": subscriber_email,
-                "amount_usd": amount_usd,
-                "db_write_errors": _write_errors,
-            }
-            if _write_errors:
-                result["warning"] = "One or more Supabase writes failed — manual entitlement review required"
+            _mark_webhook_event("processed")
             return result
-        elif event.type == "payout.paid":
-            payout = event.data.object
-            logger.info("Payout completed: %s $%.2f", payout.id, payout.amount / 100)
-            return {"event": "payout_paid", "payout_id": payout.id, "amount_usd": payout.amount / 100}
-
-        return {"event": event.type, "processed": True}
+        except Exception as exc:
+            _mark_webhook_event("failed", str(exc))
+            raise
 
     # Legacy compat methods (previously were stubs — now return real data)
 

@@ -4416,22 +4416,24 @@ TOOLS = [
              "Create a Stripe Connect Express onboarding link for a strategy creator. "
              "Returns a URL where the creator completes KYC and links their bank account "
              "for payouts, and mirrors the Connect account into the creator ledger. "
-             "Pass creator_id + creator_email."
+             "REQUIRES owner_token matching OWNER_API_TOKEN."
          ),
          inputSchema={"type": "object", "properties": {
              "creator_id": {"type": "string", "description": "Creator id."},
              "creator_email": {"type": "string", "description": "Email for the Stripe Connect account and KYC."},
-         }, "required": ["creator_id", "creator_email"]},
+             "owner_token": {"type": "string", "description": "Owner token matching OWNER_API_TOKEN."},
+        }, "required": ["creator_id", "creator_email", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
 
     Tool(name="get_my_creator_earnings",
          description=(
              "Read a creator's earnings summary (accrued / paid / reversed totals, 80/20 "
-             "revenue share) plus recent payout history. Read-only. Pass creator_id."
+             "revenue share) plus recent payout history. REQUIRES owner_token matching OWNER_API_TOKEN."
          ),
          inputSchema={"type": "object", "properties": {
              "creator_id": {"type": "string", "description": "Creator id."},
-         }, "required": ["creator_id"]},
+             "owner_token": {"type": "string", "description": "Owner token matching OWNER_API_TOKEN."},
+        }, "required": ["creator_id", "owner_token"]},
          annotations=ANNOT_READ_ONLY),
 
     Tool(name="run_creator_payouts",
@@ -5093,9 +5095,7 @@ TIER1_TOOL_NAMES = {
     "create_referral_code",
     "get_my_referrals",
     "get_referral_earnings",
-    # Creator payouts (run_creator_payouts intentionally NOT here — moves money, owner-gated)
-    "create_creator_onboarding_link",
-    "get_my_creator_earnings",
+    # Creator payout tools are owner-gated and intentionally not exposed in smart mode.
     # Realized P&L (reconcile_creator_pnl intentionally NOT here — owner-gated)
     "get_my_realized_pnl",
     # Waitlist
@@ -9909,6 +9909,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         _sub = _resolve_sub(_sub_key)
         if not _sub:
             return _text({"error": "Invalid or expired subscriber key. Check ALGOCHAINS_SUBSCRIBER_KEY."})
+        if name != "get_my_usage":
+            try:
+                from .cloud_saas.usage_metering import record_usage as _record_usage
+                from .subscriber_tools import _included_quota_for_subscriber as _quota_for_sub
+                _record_usage(
+                    _sub.subscriber_id,
+                    name,
+                    included_quota=_quota_for_sub(_sub.subscriber_id),
+                )
+            except Exception:
+                pass
         if name == "get_my_usage":
             try:
                 from .subscriber_tools import get_my_usage as _get_my_usage
@@ -9963,6 +9974,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 return _text({"error": str(exc)})
 
     elif name == "create_creator_onboarding_link":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "create_creator_onboarding_link requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .cloud_saas import connect_payouts as _cp
             _creator_id = arguments.get("creator_id", "")
@@ -9978,6 +9993,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "get_my_creator_earnings":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "get_my_creator_earnings requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .cloud_saas import connect_payouts as _cp
             _creator_id = arguments.get("creator_id", "")

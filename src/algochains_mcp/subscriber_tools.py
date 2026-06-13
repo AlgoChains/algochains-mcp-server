@@ -45,6 +45,29 @@ def _err(msg: str, **extra: Any) -> dict[str, Any]:
     return out
 
 
+def _included_quota_for_subscriber(subscriber_id: str) -> int:
+    """Resolve the subscriber's monthly quota; fail open to the paper default."""
+    from .cloud_saas.usage_metering import included_quota_for_tier
+
+    tier = None
+    sb = _service_client()
+    if sb is not None:
+        try:
+            resp = (
+                sb.table("subscriber_api_keys")
+                .select("tier")
+                .eq("subscriber_id", subscriber_id)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(resp, "data", None) or []
+            if rows:
+                tier = rows[0].get("tier")
+        except Exception as exc:  # pragma: no cover - usage metering is fail-open
+            log.debug("usage tier lookup failed for %s: %s", subscriber_id, exc)
+    return included_quota_for_tier(tier)
+
+
 def _has_risk_consent(sb, subscriber_id: str) -> bool:
     """True if the subscriber has a persisted futures risk-disclosure acknowledgment
     for the *current* disclosure version. Fail closed (False) on any lookup error."""
@@ -1000,6 +1023,16 @@ def call_subscriber_tool(
         return _err("unknown_subscriber_tool", tool=name)
     args = dict(arguments or {})
     args.pop("subscriber_id", None)  # never trust caller-supplied id
+    if name != "get_my_usage":
+        try:
+            from .cloud_saas.usage_metering import record_usage
+            record_usage(
+                subscriber_id,
+                name,
+                included_quota=_included_quota_for_subscriber(subscriber_id),
+            )
+        except Exception as exc:  # pragma: no cover - metering must never block tools
+            log.debug("usage metering skipped for %s/%s: %s", subscriber_id, name, exc)
     try:
         return handler(subscriber_id, **args)
     except TypeError as exc:

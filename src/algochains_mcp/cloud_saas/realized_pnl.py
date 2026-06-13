@@ -104,15 +104,23 @@ def get_my_realized_pnl(subscriber_id: str) -> dict[str, Any]:
         return _err("supabase_unavailable")
 
     try:
-        resp = (
-            sb.table("subscriber_fills")
-            .select("pnl_usd,is_live,bot,fill_kind,filled_at")
-            .eq("subscriber_id", subscriber_id)
-            .order("filled_at", desc=True)
-            .limit(1000)
-            .execute()
-        )
-        rows = list(getattr(resp, "data", None) or [])
+        rows: list[dict[str, Any]] = []
+        page_size = 1000
+        start = 0
+        while True:
+            resp = (
+                sb.table("subscriber_fills")
+                .select("pnl_usd,is_live,bot,fill_kind,filled_at")
+                .eq("subscriber_id", subscriber_id)
+                .order("filled_at", desc=True)
+                .range(start, start + page_size - 1)
+                .execute()
+            )
+            page = list(getattr(resp, "data", None) or [])
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+            start += page_size
     except Exception as exc:
         return _err("query_failed", detail=str(exc))
 
