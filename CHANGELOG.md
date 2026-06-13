@@ -6,6 +6,44 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [Unreleased]
+
+### Added — Compliance, Discovery & CI
+
+#### Compliance (CFTC/NFA posture)
+- `compliance/disclosures.py` — canonical, versioned risk disclosure, ToS, and
+  past-performance disclaimer (single source of truth; reuses the broker-onboarding
+  futures risk disclosure text).
+- `accept_subscriber_terms` MCP tool — records a subscriber's explicit futures
+  risk-disclosure + ToS acknowledgment; persisted and audit-trailed.
+- `join_bot` now **fails closed** with `consent_required` (returns the disclosure
+  text) until the subscriber has acknowledged the current risk-disclosure version.
+- Provision-time auto-MNQ assignment now starts **paused** — no copy-trade before
+  explicit risk acknowledgment. ToS consent is stamped from the Stripe checkout
+  click-through; the futures risk disclosure must be explicitly accepted.
+- Past-performance / not-advice disclaimer attached to all performance-bearing
+  subscriber outputs (`get_my_pnl`, `get_my_portfolio`, `get_subscriber_status`,
+  `get_marketplace_listings`).
+- Migration `20260525_subscriber_consent.sql` — consent columns on
+  `subscriber_api_keys`, append-only `subscriber_consent_log`, and the
+  `record_subscriber_consent()` SECURITY DEFINER RPC.
+
+#### Discovery
+- `smithery.yaml` + `server.json` — registry manifests for Smithery and the
+  official MCP Registry (registry.modelcontextprotocol.io).
+
+#### CI/CD
+- `.github/workflows/test.yml` — pytest matrix (3.11/3.12), hermetic.
+- `.github/workflows/lint.yml` — ruff error-level gate + advisory full check.
+- `.github/workflows/migrations.yml` — replays all Supabase migrations on a fresh DB.
+- `.github/workflows/security.yml` — CodeQL + gitleaks secret scanning.
+
+#### Payment-path safety
+- `create_platform_checkout_session` validates the Stripe Price (recurring USD)
+  and logs CRITICAL if `RESEND_API_KEY` is absent before taking a payment.
+
+---
+
 ## [22.4.0] — 2026-04-06
 
 ### Added

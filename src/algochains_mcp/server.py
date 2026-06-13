@@ -4318,6 +4318,20 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
 
+    Tool(name="accept_subscriber_terms",
+         description=(
+             "Record the authenticated subscriber's explicit acknowledgment of the "
+             "futures risk disclosure and Terms of Service. REQUIRED before active "
+             "copy-trade (join_bot). Call once with no arguments to retrieve the "
+             "disclosure text and the exact acknowledgment phrase, then call again "
+             "with acknowledgment=<phrase> to record consent. CFTC/NFA compliance "
+             "gate. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "acknowledgment": {"type": "string", "description": "Exact risk-acknowledgment phrase to record consent"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+
     # ── Waitlist ──────────────────────────────────────────────────────────
     Tool(name="join_waitlist",
          description="Add an email to the AlgoChains waitlist. Stores in Supabase, sends welcome email via Resend. Returns waitlist position.",
@@ -4926,6 +4940,7 @@ TIER1_TOOL_NAMES = {
     # Subscriber tools (stdio path — key from ALGOCHAINS_SUBSCRIBER_KEY)
     "join_bot",
     "get_subscriber_status",
+    "accept_subscriber_terms",
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
@@ -9710,7 +9725,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             "note": "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key> and run get_my_portfolio()",
         })
 
-    elif name in ("join_bot", "get_subscriber_status"):
+    elif name in ("join_bot", "get_subscriber_status", "accept_subscriber_terms"):
         _sub_key = os.environ.get("ALGOCHAINS_SUBSCRIBER_KEY", "")
         if not _sub_key:
             return _text({
@@ -9739,6 +9754,15 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             try:
                 from .subscriber_tools import get_subscriber_status as _get_sub_status
                 return _text(_get_sub_status(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "accept_subscriber_terms":
+            try:
+                from .subscriber_tools import accept_subscriber_terms as _accept_terms
+                return _text(_accept_terms(
+                    _sub.subscriber_id,
+                    acknowledgment=arguments.get("acknowledgment"),
+                ))
             except Exception as exc:
                 return _text({"error": str(exc)})
 

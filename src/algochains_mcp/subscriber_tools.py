@@ -45,6 +45,99 @@ def _err(msg: str, **extra: Any) -> dict[str, Any]:
     return out
 
 
+def _has_risk_consent(sb, subscriber_id: str) -> bool:
+    """True if the subscriber has a persisted futures risk-disclosure acknowledgment
+    for the *current* disclosure version. Fail closed (False) on any lookup error."""
+    from .compliance.disclosures import RISK_DISCLOSURE_VERSION
+    try:
+        resp = (
+            sb.table("subscriber_api_keys")
+            .select("risk_disclosure_version,risk_disclosure_accepted_at")
+            .eq("subscriber_id", subscriber_id)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+        if not rows:
+            return False
+        row = rows[0]
+        return bool(
+            row.get("risk_disclosure_accepted_at")
+            and row.get("risk_disclosure_version") == RISK_DISCLOSURE_VERSION
+        )
+    except Exception as exc:  # pragma: no cover - fail closed
+        log.warning("risk consent lookup failed for %s: %s", subscriber_id, exc)
+        return False
+
+
+def accept_subscriber_terms(
+    subscriber_id: str,
+    *,
+    acknowledgment: str | None = None,
+) -> dict[str, Any]:
+    """Record a subscriber's explicit futures risk-disclosure + ToS acknowledgment.
+
+    Required before active copy-trade (join_bot). The acknowledgment string must
+    match the canonical RISK_ACK_PHRASE so consent is unambiguous and auditable.
+    Writes both the ToS and risk-disclosure stamps via the SECURITY DEFINER RPC.
+    """
+    from .compliance.disclosures import (
+        RISK_ACK_PHRASE,
+        RISK_DISCLOSURE_VERSION,
+        SUBSCRIBER_RISK_DISCLOSURE,
+        TOS_VERSION,
+    )
+
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+
+    if acknowledgment is None or acknowledgment.strip() != RISK_ACK_PHRASE:
+        return {
+            "status": "acknowledgment_required",
+            "disclosure": SUBSCRIBER_RISK_DISCLOSURE,
+            "required_acknowledgment": RISK_ACK_PHRASE,
+            "instructions": (
+                "Call accept_subscriber_terms(acknowledgment='"
+                + RISK_ACK_PHRASE
+                + "') to record consent and enable copy-trading."
+            ),
+        }
+
+    try:
+        sb.rpc(
+            "record_subscriber_consent",
+            {
+                "p_subscriber_id": subscriber_id,
+                "p_consent_type": "risk_disclosure",
+                "p_version": RISK_DISCLOSURE_VERSION,
+                "p_acknowledgment": acknowledgment.strip(),
+                "p_source": "mcp",
+            },
+        ).execute()
+        sb.rpc(
+            "record_subscriber_consent",
+            {
+                "p_subscriber_id": subscriber_id,
+                "p_consent_type": "tos",
+                "p_version": TOS_VERSION,
+                "p_acknowledgment": None,
+                "p_source": "mcp",
+            },
+        ).execute()
+    except Exception as exc:
+        return _err("consent_write_failed", detail=str(exc))
+
+    return {
+        "status": "accepted",
+        "subscriber_id": subscriber_id,
+        "risk_disclosure_version": RISK_DISCLOSURE_VERSION,
+        "tos_version": TOS_VERSION,
+        "accepted_at": datetime.now(timezone.utc).isoformat(),
+        "next_steps": ["Call join_bot(bot='MNQ') to start copy-trading."],
+    }
+
+
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 PAPER_ACCOUNT_SELECT = (
@@ -256,7 +349,8 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
 
     paper_account = _get_paper_account(sb, subscriber_id)
 
-    return {
+    from .compliance.disclosures import with_disclaimer
+    return with_disclaimer({
         "subscriber_id": subscriber_id,
         "pnl_today_usd": round(pnl_today, 2),
         "pnl_7d_usd": round(pnl_week, 2),
@@ -264,7 +358,7 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
         "pnl_today_by_bot": {k: round(v, 2) for k, v in by_bot.items()},
         **_paper_pnl_aliases(paper_account),
         "as_of": now.isoformat(),
-    }
+    })
 
 
 def get_my_fills(
@@ -325,7 +419,8 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         except Exception as exc:
             log.warning("get_my_portfolio open entries: %s", exc)
 
-    return {
+    from .compliance.disclosures import with_disclaimer
+    return with_disclaimer({
         "subscriber_id": subscriber_id,
         "paper_account": paper_account,
         "assignments": assignments,
@@ -338,7 +433,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         "fills_today": pnl.get("fills_today"),
         **_paper_pnl_aliases(paper_account),
         "as_of": datetime.now(timezone.utc).isoformat(),
-    }
+    })
 
 
 def place_paper_order(
@@ -465,7 +560,9 @@ def get_marketplace_listings(
         from .marketplace.supabase_tools import get_marketplace_listings as _listings
     except Exception as exc:
         return _err("marketplace_unavailable", detail=str(exc))
-    return _listings(status=status, asset_class=asset_class, limit=limit)
+    from .compliance.disclosures import with_disclaimer
+    result = _listings(status=status, asset_class=asset_class, limit=limit)
+    return with_disclaimer(result) if isinstance(result, dict) else result
 
 
 def get_my_assignments(subscriber_id: str) -> dict[str, Any]:
@@ -633,6 +730,10 @@ def join_bot(
     """
     Assign a subscriber to a copy-trade bot.
 
+    Compliance: the subscriber must have a persisted futures risk-disclosure
+    acknowledgment (CFTC/NFA posture) BEFORE active copy-trade is enabled.
+    Fails closed with consent_required + the disclosure text if absent.
+
     Security: seat cap is checked BEFORE any write. The server is publicly
     accessible so capacity enforcement is mandatory. Returns an error dict
     (not an exception) when the bot is at capacity so the caller can surface
@@ -641,6 +742,19 @@ def join_bot(
     sb = _service_client()
     if sb is None:
         return _err("supabase_unavailable")
+
+    # ── COMPLIANCE GATE: explicit futures risk acknowledgment required ────────
+    if not _has_risk_consent(sb, subscriber_id):
+        from .compliance.disclosures import RISK_ACK_PHRASE, SUBSCRIBER_RISK_DISCLOSURE
+        return {
+            "error": "consent_required",
+            "disclosure": SUBSCRIBER_RISK_DISCLOSURE,
+            "required_acknowledgment": RISK_ACK_PHRASE,
+            "instructions": (
+                "Active copy-trade requires accepting the futures risk disclosure. "
+                "Call accept_subscriber_terms(acknowledgment='" + RISK_ACK_PHRASE + "') first."
+            ),
+        }
 
     # ── Validate bot name ────────────────────────────────────────────────────
     bot_upper = (bot or "").strip().upper()
@@ -754,10 +868,18 @@ def get_subscriber_status(subscriber_id: str) -> dict[str, Any]:
     # ── Paper account ────────────────────────────────────────────────────────
     paper_account = _fetch_paper_account(sb, subscriber_id)
 
+    # ── Consent state (gates active copy-trade) ──────────────────────────────
+    risk_acknowledged = _has_risk_consent(sb, subscriber_id)
+
     # ── next_steps hints ─────────────────────────────────────────────────────
     next_steps: list[str] = []
     active_bots = [a for a in bots_assigned if not a.get("paused")]
-    if not bots_assigned:
+    if not risk_acknowledged:
+        next_steps.append(
+            "Accept the futures risk disclosure first: call accept_subscriber_terms() "
+            "— required before copy-trading"
+        )
+    elif not bots_assigned:
         next_steps.append(
             "Call join_bot(bot='MNQ') to start copy-trading the MNQ scalper"
         )
@@ -775,12 +897,14 @@ def get_subscriber_status(subscriber_id: str) -> dict[str, Any]:
     if not next_steps:
         next_steps.append("Call get_my_portfolio() for a full portfolio snapshot")
 
-    return {
+    from .compliance.disclosures import with_disclaimer
+    return with_disclaimer({
         "subscriber_id": subscriber_id,
+        "risk_acknowledged": risk_acknowledged,
         "bots_assigned": bots_assigned,
         "paper_account": paper_account,
         "next_steps": next_steps,
-    }
+    })
 
 
 # ─── dispatcher ─────────────────────────────────────────────────────────────
@@ -800,6 +924,7 @@ SUBSCRIBER_TOOL_HANDLERS = {
     "ack_signal": ack_signal,
     "join_bot": join_bot,
     "get_subscriber_status": get_subscriber_status,
+    "accept_subscriber_terms": accept_subscriber_terms,
 }
 
 # Required scope per tool. The bridge enforces that the resolved key has
@@ -819,6 +944,7 @@ SUBSCRIBER_TOOL_SCOPES = {
     "ack_signal": "report_fill",
     "join_bot": "my_assignments",
     "get_subscriber_status": "my_assignments",
+    "accept_subscriber_terms": "my_assignments",
 }
 
 SUBSCRIBER_TOOLS = frozenset(SUBSCRIBER_TOOL_HANDLERS.keys())

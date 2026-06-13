@@ -408,7 +408,30 @@ class BillingEngine:
         cfg = TIER_CONFIG[tier]
         price_id = os.environ.get(cfg["price_id_env"], "")
 
+        # Payment-path config guards (T0-2 / T0-3): fail loud BEFORE taking money.
+        if not os.environ.get("RESEND_API_KEY"):
+            logger.critical(
+                "PAYMENT CONFIG: RESEND_API_KEY is not set. A subscriber who pays "
+                "will be provisioned but will NOT receive their key by email. "
+                "Set RESEND_API_KEY before accepting payments."
+            )
         if price_id:
+            # Validate the Stripe Price matches expectations before creating a session.
+            try:
+                _price = stripe.Price.retrieve(price_id)
+                if getattr(_price, "currency", None) != "usd" or getattr(_price, "recurring", None) is None:
+                    raise BillingError(
+                        f"{cfg['price_id_env']}={price_id} is not a recurring USD price "
+                        f"(currency={getattr(_price, 'currency', None)}, "
+                        f"recurring={getattr(_price, 'recurring', None)}). Fix before accepting payments."
+                    )
+            except BillingError:
+                raise
+            except Exception as _price_err:
+                raise BillingError(
+                    f"Invalid {cfg['price_id_env']}={price_id}: {_price_err}. "
+                    "Fix the Stripe Price ID before accepting payments."
+                )
             # Recurring subscription using a pre-configured Stripe Price
             session = stripe.checkout.Session.create(
                 payment_method_types=["card"],
@@ -539,6 +562,9 @@ class BillingEngine:
                     logger.error("subscriber_paper_accounts insert failed: %s", acct_resp.status_code)
 
                 # 3. Assign to MNQ bot by default
+                # Auto-assign MNQ but PAUSED — copy-trade stays inactive until the
+                # subscriber explicitly acknowledges the futures risk disclosure
+                # (accept_subscriber_terms). CFTC/NFA compliance gate.
                 assign_resp = await _hx.post(
                     f"{_SUPABASE_URL}/rest/v1/subscriber_bot_assignments",
                     json={
@@ -547,7 +573,7 @@ class BillingEngine:
                         "size_multiplier": 1.0,
                         "max_contracts": 10,
                         "daily_loss_cap_usd": 5000.00,
-                        "paused": False,
+                        "paused": True,
                         "assigned_at": now_iso,
                     },
                     headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
@@ -556,6 +582,26 @@ class BillingEngine:
                 if assign_resp.status_code not in (200, 201, 204, 409):
                     errors.append(f"subscriber_bot_assignments:{assign_resp.status_code}")
                     logger.error("subscriber_bot_assignments insert failed: %s", assign_resp.status_code)
+
+                # Stamp ToS consent (checkout click-through). The futures risk
+                # disclosure is NOT auto-accepted here — it must be explicitly
+                # acknowledged via accept_subscriber_terms before copy-trade.
+                try:
+                    from ..compliance.disclosures import TOS_VERSION
+                    await _hx.post(
+                        f"{_SUPABASE_URL}/rest/v1/rpc/record_subscriber_consent",
+                        json={
+                            "p_subscriber_id": subscriber_id,
+                            "p_consent_type": "tos",
+                            "p_version": TOS_VERSION,
+                            "p_acknowledgment": None,
+                            "p_source": "stripe_checkout",
+                        },
+                        headers=hdrs,
+                        timeout=8,
+                    )
+                except Exception as _consent_err:
+                    logger.warning("ToS consent stamp failed (non-fatal): %s", _consent_err)
 
         except Exception as exc:
             errors.append(f"exception:{exc}")
