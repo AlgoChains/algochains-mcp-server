@@ -8,6 +8,39 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — Revenue platform (WS1–WS6) & legal defense
+
+- **Legal defense memo** (`docs/LEGAL_COMPLIANCE_AUDIT.md`) — researched CFTC/NFA
+  precedent (Lowe v. SEC, Taucher v. Born, CFTC v. Vartuli, Reg. 4.14(a)(9),
+  4.41(b)). Anchors the "impersonal, subscriber-initiated signals" defense and
+  flags auto-execution as the principal liability. Not legal advice.
+- **CFTC Reg. 4.41(b)** hypothetical-performance disclaimer on all paper/simulated
+  outputs; general past-performance disclaimer everywhere else.
+- **Creator payouts (WS1)** — `connect_payouts.py` over the existing Stripe Connect
+  engine + `creator_earnings`/`creator_payouts` ledger; tools
+  `create_creator_onboarding_link`, `get_my_creator_earnings`,
+  `run_creator_payouts` (owner-gated, dry-run default, idempotency-keyed).
+- **Usage metering (WS2)** — `usage_metering.py` (Stripe Meters v2 model, fail-open)
+  + `get_my_usage`. Write-side middleware wiring is a documented phased step.
+- **Referrals (WS3)** — `referrals.py` (first-touch, self-referral block, 20%/3mo);
+  `create_referral_code`, `get_my_referrals`, `get_referral_earnings`. Attribution
+  is recorded from the Stripe webhook when `get_checkout_url(referral_code=…)` was
+  used (best-effort, fail-open).
+- **Realized P&L + HWM (WS4)** — `realized_pnl.py`: `get_my_realized_pnl`
+  (live/paper segregated), owner-gated `reconcile_creator_pnl`, and
+  `compute_hwm_performance_fee` (high-water-mark; **performance fees DISABLED by
+  default** for CTA-registration reasons — enable only after counsel).
+- **OAuth 2.1 resource server (WS5)** — `auth/oauth_resource.py` JWT validation
+  (JWKS + aud/iss/exp/scope, sub→identity, app_metadata.tenant_id→tenant); RFC 9728
+  metadata + `WWW-Authenticate` discovery in `http_transport.py`. AS delegated to
+  an external IdP.
+- **Multi-tenant (WS6)** — `tenants`, `current_tenant_id()` RLS helper, null-safe
+  permissive policy templates, request-lifecycle tenant context
+  (`multi_tenant/isolation.py`). Phased per-table RLS rollout documented.
+- **Tests** — `tests/test_revenue_compliance.py` (15 hermetic tests: disclaimers,
+  HWM math, OAuth fail-closed, tenant context, fail-open metering, tool-registration
+  invariants incl. money tools never in smart mode).
+
 ### Added — Compliance, Discovery & CI
 
 #### Compliance (CFTC/NFA posture)

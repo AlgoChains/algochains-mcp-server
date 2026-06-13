@@ -368,6 +368,7 @@ class BillingEngine:
         tier: str = "paper",
         success_url: str = "https://algochains.ai/welcome",
         cancel_url: str = "https://algochains.ai/pricing",
+        referral_code: str | None = None,
     ) -> dict[str, Any]:
         """
         Create a Stripe Checkout session for a platform subscription tier.
@@ -444,6 +445,7 @@ class BillingEngine:
                     "checkout_type": "platform_subscription",
                     "tier": tier,
                     "subscriber_email": email,
+                    "referral_code": (referral_code or ""),
                 },
             )
         else:
@@ -469,6 +471,7 @@ class BillingEngine:
                     "checkout_type": "platform_subscription",
                     "tier": tier,
                     "subscriber_email": email,
+                    "referral_code": (referral_code or ""),
                 },
             )
 
@@ -747,6 +750,18 @@ class BillingEngine:
                         session.id,
                         tier,
                     )
+
+                # Record referral attribution (first-touch) if the checkout
+                # carried a referral_code. Best-effort, fail-open — a referral
+                # bookkeeping miss must never fail a paid provisioning.
+                _ref_code = (session.metadata or {}).get("referral_code") or ""
+                _sub_id = provision_result.get("subscriber_id")
+                if _ref_code and _sub_id:
+                    try:
+                        from .referrals import record_referral_attribution
+                        record_referral_attribution(_sub_id, _ref_code)
+                    except Exception as _ref_err:
+                        logger.warning("referral attribution failed (non-fatal): %s", _ref_err)
 
                 return {
                     "event": "platform_subscription_provisioned",

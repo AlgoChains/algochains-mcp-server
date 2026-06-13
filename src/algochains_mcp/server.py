@@ -4269,6 +4269,7 @@ TOOLS = [
              "email": {"type": "string", "description": "Email for subscription and key delivery"},
              "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper",
                       "description": "paper=$29/mo (copy-trade, no broker), live=$99/mo (live execution)"},
+             "referral_code": {"type": "string", "description": "Optional referral code (AC-XXXXXX) — credits the referrer."},
          }, "required": ["email"]},
          annotations=ANNOT_WRITE_SAFE),
 
@@ -9819,6 +9820,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(await _be.create_platform_checkout_session(
                 email=arguments["email"],
                 tier=arguments.get("tier", "paper"),
+                referral_code=arguments.get("referral_code"),
             ))
         except KeyError as exc:
             return _text({"error": f"Missing required argument: {exc}"})
