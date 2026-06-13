@@ -12,10 +12,9 @@ API key to any caller-controlled URL. Two distinct issues patched:
 """
 from __future__ import annotations
 
-import json
 import pytest
 import httpx
-from unittest.mock import AsyncMock, MagicMock, patch, ANY
+from unittest.mock import AsyncMock, MagicMock
 
 from algochains_mcp.data_providers.massive_whitelabel import (
     MassiveWhiteLabelProvider,
