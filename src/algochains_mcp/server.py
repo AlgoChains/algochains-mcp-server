@@ -5001,6 +5001,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # ── 1. Sanitize inputs ───────────────────────────────────
         arguments = validate_arguments(name, arguments)
 
+        # ── 1b. Demo-mode stub for ORDER_EXEC+ tools ─────────────
+        # ALGOCHAINS_DEMO_MODE=1 stubs destructive/order tools so demo users
+        # cannot accidentally place real orders. Tier 0-1 tools (market data,
+        # signals, regime, backtesting) are NEVER stubbed — demo users expect
+        # real data from those paths. Only tier≥2 (ORDER_EXEC / DESTRUCTIVE)
+        # is stubbed. quickstart.py sets this env var in --mode demo.
+        if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
+            from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_ORDER_EXEC, get_danger_tier as _get_tier
+            if _get_tier(name) >= _TIER_ORDER_EXEC:
+                return _text({
+                    "status": "demo_mode_stub",
+                    "tool": name,
+                    "message": (
+                        f"Tool '{name}' is an order/execution tool (tier≥2) and is stubbed "
+                        "in demo mode. No broker API call was made. "
+                        "Set credentials and remove ALGOCHAINS_DEMO_MODE to enable live execution."
+                    ),
+                    "demo_mode": True,
+                })
+
         # Smart mode is now an execution boundary for direct tool calls, not
         # just a list_tools token-saving filter. Hidden tools remain reachable
         # through execute_dynamic_tool, where danger-tier gating is centralized.

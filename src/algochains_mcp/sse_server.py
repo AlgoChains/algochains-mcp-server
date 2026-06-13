@@ -293,10 +293,20 @@ def _validate_origin(request: Request) -> bool:
 
 def _validate_api_key(request: Request) -> bool:
     if not SSE_API_KEY:
+        # When ALGOCHAINS_SSE_REQUIRE_KEY=1 is set, enforce even without a key
+        # configured — this prevents accidental open access on public interfaces.
+        if os.environ.get("ALGOCHAINS_SSE_REQUIRE_KEY", "0") == "1":
+            return False
         return True  # No key configured = open (dev mode)
     provided = (
         request.headers.get("x-api-key")
-        or request.query_params.get("api_key")
+        # Reject query-param keys in production: they appear in access logs / Referer.
+        # Allow in dev mode only.
+        or (
+            request.query_params.get("api_key")
+            if os.environ.get("ALGOCHAINS_SSE_ALLOW_KEY_IN_QUERY", "0") == "1"
+            else ""
+        )
         or ""
     )
     return provided == SSE_API_KEY
