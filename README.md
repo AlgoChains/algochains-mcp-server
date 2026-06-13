@@ -133,7 +133,7 @@ No credentials needed if you have `ALGOCHAINS_BRIDGE_API_KEY`. Read-only.
 
 ## Desktop Tower Dispatch
 
-Heavy ML workloads (hyperparameter sweeps, walk-forward validation, feature importance) run on the desktop tower (`teespc-1`, `100.89.114.31`) via `dispatch_tower_job`. The Mac stays clean.
+Heavy ML workloads (hyperparameter sweeps, walk-forward validation, feature importance) run on the desktop tower (configured via `ALGOCHAINS_TOWER_HOST`) via `dispatch_tower_job`. The Mac stays clean.
 
 ```python
 # Dispatch a backtest or ML job to the GPU tower
@@ -162,7 +162,7 @@ dispatch_tower_job('backtest', {'strategy': 'mnq_scalper', 'lookback_days': 90})
 | Live bots (MNQ/CL/MES/NQ) | ✅ launchd | — |
 | Token Guardian, Kalshi daemon | ✅ launchd | — |
 | Command Center (`:3333`) | ✅ cloudflared tunnel | — |
-| Onyx RAG (`100.89.114.31:8085`) | — | ✅ |
+| Onyx RAG (`$ALGOCHAINS_TOWER_HOST:8085`) | — | ✅ |
 | GPU/ML: FinBERT, Kronos, vLLM | — | ✅ |
 | Heavy backtests via `dispatch_tower_job` | sends job → | ✅ executes |
 
@@ -309,7 +309,7 @@ Force a specific backend: `DATA_BACKEND=databento|massive|polygon|yfinance` in `
 
 | URL | Status | Notes |
 |-----|--------|-------|
-| **https://cc.algochains.io** | Live | Cloudflare Access — authenticate with tyler@algochains.io |
+| **https://cc.algochains.io** | Live | Cloudflare Access — authenticate with your `@algochains.io` account |
 | http://localhost:3333 | Local dev | Always accessible without auth |
 
 **Run locally:**
@@ -320,7 +320,7 @@ npm run dev   # starts on :3333
 
 **Start Cloudflare tunnel:**
 ```bash
-cloudflared tunnel run def269f2-6c52-471a-9648-c2fe631bc9bf >> logs/cloudflared_cc.log 2>&1 &
+cloudflared tunnel run <your-tunnel-id> >> logs/cloudflared_cc.log 2>&1 &
 ```
 
 **Dashboard panels (V22):**

@@ -28,7 +28,7 @@ export type RuntimeConfig = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-const DEFAULT_CHANNEL_ID = "C0A075W6D4H";
+const DEFAULT_CHANNEL_ID = Deno.env.get("SLACK_CHANNEL_ID") ?? "";
 const TEST_PATTERNS = [
   /@test\.com$/i,
   /@example\.com$/i,
