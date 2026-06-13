@@ -11,6 +11,10 @@ on:
         required: true
         type: string
 
+env:
+  # When triggered via workflow_dispatch, use the input tag; otherwise use the pushed tag ref.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
 permissions:
   contents: write
 
@@ -41,13 +45,13 @@ jobs:
       - name: Extract tag (strip leading v)
         id: tag
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "ver=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Verify pyproject version matches tag
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           VER="${TAG#v}"
           PYVER=$(grep -E '^version\s*=' pyproject.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
           if [ "$PYVER" != "$VER" ]; then
@@ -97,7 +101,7 @@ jobs:
         run: |
           mkdir -p release
           cp dist/algochains-cli.js release/
-          tar -czf release/algochains-sdk-${{ github.ref_name }}.tar.gz -C packages/sdk .
+          tar -czf release/algochains-sdk-${{ env.RELEASE_TAG }}.tar.gz -C packages/sdk .
           cp scripts/algochains release/algochains-wrapper.sh
           cp scripts/algochains.ps1 release/algochains.ps1 2>/dev/null || true
           cp scripts/install.sh release/install.sh 2>/dev/null || true
@@ -113,12 +117,12 @@ jobs:
         with:
           files: |
             release/algochains-cli.js
-            release/algochains-sdk-${{ github.ref_name }}.tar.gz
+            release/algochains-sdk-${{ env.RELEASE_TAG }}.tar.gz
             release/algochains-wrapper.sh
             release/algochains.ps1
             release/install.sh
           body: |
-            ## AlgoChains ${{ github.ref_name }}
+            ## AlgoChains ${{ env.RELEASE_TAG }}
 
             **Tools:** ${{ env.TOOL_COUNT }}
             **CLI Bundle:** ${{ env.CLI_SIZE }} bytes
@@ -136,10 +140,10 @@ jobs:
             **Linux / macOS (standalone binary)**
             ```bash
             # macOS arm64
-            curl -fsSL https://github.com/AlgoChains/algochains-mcp-server/releases/download/${{ github.ref_name }}/algochains-darwin-arm64 -o algochains && chmod +x algochains
+            curl -fsSL https://github.com/AlgoChains/algochains-mcp-server/releases/download/${{ env.RELEASE_TAG }}/algochains-darwin-arm64 -o algochains && chmod +x algochains
 
             # Linux x64
-            curl -fsSL https://github.com/AlgoChains/algochains-mcp-server/releases/download/${{ github.ref_name }}/algochains-linux-x64 -o algochains && chmod +x algochains
+            curl -fsSL https://github.com/AlgoChains/algochains-mcp-server/releases/download/${{ env.RELEASE_TAG }}/algochains-linux-x64 -o algochains && chmod +x algochains
             ```
 
             **Universal installer**
@@ -300,7 +304,7 @@ jobs:
 
       - name: Bump SDK version to match release tag
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           VER="${TAG#v}"
           cd packages/sdk
           # Update version in package.json without creating a git tag
@@ -330,7 +334,7 @@ jobs:
 
       - name: Update formula version + SHA256 from PyPI
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           VER="${TAG#v}"
           PKG="algochains_mcp_server-${VER}"
           FORMULA="homebrew-tap/Formula/algochains.rb"
@@ -359,7 +363,7 @@ jobs:
           git config user.name "AlgoChains Bot"
           git config user.email "bot@algochains.ai"
           git add Formula/algochains.rb
-          git diff --staged --quiet || git commit -m "chore: bump algochains to ${{ github.ref_name }}"
+          git diff --staged --quiet || git commit -m "chore: bump algochains to ${{ env.RELEASE_TAG }}"
           git push
 
   # ─── Winget manifest auto-update ──────────────────────────────────────────────
@@ -369,7 +373,7 @@ jobs:
     steps:
       - name: Generate winget manifest
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           VER="${TAG#v}"
           SHA="${{ needs.build-cli.outputs.cli_sha256 }}"
 
