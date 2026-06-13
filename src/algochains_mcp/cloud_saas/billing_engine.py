@@ -17,9 +17,11 @@ No in-memory fake invoices. No stub payment confirmations.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -360,6 +362,227 @@ class BillingEngine:
             "currency": "usd",
         }
 
+    async def create_platform_checkout_session(
+        self,
+        email: str,
+        tier: str = "paper",
+        success_url: str = "https://algochains.ai/welcome",
+        cancel_url: str = "https://algochains.ai/pricing",
+    ) -> dict[str, Any]:
+        """
+        Create a Stripe Checkout session for a platform subscription tier.
+
+        Unlike create_checkout_session() (marketplace strategies with creator split),
+        this is for AlgoChains platform tiers — all revenue goes to the platform.
+
+        Tiers:
+          paper — $29/mo, 9 subscriber tools, copy-trade MNQ bot
+          live  — $99/mo, full broker execution (Tradovate/Alpaca live)
+
+        After payment, process_stripe_webhook() detects checkout_type=platform_subscription
+        and auto-provisions a sub_live_* key + paper account + MNQ assignment.
+
+        For recurring billing, set STRIPE_PAPER_PRICE_ID / STRIPE_LIVE_PRICE_ID env vars.
+        Without those, this creates a one-time payment session (suitable for first month).
+        """
+        stripe = _get_stripe()
+
+        TIER_CONFIG = {
+            "paper": {
+                "name": "AlgoChains Paper Trading",
+                "description": "9 subscriber tools — copy-trade MNQ bot signals, paper P&L tracking, no broker required",
+                "price_usd_cents": 2900,
+                "price_id_env": "STRIPE_PAPER_PRICE_ID",
+            },
+            "live": {
+                "name": "AlgoChains Live Trading",
+                "description": "Full 485-tool access — live Tradovate/Alpaca execution, marketplace subscription",
+                "price_usd_cents": 9900,
+                "price_id_env": "STRIPE_LIVE_PRICE_ID",
+            },
+        }
+
+        if tier not in TIER_CONFIG:
+            raise BillingError(f"Unknown tier '{tier}'. Choose 'paper' or 'live'.")
+
+        cfg = TIER_CONFIG[tier]
+        price_id = os.environ.get(cfg["price_id_env"], "")
+
+        if price_id:
+            # Recurring subscription using a pre-configured Stripe Price
+            session = stripe.checkout.Session.create(
+                payment_method_types=["card"],
+                mode="subscription",
+                line_items=[{"price": price_id, "quantity": 1}],
+                success_url=success_url + "?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url=cancel_url,
+                customer_email=email,
+                metadata={
+                    "checkout_type": "platform_subscription",
+                    "tier": tier,
+                    "subscriber_email": email,
+                },
+            )
+        else:
+            # One-time payment (no price ID configured yet)
+            session = stripe.checkout.Session.create(
+                payment_method_types=["card"],
+                mode="payment",
+                line_items=[{
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {
+                            "name": cfg["name"],
+                            "description": cfg["description"],
+                        },
+                        "unit_amount": cfg["price_usd_cents"],
+                    },
+                    "quantity": 1,
+                }],
+                success_url=success_url + "?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url=cancel_url,
+                customer_email=email,
+                metadata={
+                    "checkout_type": "platform_subscription",
+                    "tier": tier,
+                    "subscriber_email": email,
+                },
+            )
+
+        logger.info(
+            "Platform checkout created: tier=%s email=%s price=$%.2f session=%s",
+            tier, email, cfg["price_usd_cents"] / 100, session.id,
+        )
+
+        return {
+            "checkout_url": session.url,
+            "session_id": session.id,
+            "tier": tier,
+            "price_usd": cfg["price_usd_cents"] / 100,
+            "note": (
+                "After payment, your sub_live_… key will be emailed automatically. "
+                "Set ALGOCHAINS_SUBSCRIBER_KEY=<key> to start using the 9 subscriber tools."
+            ),
+        }
+
+    async def _provision_subscriber_key(
+        self,
+        email: str,
+        tier: str,
+        checkout_session_id: str,
+    ) -> dict[str, Any]:
+        """
+        Generate a sub_live_* key, write hash to subscriber_api_keys, create a
+        paper account, and assign the subscriber to the MNQ bot by default.
+
+        Called from process_stripe_webhook() after checkout.session.completed
+        for platform_subscription checkouts. The plaintext key is returned in
+        the result dict and should be emailed to the subscriber immediately —
+        it is not stored anywhere after this function returns.
+        """
+        raw_key = f"sub_live_{secrets.token_urlsafe(32)}"
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        key_prefix = raw_key[:16]
+
+        # Derive a stable subscriber_id from email (sha256 prefix — no PII in DB key)
+        subscriber_id = "sub_" + hashlib.sha256(email.lower().encode()).hexdigest()[:24]
+
+        now_iso = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+        errors: list[str] = []
+
+        if not (_SUPABASE_URL and _SUPABASE_SERVICE_KEY):
+            logger.error("_provision_subscriber_key: Supabase not configured — key generated but not stored")
+            return {
+                "provisioned": False,
+                "error": "supabase_not_configured",
+                "raw_key": raw_key,
+            }
+
+        try:
+            import httpx as _httpx
+            hdrs = _supabase_headers()
+
+            # 1. Write hashed key to subscriber_api_keys
+            key_resp = _httpx.post(
+                f"{_SUPABASE_URL}/rest/v1/subscriber_api_keys",
+                json={
+                    "key_hash": key_hash,
+                    "key_prefix": key_prefix,
+                    "subscriber_id": subscriber_id,
+                    "tier": tier,
+                    "active": True,
+                    "created_at": now_iso,
+                },
+                headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                timeout=8,
+            )
+            if key_resp.status_code not in (200, 201, 409):
+                errors.append(f"subscriber_api_keys:{key_resp.status_code}")
+                logger.error("subscriber_api_keys insert failed: %s", key_resp.status_code)
+
+            # 2. Create paper account ($100K starting balance)
+            acct_resp = _httpx.post(
+                f"{_SUPABASE_URL}/rest/v1/subscriber_paper_accounts",
+                json={
+                    "subscriber_id": subscriber_id,
+                    "starting_balance_usd": 100000.00,
+                    "current_balance_usd": 100000.00,
+                    "realized_pnl_usd": 0.00,
+                    "fills_count": 0,
+                    "created_at": now_iso,
+                    "updated_at": now_iso,
+                },
+                headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                timeout=8,
+            )
+            if acct_resp.status_code not in (200, 201, 409):
+                errors.append(f"subscriber_paper_accounts:{acct_resp.status_code}")
+                logger.error("subscriber_paper_accounts insert failed: %s", acct_resp.status_code)
+
+            # 3. Assign to MNQ bot by default
+            assign_resp = _httpx.post(
+                f"{_SUPABASE_URL}/rest/v1/subscriber_bot_assignments",
+                json={
+                    "subscriber_id": subscriber_id,
+                    "bot": "MNQ",
+                    "size_multiplier": 1.0,
+                    "max_contracts": 10,
+                    "daily_loss_cap_usd": 5000.00,
+                    "paused": False,
+                    "assigned_at": now_iso,
+                },
+                headers={**hdrs, "Prefer": "return=minimal,resolution=ignore-duplicates"},
+                timeout=8,
+            )
+            if assign_resp.status_code not in (200, 201, 409):
+                errors.append(f"subscriber_bot_assignments:{assign_resp.status_code}")
+                logger.error("subscriber_bot_assignments insert failed: %s", assign_resp.status_code)
+
+        except Exception as exc:
+            errors.append(f"exception:{exc}")
+            logger.error("_provision_subscriber_key exception: %s", exc, exc_info=True)
+
+        provisioned = len(errors) == 0
+        if provisioned:
+            logger.info(
+                "Subscriber provisioned: id=%s tier=%s session=%s key_prefix=%s",
+                subscriber_id, tier, checkout_session_id, key_prefix,
+            )
+        else:
+            logger.error(
+                "Subscriber provisioning partial failure: id=%s errors=%s",
+                subscriber_id, errors,
+            )
+
+        return {
+            "provisioned": provisioned,
+            "subscriber_id": subscriber_id,
+            "key_prefix": key_prefix,
+            "raw_key": raw_key,  # caller must email this — never stored
+            "tier": tier,
+            "errors": errors,
+        }
+
     async def process_stripe_webhook(self, payload: str, sig_header: str) -> dict[str, Any]:
         """
         Process real Stripe webhook events.
@@ -401,17 +624,73 @@ class BillingEngine:
 
         if event.type == "checkout.session.completed":
             session = event.data.object
+            checkout_type = (session.metadata or {}).get("checkout_type", "marketplace")
             strategy_id = session.metadata.get("strategy_id", "")
-            subscriber_email = session.customer_email or ""
+            subscriber_email = session.customer_email or session.metadata.get("subscriber_email", "")
             customer_id = getattr(session, "customer", "") or ""
             subscription_id = getattr(session, "subscription", "") or ""
             amount_usd = (session.amount_total or 0) / 100
             user_id = session.metadata.get("user_id", "")
 
             logger.info(
-                "Payment confirmed: session=%s strategy=%s subscriber=%s",
-                session.id, strategy_id, subscriber_email,
+                "Payment confirmed: session=%s type=%s subscriber=%s",
+                session.id, checkout_type, subscriber_email,
             )
+
+            # P0.2: Platform subscription → auto-provision sub_live_* key + paper account + MNQ
+            if checkout_type == "platform_subscription":
+                tier = session.metadata.get("tier", "paper")
+                provision_result = await self._provision_subscriber_key(
+                    email=subscriber_email,
+                    tier=tier,
+                    checkout_session_id=session.id,
+                )
+                raw_key = provision_result.pop("raw_key", "")
+
+                # Deliver key via email if Resend is configured
+                _key_delivered = False
+                _resend_key = os.environ.get("RESEND_API_KEY", "")
+                if raw_key and subscriber_email and _resend_key:
+                    try:
+                        import httpx as _rx
+                        _email_resp = _rx.post(
+                            "https://api.resend.com/emails",
+                            headers={
+                                "Authorization": f"Bearer {_resend_key}",
+                                "Content-Type": "application/json",
+                            },
+                            json={
+                                "from": "AlgoChains <noreply@algochains.ai>",
+                                "to": [subscriber_email],
+                                "subject": "Your AlgoChains subscriber key",
+                                "html": (
+                                    f"<p>Welcome to AlgoChains!</p>"
+                                    f"<p>Your <strong>{tier}</strong> subscriber key:</p>"
+                                    f"<pre style='background:#f4f4f4;padding:12px;border-radius:4px'>"
+                                    f"{raw_key}</pre>"
+                                    f"<p>Set it in your terminal:</p>"
+                                    f"<pre>export ALGOCHAINS_SUBSCRIBER_KEY={raw_key}</pre>"
+                                    f"<p>Then run: <code>get_my_portfolio()</code> in Claude to verify.</p>"
+                                    f"<p>MNQ copy-trade signals are active immediately.</p>"
+                                ),
+                            },
+                            timeout=10,
+                        )
+                        _key_delivered = _email_resp.status_code in (200, 201, 202)
+                        if not _key_delivered:
+                            logger.error("Key email failed: %s %s", _email_resp.status_code, _email_resp.text[:200])
+                    except Exception as _email_err:
+                        logger.error("Key email exception: %s", _email_err)
+
+                return {
+                    "event": "platform_subscription_provisioned",
+                    "session_id": session.id,
+                    "tier": tier,
+                    "subscriber": subscriber_email,
+                    "amount_usd": amount_usd,
+                    "key_delivered_by_email": _key_delivered,
+                    **provision_result,
+                }
 
             # HK-billing fix: Write the full entitlement chain to Supabase.
             # Previously this handler only logged and returned — users who paid

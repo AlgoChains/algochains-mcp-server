@@ -4254,6 +4254,24 @@ TOOLS = [
          }, "required": []},
          annotations=ANNOT_READ_ONLY),
 
+    # ── Subscriber Onramp ────────────────────────────────────────────────
+    Tool(name="get_checkout_url",
+         description=(
+             "Generate a Stripe checkout URL for an AlgoChains subscription. "
+             "Returns a URL the user clicks once to pay — Stripe handles the payment UI. "
+             "After payment, a sub_live_… key is emailed automatically and the subscriber "
+             "is assigned to the MNQ copy-trade bot. "
+             "Tiers: 'paper' ($29/mo — 9 subscriber tools, copy-trade MNQ signals, no broker needed) "
+             "or 'live' ($99/mo — full Tradovate/Alpaca live execution). "
+             "Set ALGOCHAINS_SUBSCRIBER_KEY=<received_key> to activate."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string", "description": "Email for subscription and key delivery"},
+             "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper",
+                      "description": "paper=$29/mo (copy-trade, no broker), live=$99/mo (live execution)"},
+         }, "required": ["email"]},
+         annotations=ANNOT_WRITE_SAFE),
+
     # ── Waitlist ──────────────────────────────────────────────────────────
     Tool(name="join_waitlist",
          description="Add an email to the AlgoChains waitlist. Stores in Supabase, sends welcome email via Resend. Returns waitlist position.",
@@ -4856,6 +4874,8 @@ TIER1_TOOL_NAMES = {
     "revoke_developer_key",
     "get_developer_key_usage",
     "test_bridge_connection",
+    # Subscriber onramp
+    "get_checkout_url",
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
@@ -9607,6 +9627,19 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(await _revoke_token(
                 broker=arguments["broker"],
                 user_id=arguments["user_id"],
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_checkout_url":
+        try:
+            from .cloud_saas.billing_engine import BillingEngine as _BillingEngine
+            _be = _BillingEngine()
+            return _text(await _be.create_platform_checkout_session(
+                email=arguments["email"],
+                tier=arguments.get("tier", "paper"),
             ))
         except KeyError as exc:
             return _text({"error": f"Missing required argument: {exc}"})
