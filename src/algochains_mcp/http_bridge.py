@@ -314,6 +314,18 @@ def create_fastapi_app():
     if not _FASTAPI_AVAILABLE:
         raise ImportError("Install fastapi and uvicorn: pip install fastapi uvicorn")
 
+    # Emit security warning at app-creation time so it fires whether the app is
+    # launched via __main__, uvicorn CLI, or any other ASGI server.
+    _host_at_create = os.getenv("ALGOCHAINS_BRIDGE_HOST", "127.0.0.1")
+    _key_at_create = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
+    if _host_at_create not in ("127.0.0.1", "localhost", "::1") and not _key_at_create:
+        log.warning(
+            "⚠️  HTTP bridge configured for %s (non-localhost) with no "
+            "ALGOCHAINS_BRIDGE_API_KEY set. Public tools are accessible without "
+            "authentication. Set ALGOCHAINS_BRIDGE_API_KEY or restrict the bind address.",
+            _host_at_create,
+        )
+
     app_http = FastAPI(
         title="AlgoChains MCP HTTP Bridge",
         description="REST bridge to AlgoChains MCP Server for algochains.ai",

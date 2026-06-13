@@ -191,7 +191,10 @@ def _load_state() -> OnboardingState:
 def _save_state(state: OnboardingState) -> None:
     try:
         _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        _ONBOARDING_FILE.write_text(json.dumps(state.to_dict(), indent=2))
+        # Atomic write: temp + rename prevents corrupt JSON on crash mid-write
+        _tmp = _ONBOARDING_FILE.with_suffix(".tmp")
+        _tmp.write_text(json.dumps(state.to_dict(), indent=2))
+        _tmp.replace(_ONBOARDING_FILE)
     except Exception as exc:
         logger.warning("Could not save onboarding state: %s", exc)
 
@@ -829,22 +832,23 @@ def set_algochains_api_key(api_key: str) -> dict:
             "hint": "Get a key at algochains.ai/account/developer-keys/ or call create_developer_key.",
         }
 
-    # Attempt live validation against the bridge health endpoint
+    # Validate against the authenticated /tools endpoint (not /health which is public/unauthenticated).
+    # A 200 on /tools with X-Api-Key confirms the key is recognized by the bridge.
     _bridge_url = os.environ.get("ALGOCHAINS_BRIDGE_URL", "https://api.algochains.ai").rstrip("/")
     validated = False
     validation_detail = "Bridge validation skipped (ALGOCHAINS_BRIDGE_URL not reachable)"
     try:
         import urllib.request
         req = urllib.request.Request(
-            f"{_bridge_url}/health",
+            f"{_bridge_url}/tools",
             headers={"X-Api-Key": api_key},
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             if resp.status == 200:
                 validated = True
-                validation_detail = f"Validated against {_bridge_url}"
+                validation_detail = f"Authenticated against {_bridge_url}/tools"
     except Exception as exc:
-        validation_detail = f"Bridge health check skipped: {exc}"
+        validation_detail = f"Bridge validation skipped: {exc}"
 
     state = _load_state()
     state.algochains_key_set = True
@@ -898,11 +902,13 @@ def set_guardrail_preferences(
         "slack_alerts_enabled": slack_alerts_enabled,
     }
 
-    # Persist to state directory
+    # Persist to state directory (atomic write)
     try:
         prefs_file = _STATE_DIR / "guardrail_prefs.json"
         _STATE_DIR.mkdir(parents=True, exist_ok=True)
-        prefs_file.write_text(json.dumps(prefs, indent=2))
+        prefs_tmp = prefs_file.with_suffix(".tmp")
+        prefs_tmp.write_text(json.dumps(prefs, indent=2))
+        prefs_tmp.replace(prefs_file)
     except Exception as exc:
         logger.warning("Could not persist guardrail prefs: %s", exc)
 

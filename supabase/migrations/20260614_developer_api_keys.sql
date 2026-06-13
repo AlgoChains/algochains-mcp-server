@@ -62,12 +62,13 @@ CREATE POLICY "Service role manages dev key updates" ON developer_api_keys
 
 CREATE OR REPLACE FUNCTION resolve_developer_api_key(p_key_hash TEXT)
 RETURNS TABLE (
-    id          UUID,
-    user_id     UUID,
-    name        TEXT,
-    scopes      TEXT[],
-    env         TEXT,
-    revoked_at  TIMESTAMPTZ
+    id            UUID,
+    user_id       UUID,
+    clerk_user_id UUID,   -- alias for backward-compat with developer_auth.py
+    name          TEXT,
+    scopes        TEXT[],
+    env           TEXT,
+    revoked_at    TIMESTAMPTZ
 )
 LANGUAGE sql
 SECURITY DEFINER
@@ -76,6 +77,7 @@ AS $$
     SELECT
         id,
         user_id,
+        user_id AS clerk_user_id,   -- developer_auth.py reads clerk_user_id
         name,
         scopes,
         env,

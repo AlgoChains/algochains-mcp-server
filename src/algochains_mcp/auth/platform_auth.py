@@ -71,8 +71,15 @@ def _load_session() -> dict[str, Any]:
 def _save_session(data: dict[str, Any]) -> None:
     try:
         _SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SESSION_FILE.write_text(json.dumps(data, indent=2))
-        _SESSION_FILE.chmod(0o600)
+        # Atomic write: write to temp file then rename to prevent corrupt reads on crash
+        import tempfile
+        tmp = _SESSION_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        try:
+            tmp.chmod(0o600)
+        except Exception:
+            pass  # Windows: chmod may not enforce; acceptable
+        tmp.replace(_SESSION_FILE)
     except Exception as exc:
         logger.warning("Could not persist session: %s", exc)
 
@@ -474,7 +481,8 @@ async def list_mfa_factors() -> dict[str, Any]:
                 "factors": [
                     {
                         "id": f.get("id"),
-                        "type": f.get("factor_type"),
+                        # Supabase returns "type"; factor_type is the enrollment body key
+                        "type": f.get("type") or f.get("factor_type"),
                         "friendly_name": f.get("friendly_name"),
                         "status": f.get("status"),
                         "created_at": f.get("created_at"),
@@ -681,34 +689,46 @@ async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str
     if aal_err:
         return aal_err
 
+    caller_user_id = session.get("user_id", "")
     import httpx
     try:
-        # 1. Fetch existing key metadata
+        # 1. Fetch existing key metadata — scope to caller's user_id to prevent IDOR
         async with httpx.AsyncClient(timeout=10) as client:
             fetch_resp = await client.get(
-                f"{_SUPABASE_URL}/rest/v1/developer_api_keys?id=eq.{key_id}&select=*",
+                f"{_SUPABASE_URL}/rest/v1/developer_api_keys"
+                f"?id=eq.{key_id}&user_id=eq.{caller_user_id}&select=*",
                 headers={**_service_headers()},
             )
         rows = fetch_resp.json()
         if not rows:
-            return {"error": f"Key {key_id} not found."}
+            # Row not found OR belongs to a different user — return same error to prevent enumeration
+            return {"error": f"Key {key_id} not found or access denied."}
         old_key = rows[0]
         env = old_key.get("env", "live")
         scopes = old_key.get("scopes", ["read:market_data"])
         new_name = name or old_key.get("name", "default")
 
-        # 2. Mint new key
+        # 2. Revoke old key FIRST (fail-safe: if mint fails, old key still valid)
+        revoke_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.patch(
+                f"{_SUPABASE_URL}/rest/v1/developer_api_keys"
+                f"?id=eq.{key_id}&user_id=eq.{caller_user_id}",
+                headers=_service_headers(),
+                json={"revoked_at": revoke_ts},
+            )
+        if r.status_code not in (200, 204):
+            return {"error": f"Could not revoke old key (HTTP {r.status_code}) — rotation aborted."}
+
+        # 3. Mint new key (after revoke — caller must save; if this fails, key was already revoked)
         new_result = await create_developer_key(name=new_name, scopes=scopes, env=env)
         if new_result.get("status") != "ok":
-            return {"error": "Failed to mint new key", "details": new_result}
-
-        # 3. Revoke old key
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.patch(
-                f"{_SUPABASE_URL}/rest/v1/developer_api_keys?id=eq.{key_id}",
-                headers=_service_headers(),
-                json={"revoked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
-            )
+            return {
+                "error": "Old key revoked but new key minting failed. Contact support with old_key_id.",
+                "old_key_id": key_id,
+                "old_key_revoked": True,
+                "details": new_result,
+            }
 
         return {
             "status": "ok",
@@ -739,17 +759,20 @@ async def revoke_developer_key(key_id: str) -> dict[str, Any]:
     if aal_err:
         return aal_err
 
+    caller_user_id = session.get("user_id", "")
     import httpx
     try:
+        # Scope PATCH to caller's user_id to prevent IDOR — other users' keys are invisible
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.patch(
-                f"{_SUPABASE_URL}/rest/v1/developer_api_keys?id=eq.{key_id}",
+                f"{_SUPABASE_URL}/rest/v1/developer_api_keys"
+                f"?id=eq.{key_id}&user_id=eq.{caller_user_id}",
                 headers={**_service_headers(), "Prefer": "return=minimal"},
                 json={"revoked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
             )
         if resp.status_code in (200, 204):
             return {"status": "ok", "message": f"Key {key_id} revoked."}
-        return {"error": "Revocation failed", "status_code": resp.status_code}
+        return {"error": "Revocation failed or key not found/access denied.", "status_code": resp.status_code}
     except Exception as exc:
         return {"error": f"Revocation request failed: {exc}"}
 
