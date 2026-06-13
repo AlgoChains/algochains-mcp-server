@@ -54,6 +54,22 @@ PAST_PERFORMANCE_DISCLAIMER = (
     "not a registered CTA or investment adviser, and this is not investment advice."
 )
 
+# CFTC Regulation 4.41(b)(1)(i) prescribed cautionary statement for HYPOTHETICAL
+# or SIMULATED performance. Attached to any display of paper/backtested results.
+# Applied as voluntary anti-fraud hygiene (CEA §§ 4b/4o reach some unregistered
+# persons) WITHOUT conceding registered-CTA status. See docs/LEGAL_COMPLIANCE_AUDIT.md.
+# NOTE: confirm verbatim against eCFR (17 C.F.R. § 4.41(b)) before any legal reliance.
+HYPOTHETICAL_PERFORMANCE_DISCLAIMER = (
+    "HYPOTHETICAL OR SIMULATED PERFORMANCE RESULTS HAVE CERTAIN INHERENT "
+    "LIMITATIONS. UNLIKE AN ACTUAL PERFORMANCE RECORD, SIMULATED RESULTS DO NOT "
+    "REPRESENT ACTUAL TRADING. ALSO, SINCE THE TRADES HAVE NOT ACTUALLY BEEN "
+    "EXECUTED, THE RESULTS MAY HAVE UNDER- OR OVER-COMPENSATED FOR THE IMPACT, IF "
+    "ANY, OF CERTAIN MARKET FACTORS, SUCH AS LACK OF LIQUIDITY. SIMULATED TRADING "
+    "PROGRAMS IN GENERAL ARE ALSO SUBJECT TO THE FACT THAT THEY ARE DESIGNED WITH "
+    "THE BENEFIT OF HINDSIGHT. NO REPRESENTATION IS BEING MADE THAT ANY ACCOUNT "
+    "WILL OR IS LIKELY TO ACHIEVE PROFITS OR LOSSES SIMILAR TO THOSE SHOWN."
+)
+
 
 def with_disclaimer(payload: dict[str, Any]) -> dict[str, Any]:
     """Attach the standard past-performance disclaimer to a result payload.
@@ -65,11 +81,28 @@ def with_disclaimer(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def with_hypothetical_disclaimer(payload: dict[str, Any]) -> dict[str, Any]:
+    """Attach the CFTC Reg. 4.41(b) hypothetical-performance disclaimer.
+
+    Use for any payload that reports paper / simulated / backtested results.
+    Adds both the general disclaimer and the stricter prescribed 4.41(b) text.
+    Idempotent and non-destructive.
+    """
+    if isinstance(payload, dict):
+        if "disclaimer" not in payload:
+            payload["disclaimer"] = PAST_PERFORMANCE_DISCLAIMER
+        if "hypothetical_performance_disclaimer" not in payload:
+            payload["hypothetical_performance_disclaimer"] = HYPOTHETICAL_PERFORMANCE_DISCLAIMER
+    return payload
+
+
 __all__ = [
     "RISK_DISCLOSURE_VERSION",
     "TOS_VERSION",
     "RISK_ACK_PHRASE",
     "SUBSCRIBER_RISK_DISCLOSURE",
     "PAST_PERFORMANCE_DISCLAIMER",
+    "HYPOTHETICAL_PERFORMANCE_DISCLAIMER",
     "with_disclaimer",
+    "with_hypothetical_disclaimer",
 ]

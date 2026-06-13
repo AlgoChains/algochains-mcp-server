@@ -68,6 +68,48 @@ def _verify_bearer_token(authorization: str | None) -> bool:
     return secrets.compare_digest(token, secret)
 
 
+# ─── OAuth 2.1 Protected Resource Metadata (RFC 9728) ─────────────────────────
+# Foundation only: this server is an OAuth *protected resource*, not an
+# authorization server. /authorize, /token, and PKCE are delegated to an
+# external IdP (Supabase Auth / WorkOS). We only expose the resource-metadata
+# discovery document and the WWW-Authenticate challenge header so MCP clients
+# (e.g. Claude.ai) can discover the authorization server. HTTPS is assumed at
+# the proxy.
+
+def _mcp_resource() -> str:
+    return os.environ.get("ALGOCHAINS_MCP_RESOURCE", "https://mcp.algochains.ai")
+
+
+def _oauth_issuer() -> str:
+    return os.environ.get("ALGOCHAINS_OAUTH_ISSUER", "https://auth.algochains.ai")
+
+
+def protected_resource_metadata() -> dict:
+    """RFC 9728 OAuth 2.0 Protected Resource Metadata document."""
+    return {
+        "resource": _mcp_resource(),
+        "authorization_servers": [_oauth_issuer()],
+        "scopes_supported": ["mcp:read", "mcp:tools"],
+        "bearer_methods_supported": ["header"],
+        "resource_name": "AlgoChains MCP Server",
+        "resource_documentation": "https://algochains.ai/docs",
+    }
+
+
+def oauth_challenge_header() -> dict:
+    """WWW-Authenticate challenge pointing at the resource-metadata document.
+
+    Attach to 401 responses on the MCP endpoint so clients can discover the
+    authorization server per RFC 9728 §5.1.
+    """
+    resource = _mcp_resource()
+    return {
+        "WWW-Authenticate": (
+            f'Bearer resource_metadata="{resource}/.well-known/oauth-protected-resource"'
+        )
+    }
+
+
 async def _cleanup_stale_sessions() -> None:
     """Periodically remove idle sessions."""
     while True:
@@ -140,7 +182,13 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
 
     def _auth(request: Request) -> None:
         if not _verify_bearer_token(request.headers.get("Authorization")):
-            raise HTTPException(status_code=401, detail="Unauthorized")
+            # RFC 9728 §5.1: include the resource_metadata discovery pointer so
+            # MCP clients (Claude.ai) can find the authorization server.
+            raise HTTPException(
+                status_code=401,
+                detail="Unauthorized",
+                headers=oauth_challenge_header(),
+            )
 
     def _health_payload() -> dict:
         return {
@@ -150,6 +198,15 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
             "transport": "http+sse",
             "active_sessions": len(_sessions),
         }
+
+    @http_app.get("/.well-known/oauth-protected-resource")
+    async def oauth_protected_resource() -> dict:
+        """RFC 9728 discovery document — unauthenticated.
+
+        Lets MCP clients discover which authorization server protects this
+        resource. The AS itself (/authorize, /token, PKCE) is an external IdP.
+        """
+        return protected_resource_metadata()
 
     @http_app.get("/health")
     async def health() -> dict:

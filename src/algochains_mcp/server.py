@@ -4332,6 +4332,84 @@ TOOLS = [
          }, "required": []},
          annotations=ANNOT_WRITE_SAFE),
 
+    Tool(name="get_my_usage",
+         description=(
+             "Your current-month MCP API usage: total metered calls, included quota, "
+             "overage calls, overage cost (USD), and a projected month-end overage cost. "
+             "Read-only; reflects this subscriber's billing tier. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Affiliate / referral system ─────────────────────────────────────────
+    Tool(name="create_referral_code",
+         description=(
+             "Create (or fetch) the authenticated subscriber's shareable referral code. "
+             "Returns the code and a share_url (https://algochains.ai/r/<code>). "
+             "One active code per subscriber. Referrers earn 20% of each referral's "
+             "subscription for their first 3 months. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_referrals",
+         description=(
+             "Return the authenticated subscriber's referral summary: their referral code, "
+             "count of subscribers referred, and commission counts + sums by status. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_referral_earnings",
+         description=(
+             "Return total referral earnings (pending + paid commission_usd) for the "
+             "authenticated subscriber, with the 20%/3-month policy and compliance "
+             "disclaimer. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Creator payouts (Stripe Connect ledger) ─────────────────────────────
+    Tool(name="create_creator_onboarding_link",
+         description=(
+             "Create a Stripe Connect Express onboarding link for a strategy creator. "
+             "Returns a URL where the creator completes KYC and links their bank account "
+             "for payouts, and mirrors the Connect account into the creator ledger. "
+             "Pass creator_id + creator_email."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Creator id."},
+             "creator_email": {"type": "string", "description": "Email for the Stripe Connect account and KYC."},
+         }, "required": ["creator_id", "creator_email"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_creator_earnings",
+         description=(
+             "Read a creator's earnings summary (accrued / paid / reversed totals, 80/20 "
+             "revenue share) plus recent payout history. Read-only. Pass creator_id."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Creator id."},
+         }, "required": ["creator_id"]},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="run_creator_payouts",
+         description=(
+             "Run the creator payout batch: sum accrued earnings per creator and pay out "
+             "those over min_payout_usd via Stripe Connect. MOVES REAL MONEY. "
+             "Defaults to dry_run=true (returns the computed plan, executes nothing). "
+             "REQUIRES owner_token matching OWNER_API_TOKEN. Set dry_run=false to execute."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Optional — scope the run to a single creator."},
+             "dry_run": {"type": "boolean", "default": True, "description": "true (default) = plan only, no money moves."},
+             "min_payout_usd": {"type": "number", "default": 25.0, "description": "Minimum accrued balance to trigger a payout."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required to run."},
+         }, "required": ["owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
     # ── Waitlist ──────────────────────────────────────────────────────────
     Tool(name="join_waitlist",
          description="Add an email to the AlgoChains waitlist. Stores in Supabase, sends welcome email via Resend. Returns waitlist position.",
@@ -4941,6 +5019,14 @@ TIER1_TOOL_NAMES = {
     "join_bot",
     "get_subscriber_status",
     "accept_subscriber_terms",
+    "get_my_usage",
+    # Affiliate / referral
+    "create_referral_code",
+    "get_my_referrals",
+    "get_referral_earnings",
+    # Creator payouts (run_creator_payouts intentionally NOT here — moves money, owner-gated)
+    "create_creator_onboarding_link",
+    "get_my_creator_earnings",
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
@@ -9725,7 +9811,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             "note": "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key> and run get_my_portfolio()",
         })
 
-    elif name in ("join_bot", "get_subscriber_status", "accept_subscriber_terms"):
+    elif name in ("join_bot", "get_subscriber_status", "accept_subscriber_terms",
+                  "get_my_usage", "create_referral_code", "get_my_referrals",
+                  "get_referral_earnings"):
         _sub_key = os.environ.get("ALGOCHAINS_SUBSCRIBER_KEY", "")
         if not _sub_key:
             return _text({
@@ -9736,7 +9824,24 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         _sub = _resolve_sub(_sub_key)
         if not _sub:
             return _text({"error": "Invalid or expired subscriber key. Check ALGOCHAINS_SUBSCRIBER_KEY."})
-        if name == "join_bot":
+        if name == "get_my_usage":
+            try:
+                from .subscriber_tools import get_my_usage as _get_my_usage
+                return _text(_get_my_usage(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name in ("create_referral_code", "get_my_referrals", "get_referral_earnings"):
+            try:
+                from .cloud_saas import referrals as _referrals
+                if name == "create_referral_code":
+                    return _text(_referrals.create_referral_code(_sub.subscriber_id))
+                elif name == "get_my_referrals":
+                    return _text(_referrals.get_my_referrals(_sub.subscriber_id))
+                else:
+                    return _text(_referrals.get_referral_earnings(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "join_bot":
             try:
                 from .subscriber_tools import join_bot as _join_bot
                 return _text(_join_bot(
@@ -9765,6 +9870,47 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 ))
             except Exception as exc:
                 return _text({"error": str(exc)})
+
+    elif name == "create_creator_onboarding_link":
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            _creator_id = arguments.get("creator_id", "")
+            if not _creator_id:
+                return _text({"error": "creator_id required."})
+            return _text(await _cp.create_creator_onboarding_link(
+                creator_id=_creator_id,
+                creator_email=arguments["creator_email"],
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_my_creator_earnings":
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            _creator_id = arguments.get("creator_id", "")
+            if not _creator_id:
+                return _text({"error": "creator_id required."})
+            return _text(_cp.get_my_creator_earnings(_creator_id))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "run_creator_payouts":
+        # OWNER-GATED — moves real money. Fails closed when OWNER_API_TOKEN unset.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "run_creator_payouts requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            return _text(await _cp.run_creator_payouts(
+                creator_id=arguments.get("creator_id"),
+                dry_run=bool(arguments.get("dry_run", True)),
+                min_payout_usd=float(arguments.get("min_payout_usd", 25.0)),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
 
     elif name == "join_waitlist":
         try:

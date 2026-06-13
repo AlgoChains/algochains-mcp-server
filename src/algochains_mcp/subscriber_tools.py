@@ -349,8 +349,9 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
 
     paper_account = _get_paper_account(sb, subscriber_id)
 
-    from .compliance.disclosures import with_disclaimer
-    return with_disclaimer({
+    # Paper P&L is simulated → CFTC Reg. 4.41(b) hypothetical-performance disclaimer.
+    from .compliance.disclosures import with_hypothetical_disclaimer
+    return with_hypothetical_disclaimer({
         "subscriber_id": subscriber_id,
         "pnl_today_usd": round(pnl_today, 2),
         "pnl_7d_usd": round(pnl_week, 2),
@@ -419,8 +420,9 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         except Exception as exc:
             log.warning("get_my_portfolio open entries: %s", exc)
 
-    from .compliance.disclosures import with_disclaimer
-    return with_disclaimer({
+    # Portfolio reflects the simulated paper account → CFTC Reg. 4.41(b).
+    from .compliance.disclosures import with_hypothetical_disclaimer
+    return with_hypothetical_disclaimer({
         "subscriber_id": subscriber_id,
         "paper_account": paper_account,
         "assignments": assignments,
@@ -560,9 +562,10 @@ def get_marketplace_listings(
         from .marketplace.supabase_tools import get_marketplace_listings as _listings
     except Exception as exc:
         return _err("marketplace_unavailable", detail=str(exc))
-    from .compliance.disclosures import with_disclaimer
+    # Marketplace listings surface backtested/simulated metrics → CFTC Reg. 4.41(b).
+    from .compliance.disclosures import with_hypothetical_disclaimer
     result = _listings(status=status, asset_class=asset_class, limit=limit)
-    return with_disclaimer(result) if isinstance(result, dict) else result
+    return with_hypothetical_disclaimer(result) if isinstance(result, dict) else result
 
 
 def get_my_assignments(subscriber_id: str) -> dict[str, Any]:
@@ -897,14 +900,48 @@ def get_subscriber_status(subscriber_id: str) -> dict[str, Any]:
     if not next_steps:
         next_steps.append("Call get_my_portfolio() for a full portfolio snapshot")
 
-    from .compliance.disclosures import with_disclaimer
-    return with_disclaimer({
+    # Status includes the simulated paper account balance → CFTC Reg. 4.41(b).
+    from .compliance.disclosures import with_hypothetical_disclaimer
+    return with_hypothetical_disclaimer({
         "subscriber_id": subscriber_id,
         "risk_acknowledged": risk_acknowledged,
         "bots_assigned": bots_assigned,
         "paper_account": paper_account,
         "next_steps": next_steps,
     })
+
+
+def get_my_usage(subscriber_id: str) -> dict[str, Any]:
+    """Current-month metered-call usage + projected overage cost for this subscriber.
+
+    Read-only. Keyed by subscriber_id (the same stable identifier the write side,
+    record_usage, must use). Resolves the included quota from the key's tier.
+    """
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+
+    from .cloud_saas.usage_metering import get_usage_summary, included_quota_for_tier
+    tier = None
+    try:
+        resp = (
+            sb.table("subscriber_api_keys")
+            .select("tier")
+            .eq("subscriber_id", subscriber_id)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+        if rows:
+            tier = rows[0].get("tier")
+    except Exception as exc:
+        log.warning("get_my_usage tier lookup failed: %s", exc)
+
+    quota = included_quota_for_tier(tier)
+    summary = get_usage_summary(subscriber_id, included_quota=quota)
+    if isinstance(summary, dict) and not summary.get("error"):
+        summary["tier"] = tier or "paper"
+    return summary
 
 
 # ─── dispatcher ─────────────────────────────────────────────────────────────
@@ -925,6 +962,7 @@ SUBSCRIBER_TOOL_HANDLERS = {
     "join_bot": join_bot,
     "get_subscriber_status": get_subscriber_status,
     "accept_subscriber_terms": accept_subscriber_terms,
+    "get_my_usage": get_my_usage,
 }
 
 # Required scope per tool. The bridge enforces that the resolved key has
@@ -945,6 +983,7 @@ SUBSCRIBER_TOOL_SCOPES = {
     "join_bot": "my_assignments",
     "get_subscriber_status": "my_assignments",
     "accept_subscriber_terms": "my_assignments",
+    "get_my_usage": "my_pnl",
 }
 
 SUBSCRIBER_TOOLS = frozenset(SUBSCRIBER_TOOL_HANDLERS.keys())
