@@ -177,7 +177,7 @@ jobs:
           - { name: darwin-x64,     pkg_target: node18-macos-x64,   output: algochains-darwin-x64 }
           - { name: win-x64,        pkg_target: node18-win-x64,     output: algochains-win-x64.exe }
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: cli-bundle
 
@@ -236,7 +236,7 @@ jobs:
       id-token: write   # mandatory for OIDC trusted publishing — keep on this job ONLY
     steps:
       - name: Download Python distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: python-dists
           path: dist/
