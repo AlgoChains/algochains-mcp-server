@@ -1,6 +1,8 @@
 """Tests for the marketplace bridge HTTP client."""
+import asyncio
 import pytest
 import httpx
+from unittest.mock import AsyncMock
 
 from algochains_mcp.config import MarketplaceConfig
 from algochains_mcp.errors import (
@@ -104,3 +106,21 @@ async def test_ingest_fails_fast_without_ingest_key(monkeypatch):
     )
     with pytest.raises(MarketplaceNotConfiguredError, match="METRICS_INGEST_API_KEY"):
         await bridge.ingest_metrics("slug", {})
+
+
+def test_paper_subscribe_does_not_require_broker(monkeypatch):
+    monkeypatch.setenv("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", "1")
+    bridge = MarketplaceBridge(_mock_config())
+    client = AsyncMock()
+    client.post.return_value = httpx.Response(
+        status_code=200,
+        json={"ok": True},
+        request=httpx.Request("POST", "https://test.algochains.ai/api/v1/listings/mnq/subscribe/"),
+    )
+    bridge._client = client
+
+    out = asyncio.run(bridge.subscribe("mnq", mode="paper"))
+
+    assert out == {"ok": True}
+    client.post.assert_awaited_once()
+    assert client.post.await_args.kwargs["json"] == {"mode": "paper"}

@@ -50,7 +50,7 @@ def _list_active_assignments(sb, subscriber_id: str) -> list[dict[str, Any]]:
     try:
         resp = (
             sb.table("subscriber_bot_assignments")
-            .select("bot,size_multiplier,max_contracts,daily_loss_cap_usd,paused")
+            .select("bot,mode,size_multiplier,max_contracts,daily_loss_cap_usd,paused")
             .eq("subscriber_id", subscriber_id)
             .execute()
         )
@@ -111,13 +111,27 @@ def get_signal_stream(
 
 
 def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
-    """Today + 7-day PnL aggregated from subscriber_fills."""
+    """Today + 7-day PnL aggregated from subscriber_fills; cumulative from paper account."""
     sb = _service_client()
     if sb is None:
         return _err("supabase_unavailable")
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = now - timedelta(days=7)
+    paper_cumulative: float | None = None
+    try:
+        pa = (
+            sb.table("subscriber_paper_accounts")
+            .select("realized_pnl_usd")
+            .eq("subscriber_id", subscriber_id)
+            .maybe_single()
+            .execute()
+        )
+        row = getattr(pa, "data", None)
+        if row is not None:
+            paper_cumulative = round(float(row.get("realized_pnl_usd") or 0), 2)
+    except Exception as exc:
+        log.warning("get_my_pnl paper account lookup: %s", exc)
     try:
         today_resp = (
             sb.table("subscriber_fills")
@@ -152,10 +166,14 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
     return {
         "subscriber_id": subscriber_id,
         "pnl_today_usd": round(pnl_today, 2),
+        "paper_pnl_today_usd": round(pnl_today, 2),
         "pnl_7d_usd": round(pnl_week, 2),
+        "paper_pnl_usd": paper_cumulative,
+        "paper_realized_pnl_usd": paper_cumulative,
         "fills_today": fills_today,
         "pnl_today_by_bot": {k: round(v, 2) for k, v in by_bot.items()},
         "as_of": now.isoformat(),
+        "today_boundary": "UTC calendar midnight",
     }
 
 
@@ -236,9 +254,13 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         "assignments": assignments,
         "open_signals": open_entries,
         "pnl_today_usd": pnl.get("pnl_today_usd"),
+        "paper_pnl_today_usd": pnl.get("paper_pnl_today_usd"),
         "pnl_7d_usd": pnl.get("pnl_7d_usd"),
+        "paper_pnl_usd": pnl.get("paper_pnl_usd"),
+        "paper_realized_pnl_usd": pnl.get("paper_realized_pnl_usd"),
         "fills_today": pnl.get("fills_today"),
         "as_of": datetime.now(timezone.utc).isoformat(),
+        "today_boundary": "UTC calendar midnight",
     }
 
 
@@ -376,7 +398,7 @@ def get_my_assignments(subscriber_id: str) -> dict[str, Any]:
     try:
         resp = (
             sb.table("subscriber_bot_assignments")
-            .select("bot,size_multiplier,max_contracts,daily_loss_cap_usd,paused,updated_at")
+            .select("bot,mode,size_multiplier,max_contracts,daily_loss_cap_usd,paused,updated_at")
             .eq("subscriber_id", subscriber_id)
             .order("bot")
             .execute()

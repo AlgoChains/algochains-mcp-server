@@ -748,6 +748,39 @@ def generate_mcporter_config(
     }
 
 
+_SECRET_ENV_KEYS = frozenset({
+    "TRADOVATE_CID", "TRADOVATE_SECRET", "TRADOVATE_DEVICE_ID", "TRADOVATE_USERNAME",
+    "ALPACA_API_KEY", "ALPACA_SECRET_KEY", "ALPACA_BASE_URL",
+    "OANDA_API_KEY", "OANDA_ACCOUNT_ID",
+    "POLYGON_API_KEY", "DATABENTO_API_KEY", "ONYX_API_KEY", "ONYX_ADMIN_EMAIL",
+    "FRED_API_KEY", "SUPABASE_SERVICE_ROLE_KEY", "OWNER_API_TOKEN",
+})
+
+
+def generate_mcporter_config_masked(ide: str, tool_mode: str = "smart") -> dict:
+    """Public-safe IDE config: env var names only, no secret values."""
+    full = generate_mcporter_config(ide=ide, tool_mode=tool_mode)
+    try:
+        parsed = json.loads(full["config"])
+        env_block = parsed.get("mcpServers", {}).get("algochains", {}).get("env", {})
+        masked_env = {
+            key: "<set in your .env — requires owner_token for values>"
+            if key in _SECRET_ENV_KEYS or key.endswith(("_KEY", "_SECRET", "_TOKEN"))
+            else value
+            for key, value in env_block.items()
+        }
+        parsed["mcpServers"]["algochains"]["env"] = masked_env
+        full["config"] = json.dumps(parsed, indent=2)
+    except (json.JSONDecodeError, KeyError, TypeError):
+        full["config"] = '{"mcpServers":{"algochains":{"env":{"note":"requires owner_token"}}}}'
+    full["secrets_redacted"] = True
+    full["warning"] = (
+        "Config template only — secret values omitted. "
+        "Call generate_ide_config with owner_token matching OWNER_API_TOKEN for full export."
+    )
+    return full
+
+
 async def run_smoke_test() -> dict:
     """
     Step 5: End-to-end connectivity check — all configured systems.

@@ -17,6 +17,7 @@ from algochains_mcp.subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    get_my_assignments,
     place_paper_order,
 )
 
@@ -131,3 +132,89 @@ class TestPlacePaperOrderValidation:
         ):
             out = place_paper_order(SUB_ID, symbol="MNQ", side="BUY", qty=1)
         assert out["error"] == "supabase_unavailable"
+
+
+class _QueryRecorder:
+    def __init__(self, rows):
+        self.rows = rows
+        self.selected = None
+        self.filters = []
+        self.orders = []
+
+    def select(self, columns):
+        self.selected = columns
+        return self
+
+    def eq(self, field, value):
+        self.filters.append((field, value))
+        return self
+
+    def order(self, field, desc=False):
+        self.orders.append((field, desc))
+        return self
+
+    def execute(self):
+        return MagicMock(data=self.rows)
+
+
+class _SupabaseRecorder:
+    def __init__(self, rows):
+        self.query = _QueryRecorder(rows)
+        self.tables = []
+
+    def table(self, name):
+        self.tables.append(name)
+        return self.query
+
+
+class TestGetMyAssignments:
+    def test_assignment_payload_includes_mode(self):
+        sb = _SupabaseRecorder([
+            {
+                "bot": "MNQ",
+                "mode": "paper",
+                "paused": False,
+                "size_multiplier": 1,
+                "max_contracts": 1,
+                "daily_loss_cap_usd": 500,
+            }
+        ])
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            out = get_my_assignments(SUB_ID)
+
+        assert sb.tables == ["subscriber_bot_assignments"]
+        assert "mode" in sb.query.selected
+        assert out["assignments"][0]["mode"] == "paper"
+
+
+class TestGetMyPnlAliases:
+    def test_includes_cumulative_and_today_aliases(self):
+        sb = MagicMock()
+        paper_lookup = MagicMock()
+        paper_lookup.data = {"realized_pnl_usd": 301.6}
+        today_resp = MagicMock(data=[{"pnl_usd": 12.5, "bot": "MNQ", "fill_kind": "exit"}])
+        week_resp = MagicMock(data=[{"pnl_usd": 50.0}])
+
+        def table_side_effect(name):
+            mock = MagicMock()
+            if name == "subscriber_paper_accounts":
+                (
+                    mock.select.return_value.eq.return_value.maybe_single.return_value
+                    .execute.return_value
+                ) = paper_lookup
+            elif name == "subscriber_fills":
+                chain = mock.select.return_value.eq.return_value.gte.return_value
+                chain.execute.side_effect = [today_resp, week_resp]
+            return mock
+
+        sb.table.side_effect = table_side_effect
+
+        with patch("algochains_mcp.subscriber_tools._service_client", return_value=sb):
+            from algochains_mcp.subscriber_tools import get_my_pnl
+
+            out = get_my_pnl(SUB_ID)
+
+        assert out["paper_pnl_today_usd"] == 12.5
+        assert out["paper_pnl_usd"] == 301.6
+        assert out["paper_realized_pnl_usd"] == 301.6
+        assert out["today_boundary"] == "UTC calendar midnight"
