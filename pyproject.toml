@@ -104,3 +104,4 @@ line-length = 100
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = ["tests/live"]
+asyncio_mode = "auto"
