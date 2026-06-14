@@ -30,15 +30,22 @@ CREATE TABLE IF NOT EXISTS subscriber_api_keys (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE subscriber_api_keys
+    ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS bot_slug TEXT,
+    ADD COLUMN IF NOT EXISTS paper_account_id TEXT,
+    ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_sub_api_keys_key_hash  ON subscriber_api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_sub_api_keys_user_id   ON subscriber_api_keys(user_id);
-CREATE INDEX IF NOT EXISTS idx_sub_api_keys_bot_slug  ON subscriber_api_keys(bot_slug);
+CREATE INDEX IF NOT EXISTS idx_sub_api_keys_bot_slug  ON subscriber_api_keys(bot_slug) WHERE bot_slug IS NOT NULL;
 
 ALTER TABLE subscriber_api_keys ENABLE ROW LEVEL SECURITY;
 
 -- Service role only — subscribers cannot self-manage keys via Supabase client
 CREATE POLICY "Service role manages subscriber keys" ON subscriber_api_keys
-    USING (auth.role() = 'service_role');
+    TO service_role
+    USING (true);
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -48,28 +55,25 @@ CREATE POLICY "Service role manages subscriber keys" ON subscriber_api_keys
 
 CREATE OR REPLACE FUNCTION resolve_subscriber_api_key(p_key_hash TEXT)
 RETURNS TABLE (
-    id               UUID,
-    user_id          UUID,
+    subscriber_id    TEXT,
     bot_slug         TEXT,
     env              TEXT,
     scopes           TEXT[],
-    paper_account_id TEXT,
-    revoked_at       TIMESTAMPTZ
+    paper_account_id TEXT
 )
 LANGUAGE sql
 SECURITY DEFINER
 STABLE
 AS $$
     SELECT
-        id,
-        user_id,
+        COALESCE(subscriber_id, user_id::TEXT) AS subscriber_id,
         bot_slug,
         env,
         scopes,
-        paper_account_id,
-        revoked_at
+        paper_account_id
     FROM subscriber_api_keys
     WHERE key_hash = p_key_hash
+      AND revoked_at IS NULL
     LIMIT 1;
 $$;
 
