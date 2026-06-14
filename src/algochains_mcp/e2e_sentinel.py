@@ -68,11 +68,12 @@ def summarize_e2e_sentinel_state(raw: Mapping[str, Any] | None) -> dict[str, Any
     log = _as_mapping(evidence.get("log"))
     rate_limits = _as_mapping(state.get("rate_limits"))
 
-    issue_class = (
+    raw_issue_class = (
         classification.get("issue_class")
         or classification.get("reason")
         or classification.get("outcome")
     )
+    issue_class = raw_issue_class
     why = (
         classification.get("why")
         or classification.get("description")
@@ -96,6 +97,19 @@ def summarize_e2e_sentinel_state(raw: Mapping[str, Any] | None) -> dict[str, Any
         "orders",
         "fills",
     )
+    raw_reason = classification.get("reason") or raw_issue_class
+    reason = raw_reason or issue_class
+    raw_description = classification.get("description") or why
+    description = raw_description or why
+
+    if broker_snapshot_partial and str(issue_class or "").lower() in {
+        "",
+        "unknown",
+        "unknown_cancel_reason",
+    }:
+        issue_class = "broker_snapshot_partial"
+        reason = "broker_snapshot_partial"
+        description = why or "Broker snapshot partial; working orders or fills unavailable."
 
     broker_flat: bool | None = None
     positions_available = positions_ok is not False and positions_count is not None
@@ -110,8 +124,11 @@ def summarize_e2e_sentinel_state(raw: Mapping[str, Any] | None) -> dict[str, Any
         "outcome": classification.get("outcome") or classification.get("state"),
         "severity": classification.get("severity"),
         "issue_class": issue_class,
-        "reason": classification.get("reason") or issue_class,
-        "description": classification.get("description") or why,
+        "raw_issue_class": raw_issue_class,
+        "reason": reason,
+        "raw_reason": raw_reason,
+        "description": description,
+        "raw_description": raw_description,
         "why": why,
         "incident_id": classification.get("incident_id"),
         "needs_owner": classification.get("needs_owner"),
