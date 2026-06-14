@@ -110,6 +110,23 @@ def test_get_tool_details_unknown_tool():
     "run_safe_compounder",
     "run_kalshi_full_pipeline",
     "run_kalshi_strategy_order",
+    # SEC-2026-C1: export_config reads plaintext API keys from os.environ.
+    # Must be ORDER_EXEC and blocked without owner_token.
+    "export_config",
+    # SEC-2026-C2: deliver_strategy_to_subscriber posts signed strategy config
+    # to caller-supplied webhook (SSRF). Must be ORDER_EXEC.
+    "deliver_strategy_to_subscriber",
+    # SEC-2026-C3: send_waitlist_invite mints invite codes. Must be ORDER_EXEC.
+    "send_waitlist_invite",
+    # SEC-2026-C4: upsert_bot_performance forges marketplace metrics. Must be ORDER_EXEC.
+    "upsert_bot_performance",
+    # SEC-2026-C5–C8 (Jun 2026 Slack validation pass).
+    "get_broker_oauth_status",
+    "test_signal_propagation",
+    "get_support_ticket",
+    "list_support_tickets",
+    "update_ticket_status",
+    "get_ticket_stats",
 ])
 def test_execute_dynamic_tool_blocks_order_exec_without_token(tool_name, monkeypatch):
     """execute_dynamic_tool must block ORDER_EXEC/DESTRUCTIVE tools without owner_token.

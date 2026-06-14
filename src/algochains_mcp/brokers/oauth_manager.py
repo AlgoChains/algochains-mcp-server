@@ -492,6 +492,21 @@ async def get_token(broker: str, user_id: str, auto_refresh: bool = True) -> dic
     }
 
 
+async def get_oauth_status(
+    broker: str,
+    user_id: str,
+    auto_refresh: bool = True,
+) -> dict[str, Any]:
+    """OAuth connection metadata without exposing the access token."""
+    result = await get_token(broker, user_id, auto_refresh=auto_refresh)
+    if not result.get("success"):
+        return {k: v for k, v in result.items() if k != "access_token"}
+    token = result.pop("access_token", "")
+    if token:
+        result["access_token_masked"] = f"***{token[-4:]}" if len(token) >= 4 else "***"
+    return result
+
+
 async def revoke_token(broker: str, user_id: str) -> dict[str, Any]:
     """Revoke OAuth access and remove stored tokens."""
     cfg = BROKER_OAUTH_CONFIGS.get(broker)

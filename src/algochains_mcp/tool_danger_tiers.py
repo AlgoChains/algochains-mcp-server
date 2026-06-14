@@ -148,6 +148,10 @@ _TOOL_TIERS: dict[str, int] = {
     "get_polymarket_market_history": TIER_READ_ONLY,
     "list_polymarket_markets": TIER_READ_ONLY,
     "get_kalshi_settlements": TIER_READ_ONLY,
+    "get_physical_event_sources": TIER_READ_ONLY,
+    "map_physical_event_assets": TIER_READ_ONLY,
+    "score_physical_event_alpha": TIER_READ_ONLY,
+    "get_sonia_air_heartbeat": TIER_READ_ONLY,
     "place_kalshi_order": TIER_ORDER_EXEC,
     # BUG-07 FIX: run_safe_compounder and run_kalshi_full_pipeline call
     # kalshi_signed_post (live Kalshi orders) when execute=true + confirmed=true.
@@ -157,6 +161,34 @@ _TOOL_TIERS: dict[str, int] = {
     "run_safe_compounder": TIER_ORDER_EXEC,
     "run_kalshi_full_pipeline": TIER_ORDER_EXEC,
     "run_kalshi_strategy_order": TIER_ORDER_EXEC,
+    # SEC-2026-C1 FIX: export_config reads actual os.environ values and returns
+    # plaintext API keys in JSON/env format. Default WRITE_LOCAL tier allowed
+    # any smart-mode MCP caller to exfiltrate all configured broker/data API keys.
+    # Escalated to ORDER_EXEC so owner_token is required before any export.
+    "export_config": TIER_ORDER_EXEC,
+    # SEC-2026-C2 FIX: deliver_strategy_to_subscriber uses service_role Supabase
+    # client, accepts caller-supplied webhook URL (SSRF vector), and returns the
+    # signed strategy config token in the tool response. Default WRITE_LOCAL tier.
+    # Escalated to ORDER_EXEC; handler also adds subscription verification + SSRF block.
+    "deliver_strategy_to_subscriber": TIER_ORDER_EXEC,
+    # SEC-2026-C3 FIX: send_waitlist_invite minted invite codes and returned them
+    # plaintext in MCP output, bypassing the email-only invite workflow. Removing
+    # from TIER1_TOOL_NAMES (see server.py); tier escalation is defence-in-depth.
+    "send_waitlist_invite": TIER_ORDER_EXEC,
+    # SEC-2026-C4 FIX: upsert_bot_performance used service_role key with no
+    # subscription ownership check, allowing metric forgery on marketplace dashboards.
+    # metrics_streaming_daemon.py is the canonical writer. MCP path deprecated.
+    "upsert_bot_performance": TIER_ORDER_EXEC,
+    # SEC-2026-C5: get_broker_oauth_status returned plaintext access_token via get_ prefix.
+    "get_broker_oauth_status": TIER_ORDER_EXEC,
+    # SEC-2026-C6: generate_ide_config — WRITE_LOCAL + handler masks secrets (Tier-1 safe template).
+    # SEC-2026-C7: test_signal_propagation posts live signed signals to copy-trade ingest.
+    "test_signal_propagation": TIER_ORDER_EXEC,
+    # SEC-2026-C8: support ticket admin tools used service_role without auth.
+    "get_support_ticket": TIER_ORDER_EXEC,
+    "list_support_tickets": TIER_ORDER_EXEC,
+    "update_ticket_status": TIER_ORDER_EXEC,
+    "get_ticket_stats": TIER_ORDER_EXEC,
     # V22.9 — PAI Integration
     "get_algochains_telos": TIER_READ_ONLY,
     "update_algochains_telos": TIER_WRITE_LOCAL,

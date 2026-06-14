@@ -66,6 +66,7 @@ class RateLimiter:
         "v14_agent_swarm": 20,
         "v15_defi": 30,
         "v16_cloud": 30,
+        "v17_physical_events": 60,
     }
 
     def __init__(self, overrides: dict[str, int] | None = None):
@@ -177,6 +178,11 @@ TOOL_RATE_LIMIT_CATEGORY: dict[str, str] = {
     # V16: Cloud SaaS
     "create_tenant": "v16_cloud", "get_tenant_dashboard": "v16_cloud",
     "get_sub_account_status": "v16_cloud", "set_sub_account_permissions": "v16_cloud",
+    # V17: Physical-world event intelligence
+    "get_physical_event_sources": "v17_physical_events",
+    "map_physical_event_assets": "v17_physical_events",
+    "score_physical_event_alpha": "v17_physical_events",
+    "get_sonia_air_heartbeat": "v17_physical_events",
 }
 
 

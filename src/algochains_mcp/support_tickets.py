@@ -43,6 +43,8 @@ NOTION_API_KEY = os.getenv("NOTION_API_KEY", "")
 NOTION_SUPPORT_DB_ID = os.getenv("NOTION_SUPPORT_DB_ID", "")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 SUPPORT_FROM_EMAIL = os.getenv("SUPPORT_FROM_EMAIL", "support@algochains.ai")
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_SUPPORT_CHANNEL = os.getenv("SLACK_SUPPORT_CHANNEL", "#Support-tickets")
 
 _TABLE = "algochains_support_tickets"
 _TIMEOUT = httpx.Timeout(15.0, connect=5.0)
@@ -209,6 +211,47 @@ algochains.ai/support/tickets/{ticket['ticket_id']}</a></p>
 
 # ── Core CRUD ─────────────────────────────────────────────────────────────────
 
+async def _notify_slack_support(ticket: dict[str, Any]) -> None:
+    """Post a new-ticket alert to the Slack #Support-tickets channel.
+
+    Non-fatal: logs warning on failure, never raises.
+    Requires SLACK_BOT_TOKEN env var to be set.
+    """
+    if not SLACK_BOT_TOKEN:
+        logger.debug("_notify_slack_support: SLACK_BOT_TOKEN not set — skipping Slack alert")
+        return
+
+    ticket_id = ticket.get("ticket_id", "TKT-???")
+    category = ticket.get("category", "other")
+    priority = ticket.get("priority", "medium")
+    subject = ticket.get("subject", "(no subject)")
+    user_email = ticket.get("user_email", "unknown")
+
+    priority_emoji = {"critical": ":rotating_light:", "high": ":red_circle:", "medium": ":large_yellow_circle:", "low": ":white_circle:"}.get(priority, ":white_circle:")
+
+    text = (
+        f"{priority_emoji} *New Support Ticket — {ticket_id}*\n"
+        f"• *Subject:* {subject}\n"
+        f"• *Category:* {category}  |  *Priority:* {priority}\n"
+        f"• *Email:* {user_email}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
+            resp = await client.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+                json={"channel": SLACK_SUPPORT_CHANNEL, "text": text, "unfurl_links": False},
+            )
+            data = resp.json() if resp.status_code == 200 else {}
+            if not data.get("ok"):
+                logger.warning("_notify_slack_support: Slack API error for ticket %s: %s", ticket_id, data.get("error", resp.text[:120]))
+            else:
+                logger.info("_notify_slack_support: posted alert for ticket %s to %s", ticket_id, SLACK_SUPPORT_CHANNEL)
+    except Exception as exc:
+        logger.warning("_notify_slack_support: failed to post Slack alert for ticket %s: %s", ticket_id, exc)
+
+
 async def create_ticket(
     subject: str,
     description: str,
@@ -286,6 +329,9 @@ async def create_ticket(
     else:
         _save_local_tickets({**_load_local_tickets(), ticket_id: ticket})
 
+    # Slack alert — non-fatal, always attempt
+    await _notify_slack_support(ticket)
+
     # Sync to Notion
     notion_page_id = await _sync_to_notion(ticket)
     if notion_page_id:
@@ -332,12 +378,9 @@ async def get_ticket(ticket_id: str) -> dict[str, Any]:
                     return {"success": False, "error": f"Ticket {ticket_id} not found"}
         except Exception as e:
             logger.error("Supabase get_ticket error: %s", e)
+            return {"success": False, "error": f"Supabase get_ticket failed: {e}"}
 
-    tickets = _load_local_tickets()
-    ticket = tickets.get(ticket_id)
-    if ticket:
-        return {"success": True, "ticket": ticket}
-    return {"success": False, "error": f"Ticket {ticket_id} not found"}
+    return {"success": False, "error": "Supabase not configured — ticket reads require SUPABASE_URL + SUPABASE_SERVICE_KEY"}
 
 
 async def list_tickets(
@@ -369,19 +412,9 @@ async def list_tickets(
                     return {"success": True, "tickets": rows, "count": len(rows)}
         except Exception as e:
             logger.error("Supabase list_tickets error: %s", e)
+            return {"success": False, "error": f"Supabase list_tickets failed: {e}"}
 
-    # Fallback to local
-    tickets = list(_load_local_tickets().values())
-    if status:
-        tickets = [t for t in tickets if t.get("status") == status]
-    if priority:
-        tickets = [t for t in tickets if t.get("priority") == priority]
-    if category:
-        tickets = [t for t in tickets if t.get("category") == category]
-    if user_email:
-        tickets = [t for t in tickets if t.get("user_email") == user_email.lower()]
-    tickets.sort(key=lambda t: t.get("created_at", ""), reverse=True)
-    return {"success": True, "tickets": tickets[offset:offset + limit], "count": len(tickets)}
+    return {"success": False, "error": "Supabase not configured — ticket list requires SUPABASE_URL + SUPABASE_SERVICE_KEY"}
 
 
 async def update_ticket_status(
@@ -462,25 +495,6 @@ async def get_ticket_stats() -> dict[str, Any]:
                     }
         except Exception as e:
             logger.error("Supabase ticket stats error: %s", e)
+            return {"success": False, "error": f"Supabase ticket stats failed: {e}"}
 
-    # Fallback local
-    tickets = list(_load_local_tickets().values())
-    by_status: dict[str, int] = {}
-    by_priority: dict[str, int] = {}
-    by_category: dict[str, int] = {}
-    for t in tickets:
-        s = t.get("status", "open")
-        by_status[s] = by_status.get(s, 0) + 1
-        p = t.get("priority", "medium")
-        by_priority[p] = by_priority.get(p, 0) + 1
-        c = t.get("category", "other")
-        by_category[c] = by_category.get(c, 0) + 1
-    return {
-        "success": True,
-        "total": len(tickets),
-        "by_status": by_status,
-        "by_priority": by_priority,
-        "by_category": by_category,
-        "open_critical": sum(1 for t in tickets if t.get("status") == "open" and t.get("priority") == "critical"),
-        "storage": "local (Supabase not configured)",
-    }
+    return {"success": False, "error": "Supabase not configured — ticket stats require SUPABASE_URL + SUPABASE_SERVICE_KEY"}
