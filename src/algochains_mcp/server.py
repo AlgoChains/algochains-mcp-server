@@ -934,7 +934,7 @@ def _get_order_flow():
     if _order_flow is None:
         cls = _lazy_import(".realtime_analytics.order_flow_analyzer", "OrderFlowAnalyzer")
         if cls:
-            cfg = _load_config()
+            cfg = load_config()
             key = cfg.polygon.api_key if cfg.polygon else ""
             _order_flow = cls(polygon_key=key)
     return _order_flow
@@ -944,7 +944,7 @@ def _get_microstructure():
     if _microstructure is None:
         cls = _lazy_import(".realtime_analytics.microstructure", "MicrostructureEngine")
         if cls:
-            cfg = _load_config()
+            cfg = load_config()
             key = cfg.polygon.api_key if cfg.polygon else ""
             _microstructure = cls(polygon_key=key)
     return _microstructure
@@ -954,7 +954,7 @@ def _get_regime_detector():
     if _regime_detector is None:
         cls = _lazy_import(".realtime_analytics.regime_detector", "RegimeDetector")
         if cls:
-            cfg = _load_config()
+            cfg = load_config()
             key = cfg.polygon.api_key if cfg.polygon else ""
             _regime_detector = cls(polygon_key=key)
     return _regime_detector
@@ -1094,6 +1094,12 @@ def _get_defi_risk():
         cls = _lazy_import(".defi_engine.defi_risk_engine", "DeFiRiskEngine")
         if cls: _defi_risk = cls()
     return _defi_risk
+
+def _get_defi_portfolio():
+    return _get_defi_risk()
+
+def _get_swarm_mgr():
+    return _get_agent_orchestrator()
 
 # ── V16 getters (all lazy) ─────────────────────────────────────
 def _get_saas_tenant_mgr():
@@ -10656,7 +10662,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         end = _date.today()
         start = end - _td(days=days + 10)
         import httpx as _hx
-        async with _hx.AsyncClient(base_url=POLYGON_BASE, params={"apiKey": polygon_key}, timeout=30.0) as client:
+        _POLYGON_BASE = "https://api.polygon.io"
+        async with _hx.AsyncClient(base_url=_POLYGON_BASE, params={"apiKey": polygon_key}, timeout=30.0) as client:
             all_rets = {}
             for sym in symbols[:20]:
                 resp = await client.get(f"/v2/aggs/ticker/{sym}/range/1/day/{start.isoformat()}/{end.isoformat()}",

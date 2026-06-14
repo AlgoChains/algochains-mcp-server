@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timezone
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 

@@ -29,11 +29,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -107,7 +107,7 @@ jobs:
           cp scripts/install.sh release/install.sh 2>/dev/null || true
 
       - name: Upload CLI artifact (shared with binary + PyPI jobs)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-bundle
           path: dist/algochains-cli.js
@@ -188,11 +188,11 @@ jobs:
           - { name: darwin-x64,     pkg_target: node18-macos-x64,   output: algochains-darwin-x64 }
           - { name: win-x64,        pkg_target: node18-win-x64,     output: algochains-win-x64.exe }
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: cli-bundle
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 18
 
@@ -219,7 +219,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -229,7 +229,7 @@ jobs:
           python -m build
 
       - name: Upload Python distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-dists
           path: dist/*.tar.gz
@@ -247,7 +247,7 @@ jobs:
       id-token: write   # mandatory for OIDC trusted publishing — keep on this job ONLY
     steps:
       - name: Download Python distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: python-dists
           path: dist/
@@ -262,12 +262,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -315,7 +315,8 @@ jobs:
 
       - name: Publish @algochains/sdk
         working-directory: packages/sdk
-        run: npm publish --access public
+        # --ignore-scripts skips prepublishOnly (regenerate) since CI already ran it above
+        run: npm publish --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -418,7 +419,7 @@ jobs:
           ls manifests/a/AlgoChains/algochains/${VER}/
 
       - name: Upload winget manifests as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: winget-manifests
           path: manifests/

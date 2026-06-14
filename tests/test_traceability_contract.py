@@ -62,7 +62,7 @@ def test_traceability_contract_doc_exists():
         "docs/MCP_TRACEABILITY_CONTRACT.md not found. "
         "This document defines the client_trace_id / signal_id join-key protocol."
     )
-    content = doc.read_text()
+    content = doc.read_text(encoding="utf-8")
     assert "client_trace_id" in content, "Contract doc missing client_trace_id section"
     assert "signal_id" in content, "Contract doc missing signal_id section"
     assert "trade_log" in content, "Contract doc must reference trade_log for join semantics"
@@ -74,7 +74,7 @@ def test_x_request_id_middleware_present():
     bridge_src = (
         Path(__file__).resolve().parents[1]
         / "src" / "algochains_mcp" / "http_bridge.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "X-Request-Id" in bridge_src, (
         "http_bridge.py is missing X-Request-Id header handling. "
         "This is required for request traceability."
