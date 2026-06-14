@@ -30,7 +30,9 @@ def test_partial_broker_snapshot_preserves_quality_flags() -> None:
 
     summary = summarize_e2e_sentinel_state(raw)
 
-    assert summary["issue_class"] == "unknown_cancel_reason"
+    assert summary["issue_class"] == "broker_snapshot_partial"
+    assert summary["raw_issue_class"] == "unknown_cancel_reason"
+    assert summary["reason"] == "broker_snapshot_partial"
     assert summary["why"] == "Broker snapshot partial; working orders or fills unavailable."
     assert summary["orders_ok"] is False
     assert summary["fills_ok"] is False
@@ -68,3 +70,21 @@ def test_absent_broker_counts_do_not_imply_not_flat() -> None:
     assert summary["positions_count"] is None
     assert summary["working_orders_count"] is None
     assert summary["broker_flat"] is None
+
+
+def test_unknown_cancel_reason_is_preserved_without_partial_broker_evidence() -> None:
+    raw = {
+        "classification": {
+            "state": "warning",
+            "issue_class": "unknown_cancel_reason",
+            "why": "Cancel was observed but no matching broker evidence was found.",
+        },
+        "evidence": {"broker": {"positions_count": 1, "working_orders_count": 0}},
+    }
+
+    summary = summarize_e2e_sentinel_state(raw)
+
+    assert summary["issue_class"] == "unknown_cancel_reason"
+    assert summary["raw_issue_class"] == "unknown_cancel_reason"
+    assert summary["reason"] == "unknown_cancel_reason"
+    assert summary["broker_snapshot_partial"] is False

@@ -973,7 +973,7 @@ def _get_order_flow():
     if _order_flow is None:
         cls = _lazy_import(".realtime_analytics.order_flow_analyzer", "OrderFlowAnalyzer")
         if cls:
-            cfg = _load_config()
+            cfg = load_config()
             key = cfg.polygon.api_key if cfg.polygon else ""
             _order_flow = cls(polygon_key=key)
     return _order_flow
@@ -983,7 +983,7 @@ def _get_microstructure():
     if _microstructure is None:
         cls = _lazy_import(".realtime_analytics.microstructure", "MicrostructureEngine")
         if cls:
-            cfg = _load_config()
+            cfg = load_config()
             key = cfg.polygon.api_key if cfg.polygon else ""
             _microstructure = cls(polygon_key=key)
     return _microstructure
@@ -993,7 +993,7 @@ def _get_regime_detector():
     if _regime_detector is None:
         cls = _lazy_import(".realtime_analytics.regime_detector", "RegimeDetector")
         if cls:
-            cfg = _load_config()
+            cfg = load_config()
             key = cfg.polygon.api_key if cfg.polygon else ""
             _regime_detector = cls(polygon_key=key)
     return _regime_detector
@@ -1133,6 +1133,12 @@ def _get_defi_risk():
         cls = _lazy_import(".defi_engine.defi_risk_engine", "DeFiRiskEngine")
         if cls: _defi_risk = cls()
     return _defi_risk
+
+def _get_defi_portfolio():
+    return _get_defi_risk()
+
+def _get_swarm_mgr():
+    return _get_agent_orchestrator()
 
 # ── V16 getters (all lazy) ─────────────────────────────────────
 def _get_saas_tenant_mgr():
@@ -3593,7 +3599,7 @@ TOOLS = [
              "click_url": {"type": "string", "description": "URL to open when notification is tapped"},
          }, "required": ["title", "message"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="propagate_trade_signal", description="POST a signed trade signal to the AlgoChains Django propagation service (Roo architecture). Uses live endpoint http://172.232.170.168/signals/signal/ by default. Subscribers receive execution on connected PAPER Alpaca accounts. Register your bot at algochains.ai first.",
+    Tool(name="propagate_trade_signal", description="POST a signed trade signal to the AlgoChains Django propagation service. Requires ALGOCHAINS_SIGNAL_URL and ALGOCHAINS_SIGNAL_SECRET env vars — fails closed when unset. Subscribers receive execution on connected PAPER Alpaca accounts. Register your bot at algochains.ai first.",
          inputSchema={"type": "object", "properties": {
              "strategy_name": {"type": "string", "description": "Must match bot name on algochains.ai exactly (case-sensitive)"},
              "symbol": {"type": "string", "description": "e.g. BTC/USD, SPY, AAPL"},
@@ -4014,9 +4020,23 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_onboarding_status",
-         description="Check current onboarding progress: steps completed, steps remaining, connected brokers and data providers, and next required action. Call this to see where you are in the setup process.",
+         description="Check current onboarding progress: steps completed, steps remaining, connected brokers/providers, AlgoChains API key status, guardrail prefs, and next required action.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="set_algochains_api_key",
+         description="Step 4: Set your AlgoChains developer API key (ac_live_* or ac_test_*) for marketplace and bridge access. Validates against the bridge health endpoint. Get a key via create_developer_key tool or at algochains.ai/account/developer-keys/.",
+         inputSchema={"type": "object", "properties": {
+             "api_key": {"type": "string", "description": "Your developer key (ac_live_... or ac_test_...)"},
+         }, "required": ["api_key"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="set_guardrail_preferences",
+         description="Step 6: Configure guardrail notification thresholds. Hard-coded limits (daily loss $500, max drawdown 15%, VIX>35 gate) cannot be changed — this only controls when you are notified.",
+         inputSchema={"type": "object", "properties": {
+             "notify_on_daily_loss_pct": {"type": "number", "default": 80, "description": "Notify when daily loss reaches this % of $500 limit (e.g. 80 = alert at $400 loss)"},
+             "pause_on_consecutive_losses": {"type": "integer", "default": 3, "description": "Pause and alert after N consecutive losing trades"},
+             "slack_alerts_enabled": {"type": "boolean", "default": False},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="generate_ide_config",
          description="Generate the MCP config file (mcporter.json / mcp.json) for your IDE based on your connected brokers and data providers. IDEs: cursor | windsurf | claude | vscode. Mode: smart (default, 25 tools) | full (262 tools). Output includes install instructions.",
          inputSchema={"type": "object", "properties": {"ide": {"type": "string", "enum": ["cursor", "windsurf", "claude", "vscode"]}, "tool_mode": {"type": "string", "enum": ["smart", "full"], "default": "smart"}}, "required": ["ide"]},
@@ -4176,6 +4196,329 @@ TOOLS = [
              "user_id": {"type": "string"},
          }, "required": ["broker","user_id"]},
          annotations=ANNOT_WRITE_SAFE),
+
+    # ── Programmatic Account / MFA / Developer Key Tools ─────────────────
+    # Account creation & session management (Supabase Auth wrappers)
+    Tool(name="signup_algochains",
+         description="Create a new AlgoChains account with email + password via Supabase Auth. Returns session on success or requires_email_confirm. Next step: verify_email_otp → enroll_mfa → create_developer_key.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string", "description": "Account email address"},
+             "password": {"type": "string", "description": "Password (min 8 chars)"},
+         }, "required": ["email", "password"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="verify_email_otp",
+         description="Verify the email OTP token from the AlgoChains confirmation email. Activates your account and starts a session.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "token": {"type": "string", "description": "6-digit or link token from confirmation email"},
+         }, "required": ["email", "token"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="login_algochains",
+         description="Login to AlgoChains with email + password. Stores session locally for subsequent MFA and key operations.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "password": {"type": "string"},
+         }, "required": ["email", "password"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="refresh_session",
+         description="Refresh an expiring AlgoChains session using the stored refresh_token. Call before session expires to stay logged in.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="logout_algochains",
+         description="Revoke current AlgoChains session and clear stored credentials.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    # MFA enrollment and verification
+    Tool(name="enroll_mfa",
+         description="Enroll a new MFA factor (TOTP authenticator app or SMS). Returns QR code URI for TOTP — scan with Google Authenticator, Authy, etc. Then call verify_mfa to complete and upgrade session to AAL2.",
+         inputSchema={"type": "object", "properties": {
+             "factor_type": {"type": "string", "enum": ["totp", "phone"], "default": "totp"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="challenge_mfa",
+         description="Create an MFA challenge for login step-up verification. Required before verify_mfa during subsequent logins.",
+         inputSchema={"type": "object", "properties": {
+             "factor_id": {"type": "string", "description": "Factor ID from list_mfa_factors"},
+         }, "required": ["factor_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="verify_mfa",
+         description="Verify MFA code to complete enrollment or step up to AAL2 session. AAL2 is required for create_developer_key, rotate_developer_key, revoke_developer_key.",
+         inputSchema={"type": "object", "properties": {
+             "factor_id": {"type": "string"},
+             "code": {"type": "string", "description": "6-digit TOTP or SMS code"},
+             "challenge_id": {"type": "string", "description": "Challenge ID from challenge_mfa (required for login step-up, not for enrollment)"},
+         }, "required": ["factor_id", "code"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_mfa_factors",
+         description="List enrolled MFA factors for the current session.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="remove_mfa_factor",
+         description="Remove an enrolled MFA factor. Requires owner_token — destructive, downgrades session to AAL1.",
+         inputSchema={"type": "object", "properties": {
+             "factor_id": {"type": "string"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN"},
+         }, "required": ["factor_id", "owner_token"]},
+         annotations=ANNOT_WRITE_SAFE),
+    # Developer key lifecycle (self-serve ac_live_* / ac_test_* keys)
+    Tool(name="create_developer_key",
+         description="Mint a new ac_live_* or ac_test_* developer API key. Requires AAL2 session (enroll_mfa + verify_mfa first). Plaintext key returned ONCE ONLY — save immediately.",
+         inputSchema={"type": "object", "properties": {
+             "name": {"type": "string", "description": "Friendly name for the key", "default": "default"},
+             "scopes": {"type": "array", "items": {"type": "string"}, "description": "e.g. ['read:market_data','read:signals']"},
+             "env": {"type": "string", "enum": ["live", "test"], "default": "live"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_developer_keys",
+         description="List your developer API keys (masked — plaintext never returned after creation).",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="rotate_developer_key",
+         description="Atomically rotate a developer key (revoke old, mint new). Requires AAL2 session. New plaintext returned ONCE ONLY.",
+         inputSchema={"type": "object", "properties": {
+             "key_id": {"type": "string", "description": "UUID of the key to rotate"},
+             "name": {"type": "string", "description": "Name for the new key (defaults to old key's name)"},
+         }, "required": ["key_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="revoke_developer_key",
+         description="Revoke (soft-delete) a developer API key. Requires AAL2 session.",
+         inputSchema={"type": "object", "properties": {
+             "key_id": {"type": "string"},
+         }, "required": ["key_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_developer_key_usage",
+         description="Get usage metadata for a developer key (last used, scopes, active status).",
+         inputSchema={"type": "object", "properties": {
+             "key_id": {"type": "string"},
+         }, "required": ["key_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="test_bridge_connection",
+         description="Test a developer API key against the hosted AlgoChains bridge (mcp.algochains.ai). Returns auth status and scopes.",
+         inputSchema={"type": "object", "properties": {
+             "api_key": {"type": "string", "description": "Developer key to test (or set AC_DEV_KEY env var)"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Subscriber Onramp ────────────────────────────────────────────────
+    # ── Onboarding meta-tools (public, no auth — first 30 seconds) ──────────
+    Tool(name="get_started",
+         description=(
+             "START HERE. Guided next-steps for a brand-new user, by goal. No auth, "
+             "no setup. Call get_started(goal='subscriber') for copy-trade signals, "
+             "'creator' to publish a strategy, 'developer' to build on the API, or "
+             "'explore' to look around with zero signup. Returns the exact tool calls to make next."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "goal": {"type": "string", "description": "subscriber | creator | developer | explore (optional — omit for a menu)"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_pricing",
+         description=(
+             "Transparent AlgoChains pricing: paper ($29/mo) and live ($99/mo) tiers, "
+             "what's included, usage overage, the 20%/3-month referral reward, and the "
+             "80% creator revenue share. Flat subscription + usage; no performance fees. "
+             "No auth required."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_system_status",
+         description=(
+             "Consumer-facing platform health: version, live signal-bot roster "
+             "(MNQ/CL/MES/NQ), tool count, and public marketplace listing count. "
+             "No auth, no secrets — safe to call anytime."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_checkout_url",
+         description=(
+             "Generate a Stripe checkout URL for an AlgoChains subscription. "
+             "Returns a URL the user clicks once to pay — Stripe handles the payment UI. "
+             "After payment, a sub_live_… key is emailed automatically and the subscriber "
+             "can subscribe to MNQ copy-trade signals (delivered for the subscriber to "
+             "review and act on — no automated execution; the subscriber stays in control). "
+             "Tiers: 'paper' ($29/mo — subscriber tools + MNQ copy-trade signals, simulated "
+             "paper account, no broker needed) or 'live' ($99/mo — subscriber connects their "
+             "own broker and places their own trades). Flat subscription only. "
+             "Set ALGOCHAINS_SUBSCRIBER_KEY=<received_key> to activate."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string", "description": "Email for subscription and key delivery"},
+             "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper",
+                      "description": "paper=$29/mo (MNQ signals + simulated paper, no broker), live=$99/mo (connect your own broker, you place trades)"},
+             "referral_code": {"type": "string", "description": "Optional referral code (AC-XXXXXX) — credits the referrer."},
+         }, "required": ["email"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="generate_payment_link",
+         description=(
+             "Return a direct payment link for an AlgoChains subscription tier. "
+             "Unlike get_checkout_url, this returns a pre-configured shareable URL "
+             "that works without entering an email first. "
+             "paper=$29/mo, live=$99/mo. "
+             "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key>."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Subscriber Tools (stdio path — sub key sets ALGOCHAINS_SUBSCRIBER_KEY) ─
+    Tool(name="join_bot",
+         description=(
+             "Subscribe the authenticated subscriber to a strategy's published "
+             "copy-trade SIGNALS (the subscriber reviews and acts on them — the "
+             "platform does not auto-execute or exercise discretion). The subscriber "
+             "sets their own size and can pause/leave anytime. "
+             "Strategies: MNQ (micro Nasdaq scalper), CL (crude oil scalper), "
+             "MES (micro S&P swing), NQ (Nasdaq swing). "
+             "Enforces a seat cap per strategy — returns bot_at_capacity if full. "
+             "Requires the futures risk disclosure to be acknowledged first "
+             "(accept_subscriber_terms) and ALGOCHAINS_SUBSCRIBER_KEY to be set. "
+             "Re-calling with an existing subscription updates size_multiplier and un-pauses."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "bot": {"type": "string", "enum": ["MNQ", "CL", "MES", "NQ"],
+                     "description": "Which strategy's published signals to subscribe to"},
+             "size_multiplier": {"type": "number", "default": 1.0,
+                                 "description": "Trade-size multiplier vs the master bot (0 < x <= 10)"},
+             "max_contracts": {"type": "integer", "default": 10,
+                               "description": "Hard cap on contracts per signal"},
+             "daily_loss_cap_usd": {"type": "number", "default": 5000.0,
+                                    "description": "Daily loss hard limit in USD"},
+         }, "required": ["bot"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_subscriber_status",
+         description=(
+             "Return a full status snapshot for the authenticated subscriber: "
+             "which bots they're assigned to, paper account balance, key_active flag, "
+             "and suggested next_steps based on their current state. "
+             "Good first call after setting ALGOCHAINS_SUBSCRIBER_KEY. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY to be set."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="accept_subscriber_terms",
+         description=(
+             "Record the authenticated subscriber's explicit acknowledgment of the "
+             "futures risk disclosure and Terms of Service. REQUIRED before active "
+             "copy-trade (join_bot). Call once with no arguments to retrieve the "
+             "disclosure text and the exact acknowledgment phrase, then call again "
+             "with acknowledgment=<phrase> to record consent. CFTC/NFA compliance "
+             "gate. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "acknowledgment": {"type": "string", "description": "Exact risk-acknowledgment phrase to record consent"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_usage",
+         description=(
+             "Your current-month MCP API usage: total metered calls, included quota, "
+             "overage calls, overage cost (USD), and a projected month-end overage cost. "
+             "Read-only; reflects this subscriber's billing tier. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Affiliate / referral system ─────────────────────────────────────────
+    Tool(name="create_referral_code",
+         description=(
+             "Create (or fetch) the authenticated subscriber's shareable referral code. "
+             "Returns the code and a share_url (https://algochains.ai/r/<code>). "
+             "One active code per subscriber. Referrers earn 20% of each referral's "
+             "subscription for their first 3 months. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_referrals",
+         description=(
+             "Return the authenticated subscriber's referral summary: their referral code, "
+             "count of subscribers referred, and commission counts + sums by status. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_referral_earnings",
+         description=(
+             "Return total referral earnings (pending + paid commission_usd) for the "
+             "authenticated subscriber, with the 20%/3-month policy and compliance "
+             "disclaimer. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Creator payouts (Stripe Connect ledger) ─────────────────────────────
+    Tool(name="create_creator_onboarding_link",
+         description=(
+             "Create a Stripe Connect Express onboarding link for a strategy creator. "
+             "Returns a URL where the creator completes KYC and links their bank account "
+             "for payouts, and mirrors the Connect account into the creator ledger. "
+             "Pass creator_id + creator_email."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Creator id."},
+             "creator_email": {"type": "string", "description": "Email for the Stripe Connect account and KYC."},
+         }, "required": ["creator_id", "creator_email"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_creator_earnings",
+         description=(
+             "Read a creator's earnings summary (accrued / paid / reversed totals, 80/20 "
+             "revenue share) plus recent payout history. Read-only. Pass creator_id."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Creator id."},
+         }, "required": ["creator_id"]},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="run_creator_payouts",
+         description=(
+             "Run the creator payout batch: sum accrued earnings per creator and pay out "
+             "those over min_payout_usd via Stripe Connect. MOVES REAL MONEY. "
+             "Defaults to dry_run=true (returns the computed plan, executes nothing). "
+             "REQUIRES owner_token matching OWNER_API_TOKEN. Set dry_run=false to execute."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Optional — scope the run to a single creator."},
+             "dry_run": {"type": "boolean", "default": True, "description": "true (default) = plan only, no money moves."},
+             "min_payout_usd": {"type": "number", "default": 25.0, "description": "Minimum accrued balance to trigger a payout."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required to run."},
+         }, "required": ["owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
+    # ── Realized P&L (live vs paper segregated) ─────────────────────────────
+    Tool(name="get_my_realized_pnl",
+         description=(
+             "Your realized P&L with LIVE (real broker) and PAPER (simulated) results "
+             "STRICTLY segregated. Paper results carry the CFTC Reg. 4.41(b) hypothetical-"
+             "performance disclaimer; they are never co-mingled with live results. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="reconcile_creator_pnl",
+         description=(
+             "Owner reconciliation: attribute subscribers' LIVE net realized P&L to "
+             "strategy creators for a period (per-subscriber then summed; 80/20 share). "
+             "Writes the creator_strategy_pnl ledger; does NOT move money (payout is "
+             "run_creator_payouts). Defaults to dry_run=true. REQUIRES owner_token."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "period_start": {"type": "string", "description": "ISO8601 inclusive period start."},
+             "period_end": {"type": "string", "description": "ISO8601 exclusive period end."},
+             "dry_run": {"type": "boolean", "default": True, "description": "true (default) = plan only."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+         }, "required": ["period_start", "period_end", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
 
     # ── Waitlist ──────────────────────────────────────────────────────────
     Tool(name="join_waitlist",
@@ -4734,6 +5077,8 @@ TIER1_TOOL_NAMES = {
     "validate_data_provider",
     "run_onboarding_smoke_test",
     "get_onboarding_status",
+    "set_algochains_api_key",
+    "set_guardrail_preferences",
     "generate_ide_config",
     # V22.3 — Data Ingestion (always Tier 1 — users need this early)
     "ingest_csv_data",
@@ -4760,6 +5105,44 @@ TIER1_TOOL_NAMES = {
     "get_broker_oauth_status",
     "get_connected_brokers",
     "revoke_broker_connection",
+    # Programmatic account / MFA / developer key tools
+    "signup_algochains",
+    "verify_email_otp",
+    "login_algochains",
+    "refresh_session",
+    "logout_algochains",
+    "enroll_mfa",
+    "challenge_mfa",
+    "verify_mfa",
+    "list_mfa_factors",
+    "remove_mfa_factor",
+    "create_developer_key",
+    "list_developer_keys",
+    "rotate_developer_key",
+    "revoke_developer_key",
+    "get_developer_key_usage",
+    "test_bridge_connection",
+    # Onboarding meta-tools (public)
+    "get_started",
+    "get_pricing",
+    "get_system_status",
+    # Subscriber onramp
+    "get_checkout_url",
+    "generate_payment_link",
+    # Subscriber tools (stdio path — key from ALGOCHAINS_SUBSCRIBER_KEY)
+    "join_bot",
+    "get_subscriber_status",
+    "accept_subscriber_terms",
+    "get_my_usage",
+    # Affiliate / referral
+    "create_referral_code",
+    "get_my_referrals",
+    "get_referral_earnings",
+    # Creator payouts (run_creator_payouts intentionally NOT here — moves money, owner-gated)
+    "create_creator_onboarding_link",
+    "get_my_creator_earnings",
+    # Realized P&L (reconcile_creator_pnl intentionally NOT here — owner-gated)
+    "get_my_realized_pnl",
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
@@ -5039,6 +5422,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         # ── 1. Sanitize inputs ───────────────────────────────────
         arguments = validate_arguments(name, arguments)
+
+        # ── 1b. Demo-mode stub for ORDER_EXEC+ tools ─────────────
+        # ALGOCHAINS_DEMO_MODE=1 stubs destructive/order tools so demo users
+        # cannot accidentally place real orders. Tier 0-1 tools (market data,
+        # signals, regime, backtesting) are NEVER stubbed — demo users expect
+        # real data from those paths. Only tier≥2 (ORDER_EXEC / DESTRUCTIVE)
+        # is stubbed. quickstart.py sets this env var in --mode demo.
+        if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
+            from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_ORDER_EXEC, get_danger_tier as _get_tier
+            if _get_tier(name) >= _TIER_ORDER_EXEC:
+                return _text({
+                    "status": "demo_mode_stub",
+                    "tool": name,
+                    "message": (
+                        f"Tool '{name}' is an order/execution tool (tier≥2) and is stubbed "
+                        "in demo mode. No broker API call was made. "
+                        "Set credentials and remove ALGOCHAINS_DEMO_MODE to enable live execution."
+                    ),
+                    "demo_mode": True,
+                })
 
         # Smart mode is now an execution boundary for direct tool calls, not
         # just a list_tools token-saving filter. Hidden tools remain reachable
@@ -7302,6 +7705,23 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         if not decision.allow:
             return _text(decision.as_error())
+
+        # Demo mode guard: also stub ORDER_EXEC+ tools dispatched via execute_dynamic_tool.
+        # call_tool stubs direct calls; this catches the dynamic dispatch path.
+        if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
+            from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_OE, get_danger_tier as _gdt
+            if _gdt(inner_name) >= _TIER_OE:
+                return _text({
+                    "status": "demo_mode_stub",
+                    "tool": inner_name,
+                    "message": (
+                        f"Tool '{inner_name}' is an order/execution tool (tier≥2) and is stubbed "
+                        "in demo mode. No broker API call was made. "
+                        "Remove ALGOCHAINS_DEMO_MODE to enable live execution."
+                    ),
+                    "demo_mode": True,
+                })
+
         return await _execute_tool_with_runtime_guards(
             inner_name,
             inner_args,
@@ -9272,6 +9692,24 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": f"Onboarding status error: {exc}"})
 
+    elif name == "set_algochains_api_key":
+        try:
+            from .onboarding import set_algochains_api_key as _set_ac_key
+            return _text(_set_ac_key(api_key=arguments["api_key"]))
+        except Exception as exc:
+            return _text({"error": f"API key configuration error: {exc}"})
+
+    elif name == "set_guardrail_preferences":
+        try:
+            from .onboarding import set_guardrail_preferences as _set_guardrail_prefs
+            return _text(_set_guardrail_prefs(
+                notify_on_daily_loss_pct=float(arguments.get("notify_on_daily_loss_pct", 80)),
+                pause_on_consecutive_losses=int(arguments.get("pause_on_consecutive_losses", 3)),
+                slack_alerts_enabled=bool(arguments.get("slack_alerts_enabled", False)),
+            ))
+        except Exception as exc:
+            return _text({"error": f"Guardrail prefs error: {exc}"})
+
     elif name == "generate_ide_config":
         try:
             from .onboarding import generate_mcporter_config as _gen_config
@@ -9471,17 +9909,188 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": str(exc)})
 
+    elif name == "get_checkout_url":
+        try:
+            from .cloud_saas.billing_engine import BillingEngine as _BillingEngine
+            _be = _BillingEngine()
+            return _text(await _be.create_platform_checkout_session(
+                email=arguments["email"],
+                tier=arguments.get("tier", "paper"),
+                referral_code=arguments.get("referral_code"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "generate_payment_link":
+        tier = arguments.get("tier", "paper")
+        env_var = "STRIPE_PAPER_LINK" if tier == "paper" else "STRIPE_LIVE_LINK"
+        link = os.environ.get(env_var, "")
+        if not link:
+            link = f"https://algochains.ai/pricing#{tier}"
+        price = "$29/mo" if tier == "paper" else "$99/mo"
+        return _text({
+            "payment_link": link,
+            "tier": tier,
+            "price": price,
+            "note": "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key> and run get_my_portfolio()",
+        })
+
+    elif name in ("get_started", "get_pricing", "get_system_status"):
+        # Public onboarding meta-tools — no auth, never raise.
+        try:
+            from . import onboarding_meta as _om
+            if name == "get_started":
+                return _text(_om.get_started(arguments.get("goal")))
+            elif name == "get_pricing":
+                return _text(_om.get_pricing())
+            else:
+                return _text(_om.get_system_status())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name in ("join_bot", "get_subscriber_status", "accept_subscriber_terms",
+                  "get_my_usage", "create_referral_code", "get_my_referrals",
+                  "get_referral_earnings", "get_my_realized_pnl"):
+        _sub_key = os.environ.get("ALGOCHAINS_SUBSCRIBER_KEY", "")
+        if not _sub_key:
+            return _text({
+                "error": "ALGOCHAINS_SUBSCRIBER_KEY not set. "
+                         "Get a subscriber key from algochains.ai or run get_checkout_url() to subscribe.",
+            })
+        from .subscriber_auth import resolve_subscriber_key as _resolve_sub
+        _sub = _resolve_sub(_sub_key)
+        if not _sub:
+            return _text({"error": "Invalid or expired subscriber key. Check ALGOCHAINS_SUBSCRIBER_KEY."})
+        if name == "get_my_usage":
+            try:
+                from .subscriber_tools import get_my_usage as _get_my_usage
+                return _text(_get_my_usage(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "get_my_realized_pnl":
+            try:
+                from .cloud_saas.realized_pnl import get_my_realized_pnl as _grp
+                return _text(_grp(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name in ("create_referral_code", "get_my_referrals", "get_referral_earnings"):
+            try:
+                from .cloud_saas import referrals as _referrals
+                if name == "create_referral_code":
+                    return _text(_referrals.create_referral_code(_sub.subscriber_id))
+                elif name == "get_my_referrals":
+                    return _text(_referrals.get_my_referrals(_sub.subscriber_id))
+                else:
+                    return _text(_referrals.get_referral_earnings(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "join_bot":
+            try:
+                from .subscriber_tools import join_bot as _join_bot
+                return _text(_join_bot(
+                    _sub.subscriber_id,
+                    arguments["bot"],
+                    size_multiplier=float(arguments.get("size_multiplier", 1.0)),
+                    max_contracts=int(arguments.get("max_contracts", 10)),
+                    daily_loss_cap_usd=float(arguments.get("daily_loss_cap_usd", 5000.0)),
+                ))
+            except KeyError as exc:
+                return _text({"error": f"Missing required argument: {exc}"})
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "get_subscriber_status":
+            try:
+                from .subscriber_tools import get_subscriber_status as _get_sub_status
+                return _text(_get_sub_status(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "accept_subscriber_terms":
+            try:
+                from .subscriber_tools import accept_subscriber_terms as _accept_terms
+                return _text(_accept_terms(
+                    _sub.subscriber_id,
+                    acknowledgment=arguments.get("acknowledgment"),
+                ))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+
+    elif name == "create_creator_onboarding_link":
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            _creator_id = arguments.get("creator_id", "")
+            if not _creator_id:
+                return _text({"error": "creator_id required."})
+            return _text(await _cp.create_creator_onboarding_link(
+                creator_id=_creator_id,
+                creator_email=arguments["creator_email"],
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_my_creator_earnings":
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            _creator_id = arguments.get("creator_id", "")
+            if not _creator_id:
+                return _text({"error": "creator_id required."})
+            return _text(_cp.get_my_creator_earnings(_creator_id))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "run_creator_payouts":
+        # OWNER-GATED — moves real money. Fails closed when OWNER_API_TOKEN unset.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "run_creator_payouts requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            return _text(await _cp.run_creator_payouts(
+                creator_id=arguments.get("creator_id"),
+                dry_run=bool(arguments.get("dry_run", True)),
+                min_payout_usd=float(arguments.get("min_payout_usd", 25.0)),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "reconcile_creator_pnl":
+        # OWNER-GATED — writes the creator earnings ledger. Fails closed.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "reconcile_creator_pnl requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas.realized_pnl import reconcile_creator_pnl as _rec
+            return _text(await _rec(
+                arguments["period_start"],
+                arguments["period_end"],
+                dry_run=bool(arguments.get("dry_run", True)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
     elif name == "join_waitlist":
         try:
             from .waitlist import join_waitlist as _join_waitlist
-            return _text(await _join_waitlist(
+            result = await _join_waitlist(
                 email=arguments["email"],
                 first_name=arguments.get("first_name", ""),
                 last_name=arguments.get("last_name", ""),
                 broker=arguments.get("broker", ""),
                 use_case=arguments.get("use_case", ""),
                 referral_code=arguments.get("referral_code"),
-            ))
+            )
+            # Append checkout link so the user can pay immediately without waiting for an invite
+            from urllib.parse import quote as _url_quote
+            result["checkout_url"] = f"https://algochains.ai/pricing?email={_url_quote(arguments['email'], safe='')}"
+            result["note"] = "Skip the waitlist — subscribe directly at the checkout URL above."
+            return _text(result)
         except KeyError as exc:
             return _text({"error": f"Missing required argument: {exc}"})
         except Exception as exc:
@@ -9596,6 +10205,144 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .auth.password_reset import get_password_policy as _get_pwd_policy
             return _text(await _get_pwd_policy())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    # ── Programmatic Account / MFA / Developer Key Tools ─────────────────
+    elif name == "signup_algochains":
+        try:
+            from .auth.platform_auth import signup_algochains as _signup
+            return _text(await _signup(
+                email=arguments["email"],
+                password=arguments["password"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "verify_email_otp":
+        try:
+            from .auth.platform_auth import verify_email_otp as _verify_email
+            return _text(await _verify_email(
+                email=arguments["email"],
+                token=arguments["token"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "login_algochains":
+        try:
+            from .auth.platform_auth import login_algochains as _login
+            return _text(await _login(
+                email=arguments["email"],
+                password=arguments["password"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "refresh_session":
+        try:
+            from .auth.platform_auth import refresh_session as _refresh_session
+            return _text(await _refresh_session())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "logout_algochains":
+        try:
+            from .auth.platform_auth import logout_algochains as _logout
+            return _text(await _logout())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "enroll_mfa":
+        try:
+            from .auth.platform_auth import enroll_mfa as _enroll_mfa
+            return _text(await _enroll_mfa(
+                factor_type=arguments.get("factor_type", "totp"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "challenge_mfa":
+        try:
+            from .auth.platform_auth import challenge_mfa as _challenge_mfa
+            return _text(await _challenge_mfa(factor_id=arguments["factor_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "verify_mfa":
+        try:
+            from .auth.platform_auth import verify_mfa as _verify_mfa
+            return _text(await _verify_mfa(
+                factor_id=arguments["factor_id"],
+                code=arguments["code"],
+                challenge_id=arguments.get("challenge_id"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "list_mfa_factors":
+        try:
+            from .auth.platform_auth import list_mfa_factors as _list_factors
+            return _text(await _list_factors())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "remove_mfa_factor":
+        try:
+            from .auth.platform_auth import remove_mfa_factor as _remove_factor
+            return _text(await _remove_factor(
+                factor_id=arguments["factor_id"],
+                owner_token=arguments.get("owner_token", ""),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "create_developer_key":
+        try:
+            from .auth.platform_auth import create_developer_key as _create_key
+            return _text(await _create_key(
+                name=arguments.get("name", "default"),
+                scopes=arguments.get("scopes"),
+                env=arguments.get("env", "live"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "list_developer_keys":
+        try:
+            from .auth.platform_auth import list_developer_keys as _list_keys
+            return _text(await _list_keys())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "rotate_developer_key":
+        try:
+            from .auth.platform_auth import rotate_developer_key as _rotate_key
+            return _text(await _rotate_key(
+                key_id=arguments["key_id"],
+                name=arguments.get("name"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "revoke_developer_key":
+        try:
+            from .auth.platform_auth import revoke_developer_key as _revoke_key
+            return _text(await _revoke_key(key_id=arguments["key_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_developer_key_usage":
+        try:
+            from .auth.platform_auth import get_developer_key_usage as _key_usage
+            return _text(await _key_usage(key_id=arguments["key_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "test_bridge_connection":
+        try:
+            from .auth.platform_auth import test_bridge_connection as _test_bridge
+            return _text(await _test_bridge(api_key=arguments.get("api_key")))
         except Exception as exc:
             return _text({"error": str(exc)})
 
@@ -9946,7 +10693,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         end = _date.today()
         start = end - _td(days=days + 10)
         import httpx as _hx
-        async with _hx.AsyncClient(base_url=POLYGON_BASE, params={"apiKey": polygon_key}, timeout=30.0) as client:
+        _POLYGON_BASE = "https://api.polygon.io"
+        async with _hx.AsyncClient(base_url=_POLYGON_BASE, params={"apiKey": polygon_key}, timeout=30.0) as client:
             all_rets = {}
             for sym in symbols[:20]:
                 resp = await client.get(f"/v2/aggs/ticker/{sym}/range/1/day/{start.isoformat()}/{end.isoformat()}",

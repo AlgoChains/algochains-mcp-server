@@ -40,7 +40,7 @@ async function main() {
     // 3. Record deploy start
     const deployStart = new Date().toISOString();
     await slack.call("slack_post_message", {
-      channel_id: "C09TGL20N4V", // #tradovate-futures-bot-changelog
+      channel_id: process.env.SLACK_CHANNEL_BOT_CHANGELOG ?? "SLACK_CHANNEL_BOT_CHANGELOG", // #tradovate-futures-bot-changelog
       text: [
         `🔄 *Bot Deploy Started* — ${deployStart}`,
         `*Pre-Deploy Equity:* $${preEquity}`,
@@ -61,7 +61,7 @@ async function main() {
     const healthOk = postHealth?.status === "operational" || postHealth?.status === "healthy";
 
     await slack.call("slack_post_message", {
-      channel_id: "C09TGL20N4V",
+      channel_id: process.env.SLACK_CHANNEL_BOT_CHANGELOG ?? "SLACK_CHANNEL_BOT_CHANGELOG",
       text: [
         `✅ *Bot Deploy Verified* — ${new Date().toISOString()}`,
         `*Post-Deploy Equity:* $${postEquity} (drift: $${equityDrift.toFixed(2)})`,

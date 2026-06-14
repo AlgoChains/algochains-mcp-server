@@ -97,7 +97,7 @@ src/algochains_mcp/
 | Component | Technology | Location |
 |-----------|-----------|----------|
 | Dev Machine | Mac M3 Max | Local |
-| GPU Server | Desktop Ubuntu/WSL2 (RTX) | 100.99.127.119 via Tailscale |
+| GPU Server | Desktop Ubuntu/WSL2 (RTX) | <TAILSCALE_GPU_HOST> via Tailscale |
 | Broker (futures) | Tradovate | WebSocket + REST |
 | Broker (equities) | Alpaca | REST API |
 | Broker (forex) | Oanda | REST API |
@@ -171,7 +171,7 @@ Multi-Tenant: `tenants`, `sub_accounts`, `broker_routing`, `tenant_billing`, `us
     │                                                                     │
     │  ┌──────────────┐  ┌───────────────┐  ┌────────────────────┐       │
     │  │ Rust Engine   │  │ OpenClaw      │  │ Desktop GPU        │       │
-    │  │ v2 (backtest) │  │ Gateway       │  │ (100.99.127.119)   │       │
+    │  │ v2 (backtest) │  │ Gateway       │  │ (<TAILSCALE_GPU_HOST>)   │       │
     │  │ rsi/bb/swing/ │  │ 80 skills     │  │ ML training        │       │
     │  │ scalper       │  │ 60 cron jobs  │  │ Optimization       │       │
     │  └──────────────┘  │ 9 crew agents │  │ via Tailscale      │       │
@@ -269,7 +269,7 @@ V8 Strategy Builder creates rule-based strategies (RSI, BB, EMA crossovers). The
 2. **Reinforcement learning** — agents that learn optimal execution and position sizing
 3. **LLM-generated strategies** — natural language → complex multi-factor strategies via code generation
 
-Our Rust backtest engine and GPU desktop (100.99.127.119) are underutilized. V10 makes them the backbone of an ML strategy pipeline.
+Our Rust backtest engine and GPU desktop (<TAILSCALE_GPU_HOST>) are underutilized. V10 makes them the backbone of an ML strategy pipeline.
 
 ### 4.2 Architecture
 
@@ -300,7 +300,7 @@ User: "Build me an ML model that predicts AAPL 1-hour returns using order flow +
 │                 │                                               │
 │         ┌───────▼────────┐                                     │
 │         │ GPU Dispatcher │  ← Mac M3 Max (local)               │
-│         │                │  ← Desktop RTX (100.99.127.119)     │
+│         │                │  ← Desktop RTX (<TAILSCALE_GPU_HOST>)     │
 │         └────────────────┘                                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -439,7 +439,7 @@ CREATE INDEX idx_predictions_model ON ml_predictions(model_id, predicted_at DESC
 
 ```python
 # CRITICAL: Use rsync for data transfer, NOT SSHFS/NFS (they hang over Tailscale)
-# Desktop: 100.99.127.119 via Tailscale
+# Desktop: <TAILSCALE_GPU_HOST> via Tailscale
 # Desktop data path: /home/trrey/tick_data/
 # Mac data path: local (data/ directory)
 # Use sys.platform == 'linux' to detect desktop
@@ -451,7 +451,7 @@ GPU_DISPATCH_CONFIG = {
         "models": ["xgboost", "ensemble"],  # CPU-friendly models
     },
     "desktop": {
-        "host": "100.99.127.119",
+        "host": "<TAILSCALE_GPU_HOST>",
         "device": "cuda",
         "max_batch": 32768,
         "models": ["lstm", "transformer", "rl"],  # GPU-hungry models

@@ -38,14 +38,25 @@ This document describes every combination of `ALGOCHAINS_TOOL_MODE`, `ALGOCHAINS
 
 ### Transport: `http_bridge` (external API callers)
 
-| `BRIDGE_API_KEY` | `OWNER_API_TOKEN` | ORDER_EXEC Reachable? | Notes |
+> **⚠️ Doc/code note (audited 2026-06-14):** The HTTP bridge policy in
+> `evaluate_bridge_tool` currently requires `confirm=true` in arguments for
+> ORDER_EXEC tools, but does **not** independently verify `OWNER_API_TOKEN` at the
+> bridge policy layer. The `OWNER_API_TOKEN` column below reflects the intended
+> end-state under `ALGOCHAINS_BRIDGE_REQUIRE_OWNER_TOKEN=1` (Phase 2 opt-in).
+> Until that flag is enabled, bridge ORDER_EXEC is gated by `BRIDGE_API_KEY` +
+> `confirm=true` only. See `tool_policy.py::evaluate_bridge_tool`.
+
+| `BRIDGE_API_KEY` | `confirm=true` | ORDER_EXEC Reachable? | Notes |
 |-----------------|-------------------|-----------------------|-------|
-| set + correct | set + correct | ✅ Allowed | Full auth path. `confirm=true` also required in envelope. |
-| set + correct | set + wrong | ❌ Blocked | Bridge auth passes but ORDER_EXEC gate fails. |
-| set + correct | unset | ❌ Blocked | OWNER_API_TOKEN unset → fail-closed for ORDER_EXEC. |
-| unset | any | ❌ Blocked | Bridge itself rejects request (401). Never reaches dispatch. |
-| `ALGOCHAINS_BRIDGE_DEV_MODE=true` | set + correct | ✅ Allowed | Dev mode bypasses API key check but ORDER_EXEC gate still enforces owner_token. **Never set in production.** |
-| `ALGOCHAINS_BRIDGE_DEV_MODE=true` | unset | ❌ Blocked | Dev mode + no token → ORDER_EXEC still fail-closed. |
+| set + correct | yes | ✅ Allowed (current) | `confirm=true` required in arguments. `OWNER_API_TOKEN` gate not yet enforced at bridge. |
+| set + correct | no | ❌ Blocked | Missing `confirm=true` → policy denied. |
+| unset | any | ❌ Blocked | Bridge rejects request (401). Never reaches dispatch. |
+| `ALGOCHAINS_BRIDGE_DEV_MODE=true` | yes | ✅ Allowed | Dev mode bypasses API key but confirm still required. **Never set in production.** |
+| `ALGOCHAINS_BRIDGE_DEV_MODE=true` | no | ❌ Blocked | Dev mode + no confirm → still blocked. |
+
+**Planned hardening (Phase 2):** Set `ALGOCHAINS_BRIDGE_REQUIRE_OWNER_TOKEN=1` to
+also require a matching `owner_token` in the request body for ORDER_EXEC tools.
+Warn-only logging will precede enforcement to avoid breaking existing clients.
 
 ---
 

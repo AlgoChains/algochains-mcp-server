@@ -12,10 +12,9 @@ API key to any caller-controlled URL. Two distinct issues patched:
 """
 from __future__ import annotations
 
-import json
 import pytest
 import httpx
-from unittest.mock import AsyncMock, MagicMock, patch, ANY
+from unittest.mock import AsyncMock, MagicMock
 
 from algochains_mcp.data_providers.massive_whitelabel import (
     MassiveWhiteLabelProvider,
@@ -165,7 +164,7 @@ class TestGetEndpointDocsNoAuth:
     @pytest.mark.asyncio
     async def test_no_authorization_header_sent(self):
         """The API key must NEVER be forwarded to the docs host."""
-        prov = _make_provider(api_key="super-secret-massive-key")
+        prov = _make_provider(api_key="PLACEHOLDER")
         docs_url = "https://massive.com/docs/rest/some-endpoint.json"
 
         captured_kwargs: dict = {}
@@ -232,7 +231,7 @@ class TestCallApiHostSmuggling:
         The fixed code inserts a '/' separator, turning '@attacker.com/x' into
         a path segment on api.massive.com — the API key never reaches attacker.com.
         """
-        prov = _make_provider(api_key="should-not-reach-attacker")
+        prov = _make_provider(api_key="PLACEHOLDER")
         captured_url: list[str] = []
 
         async def _capturing_get(url, **kwargs):

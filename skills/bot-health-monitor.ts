@@ -80,7 +80,7 @@ async function main() {
 
     // Always post health summary to #tradovate-futures-bot-changelog
     await slack.call("slack_post_message", {
-      channel_id: "C09TGL20N4V", // #tradovate-futures-bot-changelog
+      channel_id: process.env.SLACK_CHANNEL_BOT_CHANGELOG ?? "SLACK_CHANNEL_BOT_CHANGELOG", // #tradovate-futures-bot-changelog
       text: lines.join("\n"),
     });
 

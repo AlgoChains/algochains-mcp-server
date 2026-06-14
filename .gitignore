@@ -5,6 +5,10 @@ __pycache__/
 dist/
 build/
 .env
+.env.local
+.env.*.local
+.env.production
+.env.keys
 .venv/
 *.db
 *.sqlite3
@@ -12,6 +16,11 @@ build/
 .ruff_cache/
 .pytest_cache/
 secrets/
+
+# Session/token files — contain live credentials, never commit
+tradovate_session.json
+*.session.json
+state/tradovate_token.json
 
 # Runtime state — never commit (a committed guardrails_state.json with stale
 # OPEN breakers + monotonic timestamps poisoned fresh checkouts; see 22.4.2)
@@ -23,3 +32,5 @@ state/onboarding_state.json
 # Node toolchain artifacts (CLI builds use bun; npm install is local-only)
 node_modules/
 src/cli/package-lock.json
+state/guardrail_prefs.json
+state/platform_session.json

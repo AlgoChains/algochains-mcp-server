@@ -122,9 +122,11 @@ def resolve_developer_key(raw_key: str | None) -> ResolvedDeveloper | None:
     raw_scopes = row.get("scopes") or []
     scopes = tuple(s for s in raw_scopes if isinstance(s, str)) or DEFAULT_DEVELOPER_SCOPES
 
-    clerk_user_id = row.get("clerk_user_id")
+    # RPC returns "user_id" (Supabase auth.users UUID).
+    # Legacy pre-migration rows used "clerk_user_id"; accept both for compatibility.
+    clerk_user_id = row.get("clerk_user_id") or row.get("user_id") or ""
     if not clerk_user_id:
-        log.warning("developer_auth: row returned null clerk_user_id — failing closed")
+        log.warning("developer_auth: row returned null user_id — failing closed")
         with _CACHE_LOCK:
             _CACHE[key_hash] = (now, ResolvedDeveloper(clerk_user_id="", scopes=(), env="live"))
         return None

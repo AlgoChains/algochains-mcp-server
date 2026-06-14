@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to release (e.g. v22.6.0) — must already exist as a git tag"
+        required: true
+        type: string
+
+env:
+  # When triggered via workflow_dispatch, use the input tag; otherwise use the pushed tag ref.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -17,31 +27,31 @@ jobs:
       tool_count: ${{ steps.toolcount.outputs.count }}
       tag: ${{ steps.tag.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Install AlgoChains MCP + MCPorter
         run: |
           pip install -e ".[dev]"
-          npm install -g mcporter
+          npm install -g mcporter@0.12.0
 
       - name: Extract tag (strip leading v)
         id: tag
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "ver=${TAG#v}" >> $GITHUB_OUTPUT
 
       - name: Verify pyproject version matches tag
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           VER="${TAG#v}"
           PYVER=$(grep -E '^version\s*=' pyproject.toml | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
           if [ "$PYVER" != "$VER" ]; then
@@ -91,28 +101,31 @@ jobs:
         run: |
           mkdir -p release
           cp dist/algochains-cli.js release/
-          tar -czf release/algochains-sdk-${{ github.ref_name }}.tar.gz -C packages/sdk .
+          tar -czf release/algochains-sdk-${{ env.RELEASE_TAG }}.tar.gz -C packages/sdk .
           cp scripts/algochains release/algochains-wrapper.sh
           cp scripts/algochains.ps1 release/algochains.ps1 2>/dev/null || true
           cp scripts/install.sh release/install.sh 2>/dev/null || true
 
       - name: Upload CLI artifact (shared with binary + PyPI jobs)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cli-bundle
           path: dist/algochains-cli.js
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             release/algochains-cli.js
-            release/algochains-sdk-${{ github.ref_name }}.tar.gz
+            release/algochains-sdk-${{ env.RELEASE_TAG }}.tar.gz
             release/algochains-wrapper.sh
             release/algochains.ps1
             release/install.sh
           body: |
-            ## AlgoChains ${{ github.ref_name }}
+            ## AlgoChains ${{ env.RELEASE_TAG }}
 
             **Tools:** ${{ env.TOOL_COUNT }}
             **CLI Bundle:** ${{ env.CLI_SIZE }} bytes
@@ -130,10 +143,10 @@ jobs:
             **Linux / macOS (standalone binary)**
             ```bash
             # macOS arm64
-            curl -fsSL https://github.com/AlgoChains/algochains-mcp-server/releases/download/${{ github.ref_name }}/algochains-darwin-arm64 -o algochains && chmod +x algochains
+            curl -fsSL https://github.com/AlgoChains/algochains-mcp-server/releases/download/${{ env.RELEASE_TAG }}/algochains-darwin-arm64 -o algochains && chmod +x algochains
 
             # Linux x64
-            curl -fsSL https://github.com/AlgoChains/algochains-mcp-server/releases/download/${{ github.ref_name }}/algochains-linux-x64 -o algochains && chmod +x algochains
+            curl -fsSL https://github.com/AlgoChains/algochains-mcp-server/releases/download/${{ env.RELEASE_TAG }}/algochains-linux-x64 -o algochains && chmod +x algochains
             ```
 
             **Universal installer**
@@ -177,19 +190,20 @@ jobs:
           - { name: darwin-x64,     pkg_target: node18-macos-x64,   output: algochains-darwin-x64 }
           - { name: win-x64,        pkg_target: node18-win-x64,     output: algochains-win-x64.exe }
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: cli-bundle
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 18
+          node-version: 22
 
       - name: Build standalone binary (${{ matrix.target.name }})
         run: |
           # @vercel/pkg was unpublished from npm (404) — @yao-pkg/pkg is the
-          # maintained fork with the same `pkg` CLI and node18 targets
-          npm install -g @yao-pkg/pkg
+          # maintained fork with the same `pkg` CLI and node18 targets. The
+          # builder itself requires Node 22 even when producing Node 18 binaries.
+          npm install -g @yao-pkg/pkg@6.20.0
           pkg algochains-cli.js \
             --target ${{ matrix.target.pkg_target }} \
             --output ${{ matrix.target.output }} \
@@ -198,6 +212,8 @@ jobs:
 
       - name: Upload binary to Release
         uses: softprops/action-gh-release@v2
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
           files: ${{ matrix.target.output }}
 
@@ -206,9 +222,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-cli
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -218,7 +234,7 @@ jobs:
           python -m build
 
       - name: Upload Python distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-dists
           path: dist/*.tar.gz
@@ -236,34 +252,36 @@ jobs:
       id-token: write   # mandatory for OIDC trusted publishing — keep on this job ONLY
     steps:
       - name: Download Python distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: python-dists
           path: dist/
 
       - name: Publish to PyPI (OIDC — no API token needed)
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   # ─── npm: bump version + publish SDK ──────────────────────────────────────────
   publish-sdk:
     runs-on: ubuntu-latest
     needs: build-cli
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Install AlgoChains MCP + MCPorter
         run: |
           pip install -e ".[dev]"
-          npm install -g mcporter
+          npm install -g mcporter@0.12.0
 
       # mcporter resolves named servers from config/mcporter.json (cwd) or
       # ~/.mcporter/config.json (global) — without this, emit-ts fails with
@@ -294,7 +312,7 @@ jobs:
 
       - name: Bump SDK version to match release tag
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           VER="${TAG#v}"
           cd packages/sdk
           # Update version in package.json without creating a git tag
@@ -304,7 +322,8 @@ jobs:
 
       - name: Publish @algochains/sdk
         working-directory: packages/sdk
-        run: npm publish --access public
+        # --ignore-scripts skips prepublishOnly (regenerate) since CI already ran it above
+        run: npm publish --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -314,7 +333,7 @@ jobs:
     needs: build-cli
     continue-on-error: true   # HK-2: AlgoChains/homebrew-algochains tap repo may not exist yet
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Check out the homebrew tap repo; requires HOMEBREW_TAP_TOKEN secret
           # pointing to a PAT with Contents write access on AlgoChains/homebrew-algochains
@@ -324,7 +343,7 @@ jobs:
 
       - name: Update formula version + SHA256 from PyPI
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           VER="${TAG#v}"
           PKG="algochains_mcp_server-${VER}"
           FORMULA="homebrew-tap/Formula/algochains.rb"
@@ -353,7 +372,7 @@ jobs:
           git config user.name "AlgoChains Bot"
           git config user.email "bot@algochains.ai"
           git add Formula/algochains.rb
-          git diff --staged --quiet || git commit -m "chore: bump algochains to ${{ github.ref_name }}"
+          git diff --staged --quiet || git commit -m "chore: bump algochains to ${{ env.RELEASE_TAG }}"
           git push
 
   # ─── Winget manifest auto-update ──────────────────────────────────────────────
@@ -363,7 +382,7 @@ jobs:
     steps:
       - name: Generate winget manifest
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="${{ env.RELEASE_TAG }}"
           VER="${TAG#v}"
           SHA="${{ needs.build-cli.outputs.cli_sha256 }}"
 
@@ -407,7 +426,7 @@ jobs:
           ls manifests/a/AlgoChains/algochains/${VER}/
 
       - name: Upload winget manifests as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: winget-manifests
           path: manifests/

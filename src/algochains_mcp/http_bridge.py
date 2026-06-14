@@ -25,7 +25,9 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path as _PathGlobal
+from typing import Any
 
 # FastAPI imports at module level so inner functions can resolve Request type
 try:
@@ -45,6 +47,7 @@ from .subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    _paper_pnl_aliases,
 )
 from .developer_auth import (
     ResolvedDeveloper,
@@ -88,7 +91,7 @@ def _read_project_version() -> str:
         return _pkg_version("algochains-mcp-server")
     except Exception:
         pass
-    return "22.5.0"  # fallback (only used when pyproject + installed metadata are both unreadable)
+    return "22.6.0"  # fallback (only used when pyproject + installed metadata are both unreadable)
 
 _SERVER_VERSION = _read_project_version()
 
@@ -313,6 +316,18 @@ def create_fastapi_app():
         raise ImportError("Install fastapi and uvicorn: pip install fastapi uvicorn")
     if not _FASTAPI_AVAILABLE:
         raise ImportError("Install fastapi and uvicorn: pip install fastapi uvicorn")
+
+    # Emit security warning at app-creation time so it fires whether the app is
+    # launched via __main__, uvicorn CLI, or any other ASGI server.
+    _host_at_create = os.getenv("ALGOCHAINS_BRIDGE_HOST", "127.0.0.1")
+    _key_at_create = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
+    if _host_at_create not in ("127.0.0.1", "localhost", "::1") and not _key_at_create:
+        log.warning(
+            "⚠️  HTTP bridge configured for %s (non-localhost) with no "
+            "ALGOCHAINS_BRIDGE_API_KEY set. Public tools are accessible without "
+            "authentication. Set ALGOCHAINS_BRIDGE_API_KEY or restrict the bind address.",
+            _host_at_create,
+        )
 
     app_http = FastAPI(
         title="AlgoChains MCP HTTP Bridge",
@@ -806,6 +821,17 @@ def create_fastapi_app():
                 },
             )
 
+        def _money_total(values: list[float | None]) -> float:
+            total = Decimal("0")
+            for value in values:
+                if value is None:
+                    continue
+                try:
+                    total += Decimal(str(value))
+                except (InvalidOperation, ValueError, TypeError):
+                    continue
+            return float(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
         for row in assignments:
             sub = _ensure_subscriber(row)
             if sub is None:
@@ -819,7 +845,10 @@ def create_fastapi_app():
             sub = _ensure_subscriber(row)
             if sub is None:
                 continue
+            aliases = _paper_pnl_aliases(row)
+            row.update(aliases)
             sub["paper_account"] = row
+            sub.update(aliases)
 
         for row in heartbeats:
             sub = _ensure_subscriber(row)
@@ -834,6 +863,14 @@ def create_fastapi_app():
             sub["marketplace_subscription_count"] += 1
             if row.get("status") == "active":
                 sub["active_marketplace_subscription_count"] += 1
+
+        paper_pnl_rollup_usd = _money_total(
+            [
+                sub.get("paper_pnl_rollup_usd")
+                for sub in subscribers.values()
+                if isinstance(sub.get("paper_pnl_rollup_usd"), (int, float))
+            ]
+        )
 
         return {
             "subscribers": list(subscribers.values()),
@@ -852,6 +889,9 @@ def create_fastapi_app():
             "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
             "paper_account_count": len(paper_accounts),
             "heartbeat_count": len(heartbeats),
+            "paper_pnl_usd": paper_pnl_rollup_usd,
+            "paper_pnl": paper_pnl_rollup_usd,
+            "paper_pnl_rollup_usd": paper_pnl_rollup_usd,
             "query_errors": {
                 key: value
                 for key, value in {
@@ -1355,4 +1395,12 @@ if __name__ == "__main__":
     app = create_fastapi_app()
     # Default to localhost only. Set ALGOCHAINS_BRIDGE_HOST=0.0.0.0 intentionally for LAN access.
     host = os.getenv("ALGOCHAINS_BRIDGE_HOST", "127.0.0.1")
+    _bridge_key = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
+    if host not in ("127.0.0.1", "localhost", "::1") and not _bridge_key:
+        log.warning(
+            "⚠️  HTTP bridge bound to %s (non-localhost) with no ALGOCHAINS_BRIDGE_API_KEY set. "
+            "Public tools are accessible without authentication. "
+            "Set ALGOCHAINS_BRIDGE_API_KEY or restrict the bind address.",
+            host,
+        )
     uvicorn.run(app, host=host, port=port, log_level="info")

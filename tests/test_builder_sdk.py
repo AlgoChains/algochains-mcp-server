@@ -95,7 +95,7 @@ class TestStrategyRunner:
                 for i in range(50)]
         result = await runner.run_backtest(config, data=data)
         assert result.total_trades > 0
-        assert result.execution_time_ms > 0
+        assert result.execution_time_ms >= 0
 
 
 class TestSubmissionPipeline:

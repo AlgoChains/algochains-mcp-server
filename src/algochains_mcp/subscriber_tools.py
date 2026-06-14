@@ -45,6 +45,99 @@ def _err(msg: str, **extra: Any) -> dict[str, Any]:
     return out
 
 
+def _has_risk_consent(sb, subscriber_id: str) -> bool:
+    """True if the subscriber has a persisted futures risk-disclosure acknowledgment
+    for the *current* disclosure version. Fail closed (False) on any lookup error."""
+    from .compliance.disclosures import RISK_DISCLOSURE_VERSION
+    try:
+        resp = (
+            sb.table("subscriber_api_keys")
+            .select("risk_disclosure_version,risk_disclosure_accepted_at")
+            .eq("subscriber_id", subscriber_id)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+        if not rows:
+            return False
+        row = rows[0]
+        return bool(
+            row.get("risk_disclosure_accepted_at")
+            and row.get("risk_disclosure_version") == RISK_DISCLOSURE_VERSION
+        )
+    except Exception as exc:  # pragma: no cover - fail closed
+        log.warning("risk consent lookup failed for %s: %s", subscriber_id, exc)
+        return False
+
+
+def accept_subscriber_terms(
+    subscriber_id: str,
+    *,
+    acknowledgment: str | None = None,
+) -> dict[str, Any]:
+    """Record a subscriber's explicit futures risk-disclosure + ToS acknowledgment.
+
+    Required before active copy-trade (join_bot). The acknowledgment string must
+    match the canonical RISK_ACK_PHRASE so consent is unambiguous and auditable.
+    Writes both the ToS and risk-disclosure stamps via the SECURITY DEFINER RPC.
+    """
+    from .compliance.disclosures import (
+        RISK_ACK_PHRASE,
+        RISK_DISCLOSURE_VERSION,
+        SUBSCRIBER_RISK_DISCLOSURE,
+        TOS_VERSION,
+    )
+
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+
+    if acknowledgment is None or acknowledgment.strip() != RISK_ACK_PHRASE:
+        return {
+            "status": "acknowledgment_required",
+            "disclosure": SUBSCRIBER_RISK_DISCLOSURE,
+            "required_acknowledgment": RISK_ACK_PHRASE,
+            "instructions": (
+                "Call accept_subscriber_terms(acknowledgment='"
+                + RISK_ACK_PHRASE
+                + "') to record consent and enable copy-trading."
+            ),
+        }
+
+    try:
+        sb.rpc(
+            "record_subscriber_consent",
+            {
+                "p_subscriber_id": subscriber_id,
+                "p_consent_type": "risk_disclosure",
+                "p_version": RISK_DISCLOSURE_VERSION,
+                "p_acknowledgment": acknowledgment.strip(),
+                "p_source": "mcp",
+            },
+        ).execute()
+        sb.rpc(
+            "record_subscriber_consent",
+            {
+                "p_subscriber_id": subscriber_id,
+                "p_consent_type": "tos",
+                "p_version": TOS_VERSION,
+                "p_acknowledgment": None,
+                "p_source": "mcp",
+            },
+        ).execute()
+    except Exception as exc:
+        return _err("consent_write_failed", detail=str(exc))
+
+    return {
+        "status": "accepted",
+        "subscriber_id": subscriber_id,
+        "risk_disclosure_version": RISK_DISCLOSURE_VERSION,
+        "tos_version": TOS_VERSION,
+        "accepted_at": datetime.now(timezone.utc).isoformat(),
+        "next_steps": ["Call join_bot(bot='MNQ') to start copy-trading."],
+    }
+
+
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 PAPER_ACCOUNT_SELECT = (
@@ -256,7 +349,9 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
 
     paper_account = _get_paper_account(sb, subscriber_id)
 
-    return {
+    # Paper P&L is simulated → CFTC Reg. 4.41(b) hypothetical-performance disclaimer.
+    from .compliance.disclosures import with_hypothetical_disclaimer
+    return with_hypothetical_disclaimer({
         "subscriber_id": subscriber_id,
         "pnl_today_usd": round(pnl_today, 2),
         "pnl_7d_usd": round(pnl_week, 2),
@@ -264,7 +359,7 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
         "pnl_today_by_bot": {k: round(v, 2) for k, v in by_bot.items()},
         **_paper_pnl_aliases(paper_account),
         "as_of": now.isoformat(),
-    }
+    })
 
 
 def get_my_fills(
@@ -325,7 +420,9 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         except Exception as exc:
             log.warning("get_my_portfolio open entries: %s", exc)
 
-    return {
+    # Portfolio reflects the simulated paper account → CFTC Reg. 4.41(b).
+    from .compliance.disclosures import with_hypothetical_disclaimer
+    return with_hypothetical_disclaimer({
         "subscriber_id": subscriber_id,
         "paper_account": paper_account,
         "assignments": assignments,
@@ -338,7 +435,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         "fills_today": pnl.get("fills_today"),
         **_paper_pnl_aliases(paper_account),
         "as_of": datetime.now(timezone.utc).isoformat(),
-    }
+    })
 
 
 def place_paper_order(
@@ -465,7 +562,10 @@ def get_marketplace_listings(
         from .marketplace.supabase_tools import get_marketplace_listings as _listings
     except Exception as exc:
         return _err("marketplace_unavailable", detail=str(exc))
-    return _listings(status=status, asset_class=asset_class, limit=limit)
+    # Marketplace listings surface backtested/simulated metrics → CFTC Reg. 4.41(b).
+    from .compliance.disclosures import with_hypothetical_disclaimer
+    result = _listings(status=status, asset_class=asset_class, limit=limit)
+    return with_hypothetical_disclaimer(result) if isinstance(result, dict) else result
 
 
 def get_my_assignments(subscriber_id: str) -> dict[str, Any]:
@@ -618,6 +718,232 @@ def ack_signal(subscriber_id: str, *, signal_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+_VALID_BOTS = {"MNQ", "CL", "MES", "NQ"}
+_BOT_MAX_SEATS_DEFAULT = 20
+
+
+def join_bot(
+    subscriber_id: str,
+    bot: str,
+    *,
+    size_multiplier: float = 1.0,
+    max_contracts: int = 10,
+    daily_loss_cap_usd: float = 5000.0,
+) -> dict[str, Any]:
+    """
+    Assign a subscriber to a copy-trade bot.
+
+    Compliance: the subscriber must have a persisted futures risk-disclosure
+    acknowledgment (CFTC/NFA posture) BEFORE active copy-trade is enabled.
+    Fails closed with consent_required + the disclosure text if absent.
+
+    Security: seat cap is checked BEFORE any write. The server is publicly
+    accessible so capacity enforcement is mandatory. Returns an error dict
+    (not an exception) when the bot is at capacity so the caller can surface
+    the message directly to the subscriber.
+    """
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+
+    # ── COMPLIANCE GATE: explicit futures risk acknowledgment required ────────
+    if not _has_risk_consent(sb, subscriber_id):
+        from .compliance.disclosures import RISK_ACK_PHRASE, SUBSCRIBER_RISK_DISCLOSURE
+        return {
+            "error": "consent_required",
+            "disclosure": SUBSCRIBER_RISK_DISCLOSURE,
+            "required_acknowledgment": RISK_ACK_PHRASE,
+            "instructions": (
+                "Active copy-trade requires accepting the futures risk disclosure. "
+                "Call accept_subscriber_terms(acknowledgment='" + RISK_ACK_PHRASE + "') first."
+            ),
+        }
+
+    # ── Validate bot name ────────────────────────────────────────────────────
+    bot_upper = (bot or "").strip().upper()
+    if bot_upper not in _VALID_BOTS:
+        return _err("invalid_bot", got=bot, valid=sorted(_VALID_BOTS))
+
+    # ── Validate size_multiplier ─────────────────────────────────────────────
+    try:
+        sm = float(size_multiplier)
+    except (TypeError, ValueError):
+        return _err("invalid_size_multiplier", got=size_multiplier)
+    if sm <= 0 or sm > 10:
+        return _err("invalid_size_multiplier", got=size_multiplier, constraint="must be > 0 and <= 10")
+
+    # ── SEAT CAP CHECK (mandatory — server is public) ────────────────────────
+    import os as _os
+    bot_max_seats = int(_os.environ.get("BOT_MAX_SEATS", str(_BOT_MAX_SEATS_DEFAULT)))
+    try:
+        count_resp = (
+            sb.table("subscriber_bot_assignments")
+            .select("subscriber_id", count="exact")
+            .eq("bot", bot_upper)
+            .eq("paused", False)
+            .execute()
+        )
+        seat_count = getattr(count_resp, "count", None)
+        if seat_count is None:
+            # Fallback: count rows in data
+            seat_count = len(list(getattr(count_resp, "data", None) or []))
+    except Exception as exc:
+        return _err("seat_count_failed", detail=str(exc))
+
+    if seat_count >= bot_max_seats:
+        return {
+            "error": "bot_at_capacity",
+            "bot": bot_upper,
+            "seats_filled": seat_count,
+            "max_seats": bot_max_seats,
+        }
+
+    # ── Check for existing row (re-join should preserve prior size settings) ──
+    _caller_supplied_size = size_multiplier != 1.0 or max_contracts != 10 or daily_loss_cap_usd != 5000.0
+    try:
+        existing = (
+            sb.table("subscriber_bot_assignments")
+            .select("size_multiplier,max_contracts,daily_loss_cap_usd")
+            .eq("subscriber_id", subscriber_id)
+            .eq("bot", bot_upper)
+            .maybe_single()
+            .execute()
+        )
+        existing_row = getattr(existing, "data", None)
+    except Exception:
+        existing_row = None
+
+    if existing_row and not _caller_supplied_size:
+        # Re-join with defaults → just un-pause, preserve prior settings
+        sm = float(existing_row.get("size_multiplier", sm))
+        max_contracts = int(existing_row.get("max_contracts", max_contracts))
+        daily_loss_cap_usd = float(existing_row.get("daily_loss_cap_usd", daily_loss_cap_usd))
+
+    # ── Upsert assignment ────────────────────────────────────────────────────
+    payload = {
+        "subscriber_id": subscriber_id,
+        "bot": bot_upper,
+        "size_multiplier": sm,
+        "max_contracts": int(max_contracts),
+        "daily_loss_cap_usd": float(daily_loss_cap_usd),
+        "paused": False,
+    }
+    try:
+        sb.table("subscriber_bot_assignments").upsert(
+            payload, on_conflict="subscriber_id,bot"
+        ).execute()
+    except Exception as exc:
+        return _err("upsert_failed", detail=str(exc))
+
+    return {
+        "assigned": True,
+        "bot": bot_upper,
+        "subscriber_id": subscriber_id,
+        "size_multiplier": sm,
+        "rejoined": bool(existing_row),
+    }
+
+
+def get_subscriber_status(subscriber_id: str) -> dict[str, Any]:
+    """
+    Full status snapshot for the authenticated subscriber.
+
+    Returns: bots_assigned, paper_account, key_active flag, and next_steps
+    suggestions based on current state (no assignments, no paper account, etc.).
+    """
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+
+    # ── Bot assignments ──────────────────────────────────────────────────────
+    try:
+        assign_resp = (
+            sb.table("subscriber_bot_assignments")
+            .select("bot,size_multiplier,paused")
+            .eq("subscriber_id", subscriber_id)
+            .execute()
+        )
+        bots_assigned = list(getattr(assign_resp, "data", None) or [])
+    except Exception as exc:
+        log.warning("get_subscriber_status assignments failed: %s", exc)
+        bots_assigned = []
+
+    # ── Paper account ────────────────────────────────────────────────────────
+    paper_account = _fetch_paper_account(sb, subscriber_id)
+
+    # ── Consent state (gates active copy-trade) ──────────────────────────────
+    risk_acknowledged = _has_risk_consent(sb, subscriber_id)
+
+    # ── next_steps hints ─────────────────────────────────────────────────────
+    next_steps: list[str] = []
+    active_bots = [a for a in bots_assigned if not a.get("paused")]
+    if not risk_acknowledged:
+        next_steps.append(
+            "Accept the futures risk disclosure first: call accept_subscriber_terms() "
+            "— required before copy-trading"
+        )
+    elif not bots_assigned:
+        next_steps.append(
+            "Call join_bot(bot='MNQ') to start copy-trading the MNQ scalper"
+        )
+    elif not active_bots:
+        next_steps.append(
+            "All bot assignments are paused — call join_bot() to re-activate"
+        )
+    if paper_account is None:
+        next_steps.append(
+            "No paper account found — contact support or check your subscription tier"
+        )
+    else:
+        next_steps.append("Call get_my_pnl() to see today's P&L")
+        next_steps.append("Call get_signal_stream() to see live copy-trade signals")
+    if not next_steps:
+        next_steps.append("Call get_my_portfolio() for a full portfolio snapshot")
+
+    # Status includes the simulated paper account balance → CFTC Reg. 4.41(b).
+    from .compliance.disclosures import with_hypothetical_disclaimer
+    return with_hypothetical_disclaimer({
+        "subscriber_id": subscriber_id,
+        "risk_acknowledged": risk_acknowledged,
+        "bots_assigned": bots_assigned,
+        "paper_account": paper_account,
+        "next_steps": next_steps,
+    })
+
+
+def get_my_usage(subscriber_id: str) -> dict[str, Any]:
+    """Current-month metered-call usage + projected overage cost for this subscriber.
+
+    Read-only. Keyed by subscriber_id (the same stable identifier the write side,
+    record_usage, must use). Resolves the included quota from the key's tier.
+    """
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+
+    from .cloud_saas.usage_metering import get_usage_summary, included_quota_for_tier
+    tier = None
+    try:
+        resp = (
+            sb.table("subscriber_api_keys")
+            .select("tier")
+            .eq("subscriber_id", subscriber_id)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+        if rows:
+            tier = rows[0].get("tier")
+    except Exception as exc:
+        log.warning("get_my_usage tier lookup failed: %s", exc)
+
+    quota = included_quota_for_tier(tier)
+    summary = get_usage_summary(subscriber_id, included_quota=quota)
+    if isinstance(summary, dict) and not summary.get("error"):
+        summary["tier"] = tier or "paper"
+    return summary
+
+
 # ─── dispatcher ─────────────────────────────────────────────────────────────
 
 SUBSCRIBER_TOOL_HANDLERS = {
@@ -633,6 +959,10 @@ SUBSCRIBER_TOOL_HANDLERS = {
     "report_fill": report_fill,
     "heartbeat": heartbeat,
     "ack_signal": ack_signal,
+    "join_bot": join_bot,
+    "get_subscriber_status": get_subscriber_status,
+    "accept_subscriber_terms": accept_subscriber_terms,
+    "get_my_usage": get_my_usage,
 }
 
 # Required scope per tool. The bridge enforces that the resolved key has
@@ -650,6 +980,10 @@ SUBSCRIBER_TOOL_SCOPES = {
     "report_fill": "report_fill",
     "heartbeat": "heartbeat",
     "ack_signal": "report_fill",
+    "join_bot": "my_assignments",
+    "get_subscriber_status": "my_assignments",
+    "accept_subscriber_terms": "my_assignments",
+    "get_my_usage": "my_pnl",
 }
 
 SUBSCRIBER_TOOLS = frozenset(SUBSCRIBER_TOOL_HANDLERS.keys())

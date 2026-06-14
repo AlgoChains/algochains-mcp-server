@@ -559,7 +559,7 @@ MCPorter + Slack MCP = automated channel routing that matches the existing chann
 |---------|----|-------------|
 | #quant-lab | `C09F415GZ6W` | Morning brief, marketplace updates, strategy research |
 | #openclaw | `C0AFS7BDMSM` | System health, skill execution reports |
-| #tradovate-futures-bot-changelog | `C09TGL20N4V` | P&L updates, bot status changes |
+| #tradovate-futures-bot-changelog | `$SLACK_CHANNEL_BOT_CHANGELOG` | P&L updates, bot status changes |
 | #incident-response | `C0AFT0GH54Z` | P0/P1 alerts only |
 | #moltbook-crew | `C0AGF6P5ZPA` | Crew agent outputs |
 
