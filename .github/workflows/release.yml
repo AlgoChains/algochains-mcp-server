@@ -183,12 +183,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 22
 
       - name: Build standalone binary (${{ matrix.target.name }})
         run: |
           # @vercel/pkg was unpublished from npm (404) — @yao-pkg/pkg is the
-          # maintained fork with the same `pkg` CLI and node18 targets
+          # maintained fork with the same `pkg` CLI and node18 targets. The
+          # builder itself requires Node 22 even when producing Node 18 binaries.
           npm install -g @yao-pkg/pkg
           pkg algochains-cli.js \
             --target ${{ matrix.target.pkg_target }} \
