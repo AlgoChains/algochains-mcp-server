@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS public.subscriber_api_keys (
 ALTER TABLE public.subscriber_api_keys
     ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
     ADD COLUMN IF NOT EXISTS bot_slug TEXT,
+    ADD COLUMN IF NOT EXISTS env TEXT NOT NULL DEFAULT 'live'
+        CHECK (env IN ('live', 'test')),
+    ADD COLUMN IF NOT EXISTS scopes TEXT[] NOT NULL DEFAULT ARRAY['read:signals', 'read:pnl'],
     ADD COLUMN IF NOT EXISTS paper_account_id TEXT,
     ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;
 
