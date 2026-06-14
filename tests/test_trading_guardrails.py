@@ -115,7 +115,8 @@ def test_place_order_uses_fresh_broker_winner_over_stale_signal_health(
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
 
     class FakeBroker:
-        async def get_fills(self):
+        async def get_fills(self, symbol=None):
+            assert symbol == "MNQ"
             return [
                 SimpleNamespace(realized_pnl=-12.50),
                 SimpleNamespace(realized_pnl=8.25),
