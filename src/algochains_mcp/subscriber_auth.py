@@ -46,7 +46,7 @@ DEFAULT_SUBSCRIBER_SCOPES = (
 
 # Cache: key_hash -> (resolved_at, ResolvedSubscriber)
 _CACHE: dict[str, tuple[float, "ResolvedSubscriber"]] = {}
-_CACHE_TTL_SEC = 60.0
+_CACHE_TTL_SEC = 15.0
 _CACHE_LOCK = threading.Lock()
 _NEGATIVE_TTL_SEC = 5.0  # don't re-query a bad key for 5s
 

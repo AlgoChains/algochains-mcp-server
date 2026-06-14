@@ -106,7 +106,7 @@ await rt.close();
 |---------|----|-----|
 | #quant-lab | `C09F415GZ6W` | Research, marketplace, strategy |
 | #openclaw | `C0AFS7BDMSM` | System health, skill execution |
-| #tradovate-futures-bot-changelog | `C09TGL20N4V` | P&L, bot status |
+| #tradovate-futures-bot-changelog | `$SLACK_CHANNEL_BOT_CHANGELOG` | P&L, bot status |
 | #incident-response | `C0AFT0GH54Z` | P0/P1 only |
 
 ## Regeneration

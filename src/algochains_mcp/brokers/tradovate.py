@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timezone
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
 import httpx
 
@@ -37,6 +38,40 @@ logger = logging.getLogger("algochains_mcp.brokers.tradovate")
 # Tradovate contract month codes
 MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
                7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+
+
+def _jwt_expiry_epoch(access_token: str) -> float | None:
+    """Return the JWT exp claim as an epoch timestamp, if present and parseable."""
+    token = access_token.strip()
+    if token.startswith("Bearer "):
+        token = token.removeprefix("Bearer ").strip()
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+
+    try:
+        import base64
+        import binascii
+        import json
+
+        payload_segment = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload_bytes = base64.urlsafe_b64decode(payload_segment.encode("ascii"))
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except (ValueError, TypeError, UnicodeDecodeError, binascii.Error):
+        return None
+
+    exp = payload.get("exp")
+    if isinstance(exp, bool):
+        return None
+    if isinstance(exp, (int, float)):
+        return float(exp)
+    if isinstance(exp, str):
+        try:
+            return float(exp)
+        except ValueError:
+            return None
+    return None
 
 
 def _front_month_symbol(base: str) -> str:
@@ -70,6 +105,25 @@ def _map_order_type(action: str) -> OrderType:
         "TrailingStop": OrderType.TRAILING_STOP,
     }
     return mapping.get(action, OrderType.MARKET)
+
+
+def _optional_float(value: object) -> float | None:
+    """Convert broker numeric fields without treating JSON null as a real zero."""
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _optional_float(row.get(key))
+        if value is not None:
+            return value
+    return None
 
 
 class TradovateConnector(BrokerConnector):
@@ -167,8 +221,12 @@ class TradovateConnector(BrokerConnector):
                 )
                 if r.status_code == 200:
                     accounts = r.json()
+                    now = time.time()
+                    expires_at = _jwt_expiry_epoch(pretoken)
                     self._access_token = pretoken
-                    self._token_expires_at = time.time() + 3600
+                    self._token_expires_at = (
+                        expires_at if expires_at and expires_at > now else now + 3600
+                    )
                     if accounts and isinstance(accounts, list):
                         self._account_id = accounts[0].get("id", 0)
                         self._account_spec = accounts[0].get("name", "")
@@ -386,14 +444,27 @@ class TradovateConnector(BrokerConnector):
             "accountId": acct["id"]
         })
 
-        equity = 0.0
-        cash = 0.0
+        snapshot: dict = {}
         if isinstance(cash_balances, dict):
-            equity = cash_balances.get("totalCashValue", 0.0)
-            cash = cash_balances.get("cashBalance", equity)
+            snapshot = cash_balances
         elif isinstance(cash_balances, list) and cash_balances:
-            equity = cash_balances[0].get("totalCashValue", 0.0)
-            cash = cash_balances[0].get("cashBalance", equity)
+            snapshot = cash_balances[0] if isinstance(cash_balances[0], dict) else {}
+
+        equity = _first_number(
+            snapshot,
+            ("totalCashValue", "netLiq", "netLiquidation", "cashBalance"),
+        )
+        cash = _first_number(snapshot, ("cashBalance", "totalCashValue", "netLiq", "netLiquidation"))
+        if equity is None and cash is None:
+            raise BrokerConnectionError(
+                "Tradovate cash balance snapshot did not include a numeric balance",
+                broker="tradovate",
+                details={"account_id": acct.get("id"), "snapshot_keys": sorted(snapshot.keys())},
+            )
+        if equity is None:
+            equity = cash
+        if cash is None:
+            cash = equity
 
         return AccountInfo(
             broker="tradovate",
@@ -404,7 +475,7 @@ class TradovateConnector(BrokerConnector):
             currency="USD",
             paper=self.cfg.env != "live",
             asset_classes=["futures"],
-            raw=acct,
+            raw={**acct, "cash_balance_snapshot": snapshot},
         )
 
     async def get_positions(self) -> list[Position]:
@@ -683,7 +754,6 @@ class TradovateConnector(BrokerConnector):
             raise BrokerQuoteError(
                 f"Contract not found: {symbol}", broker="tradovate"
             )
-        contract_id = contract.get("id", 0)
         try:
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
             if isinstance(quotes, dict):

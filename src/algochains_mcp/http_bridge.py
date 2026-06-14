@@ -25,6 +25,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path as _PathGlobal
 from typing import Any
 
@@ -46,6 +47,7 @@ from .subscriber_tools import (
     SUBSCRIBER_TOOL_SCOPES,
     SUBSCRIBER_TOOLS,
     call_subscriber_tool,
+    _paper_pnl_aliases,
 )
 from .developer_auth import (
     ResolvedDeveloper,
@@ -54,14 +56,15 @@ from .developer_auth import (
 )
 from .developer_tools import (
     DEVELOPER_TOOLS,
-    DEVELOPER_TOOL_SCOPES,
     check_developer_tool_access,
 )
+from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
 from .tool_policy import (
     evaluate_bridge_tool,
     visible_tools_for_bridge,
 )
 from .otel_tracing import redacted_argument_hash, trace_span
+from .paths import default_control_tower
 
 log = logging.getLogger(__name__)
 
@@ -88,9 +91,21 @@ def _read_project_version() -> str:
         return _pkg_version("algochains-mcp-server")
     except Exception:
         pass
-    return "22.5.0"  # fallback (only used when pyproject + installed metadata are both unreadable)
+    return "22.6.0"  # fallback (only used when pyproject + installed metadata are both unreadable)
 
 _SERVER_VERSION = _read_project_version()
+
+
+def _default_control_tower_path() -> str:
+    """Resolve a sibling control-tower checkout without assuming path depth."""
+    current = _PathGlobal(__file__).resolve()
+    for parent in current.parents:
+        candidate = parent / "algochains-control-tower"
+        if candidate.exists():
+            return str(candidate)
+    if len(current.parents) > 2:
+        return str(current.parents[2] / "algochains-control-tower")
+    return str(_PathGlobal.cwd() / "algochains-control-tower")
 
 # ─── Tool whitelist (what the site is allowed to call) ───────────────────────
 
@@ -270,6 +285,29 @@ async def handle_mcp_request(
         return {"error": str(e), "tool": tool_name}
 
 
+def _with_bot_list_aliases(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Preserve legacy bot-id keys while exposing probe-friendly list/count aliases."""
+    bots = [
+        value
+        for key, value in metrics.items()
+        if key not in {"bots", "bot_count"} and isinstance(value, dict)
+    ]
+    return {
+        **metrics,
+        "bots": metrics.get("bots") if isinstance(metrics.get("bots"), list) else bots,
+        "bot_count": metrics.get("bot_count") if isinstance(metrics.get("bot_count"), int) else len(bots),
+    }
+
+
+def _with_system_aliases(heartbeat: dict[str, Any]) -> dict[str, Any]:
+    """Expose system heartbeat under both historical and Command Center keys."""
+    return {
+        **heartbeat,
+        "heartbeat": heartbeat.get("heartbeat") if isinstance(heartbeat.get("heartbeat"), dict) else heartbeat,
+        "system": heartbeat.get("system") if isinstance(heartbeat.get("system"), dict) else heartbeat,
+    }
+
+
 def create_fastapi_app():
     """Create FastAPI app for standalone HTTP bridge. Install: pip install fastapi uvicorn"""
     try:
@@ -278,6 +316,18 @@ def create_fastapi_app():
         raise ImportError("Install fastapi and uvicorn: pip install fastapi uvicorn")
     if not _FASTAPI_AVAILABLE:
         raise ImportError("Install fastapi and uvicorn: pip install fastapi uvicorn")
+
+    # Emit security warning at app-creation time so it fires whether the app is
+    # launched via __main__, uvicorn CLI, or any other ASGI server.
+    _host_at_create = os.getenv("ALGOCHAINS_BRIDGE_HOST", "127.0.0.1")
+    _key_at_create = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
+    if _host_at_create not in ("127.0.0.1", "localhost", "::1") and not _key_at_create:
+        log.warning(
+            "⚠️  HTTP bridge configured for %s (non-localhost) with no "
+            "ALGOCHAINS_BRIDGE_API_KEY set. Public tools are accessible without "
+            "authentication. Set ALGOCHAINS_BRIDGE_API_KEY or restrict the bind address.",
+            _host_at_create,
+        )
 
     app_http = FastAPI(
         title="AlgoChains MCP HTTP Bridge",
@@ -329,7 +379,6 @@ def create_fastapi_app():
         log.warning("Request-ID middleware unavailable: %s", _mw_err)
 
     BRIDGE_API_KEY = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
-    OWNER_EMAIL = os.getenv("OWNER_EMAIL", "owner@algochains.ai")
     # K-8 fix: dev-mode escape hatch — set ALGOCHAINS_BRIDGE_DEV_MODE=true to
     # allow unauthenticated public-tool access on localhost during development.
     # In production (default) an empty key means the bridge refuses all requests.
@@ -403,8 +452,7 @@ def create_fastapi_app():
         arguments: dict = {}
         user_email: str | None = None
 
-    @app_http.get("/health")
-    async def health():
+    def _health_payload() -> dict:
         """
         Bridge health — includes version, auth mode, and server import check.
         Phase J observability: richer /health for incident triage.
@@ -426,6 +474,15 @@ def create_fastapi_app():
             "tool_count": tool_count,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    @app_http.get("/health")
+    async def health():
+        return _health_payload()
+
+    @app_http.get("/status")
+    async def status():
+        """Legacy watchdog-compatible alias for /health."""
+        return _health_payload()
 
     @app_http.get("/tools")
     async def list_available_tools(
@@ -616,6 +673,16 @@ def create_fastapi_app():
         key_valid, _is_owner, subscriber, _developer, _caller_scope = _resolve_auth(x_api_key, authorization)
         if not key_valid or subscriber is None:
             raise HTTPException(status_code=401, detail="Subscriber API key required")
+        required_scope = SUBSCRIBER_TOOL_SCOPES.get("get_signal_stream")
+        if required_scope and required_scope not in subscriber.scopes:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "Missing scope on this API key",
+                    "tool": "get_signal_stream",
+                    "required_scope": required_scope,
+                },
+            )
         bot_filter = [b.strip().upper() for b in bots.split(",")] if bots else None
         interval = max(0.5, min(float(poll_interval), 10.0))
 
@@ -644,9 +711,224 @@ def create_fastapi_app():
 
         return StreamingResponse(event_gen(), media_type="text/event-stream")
 
-    # SECURITY FIX (V22 audit): All GET convenience endpoints now require API key.
+    @app_http.get("/api/marketplace")
+    async def marketplace_listings(
+        asset_class: str = "all",
+        status: str = "all",
+        limit: int = 50,
+    ):
+        """Compatibility endpoint for Command Center marketplace health/cards."""
+        safe_limit = max(1, min(int(limit), 100))
+        return await handle_mcp_request(
+            "get_marketplace_listings",
+            {"asset_class": asset_class, "status": status, "limit": safe_limit},
+            is_owner=False,
+        )
+
+    @app_http.get("/api/subscribers")
+    async def subscribers_snapshot(
+        limit: int = 250,
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """
+        Compatibility endpoint for Command Center subscriber health.
+
+        This endpoint intentionally requires owner auth: it aggregates subscriber
+        assignments, paper balances, heartbeats, and marketplace subscriptions.
+        """
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or not is_owner or subscriber is not None or developer is not None:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+
+        try:
+            from .marketplace.supabase_tools import _get_sb_client
+        except Exception as exc:  # pragma: no cover - import path safety
+            return {"error": f"Supabase tools unavailable: {exc}", "subscribers": [], "total": 0}
+
+        sb = _get_sb_client(use_service_role=True)
+        if sb is None:
+            return {
+                "error": "Supabase service_role not configured",
+                "subscribers": [],
+                "assignments": [],
+                "subscriptions": [],
+                "total": 0,
+                "source": "supabase_unavailable",
+            }
+
+        safe_limit = max(1, min(int(limit), 1000))
+
+        def _select_rows(table: str, columns: str) -> tuple[list[dict[str, Any]], str | None]:
+            try:
+                resp = sb.table(table).select(columns).limit(safe_limit).execute()
+                return list(getattr(resp, "data", None) or []), None
+            except Exception as exc:
+                log.warning("subscriber snapshot query failed for %s: %s", table, exc)
+                return [], str(exc)
+
+        assignments, assignments_error = _select_rows(
+            "subscriber_bot_assignments",
+            "subscriber_id,bot,size_multiplier,max_contracts,daily_loss_cap_usd,paused,updated_at",
+        )
+        paper_accounts, paper_error = _select_rows(
+            "subscriber_paper_accounts",
+            "subscriber_id,starting_balance_usd,current_balance_usd,realized_pnl_usd,fills_count,updated_at",
+        )
+        heartbeats, heartbeat_error = _select_rows(
+            "subscriber_heartbeats",
+            "subscriber_id,last_seen,daemon_version,tradovate_linked,fills_today,pnl_today_usd",
+        )
+        subscriptions, subscriptions_error = _select_rows(
+            "marketplace_botsubscription",
+            "id,subscriber_id,subscriber_email,requester_slack_id,status,created_at,listing_id_id",
+        )
+
+        subscribers: dict[str, dict[str, Any]] = {}
+
+        def _subscriber_key(row: dict[str, Any]) -> str | None:
+            sid = row.get("subscriber_id")
+            if sid:
+                return str(sid)
+            email = row.get("subscriber_email")
+            if email:
+                return str(email)
+            slack_id = row.get("requester_slack_id")
+            if slack_id:
+                return str(slack_id)
+            return None
+
+        def _ensure_subscriber(row: dict[str, Any]) -> dict[str, Any] | None:
+            key = _subscriber_key(row)
+            if not key:
+                return None
+            return subscribers.setdefault(
+                key,
+                {
+                    "subscriber_id": row.get("subscriber_id"),
+                    "subscriber_email": row.get("subscriber_email"),
+                    "requester_slack_id": row.get("requester_slack_id"),
+                    "assignments": [],
+                    "assignment_count": 0,
+                    "active_assignment_count": 0,
+                    "marketplace_subscription_count": 0,
+                    "active_marketplace_subscription_count": 0,
+                },
+            )
+
+        def _money_total(values: list[float | None]) -> float:
+            total = Decimal("0")
+            for value in values:
+                if value is None:
+                    continue
+                try:
+                    total += Decimal(str(value))
+                except (InvalidOperation, ValueError, TypeError):
+                    continue
+            return float(total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+        for row in assignments:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            sub["assignments"].append(row)
+            sub["assignment_count"] += 1
+            if not row.get("paused"):
+                sub["active_assignment_count"] += 1
+
+        for row in paper_accounts:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            aliases = _paper_pnl_aliases(row)
+            row.update(aliases)
+            sub["paper_account"] = row
+            sub.update(aliases)
+
+        for row in heartbeats:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            sub["heartbeat"] = row
+
+        for row in subscriptions:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            sub["marketplace_subscription_count"] += 1
+            if row.get("status") == "active":
+                sub["active_marketplace_subscription_count"] += 1
+
+        paper_pnl_rollup_usd = _money_total(
+            [
+                sub.get("paper_pnl_rollup_usd")
+                for sub in subscribers.values()
+                if isinstance(sub.get("paper_pnl_rollup_usd"), (int, float))
+            ]
+        )
+
+        return {
+            "subscribers": list(subscribers.values()),
+            "total": len(subscribers),
+            "active": sum(
+                1
+                for row in subscribers.values()
+                if row.get("active_assignment_count", 0) > 0
+                or row.get("active_marketplace_subscription_count", 0) > 0
+            ),
+            "assignments": assignments,
+            "assignment_count": len(assignments),
+            "active_assignments": sum(1 for row in assignments if not row.get("paused")),
+            "subscriptions": subscriptions,
+            "subscription_count": len(subscriptions),
+            "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
+            "paper_account_count": len(paper_accounts),
+            "heartbeat_count": len(heartbeats),
+            "paper_pnl_usd": paper_pnl_rollup_usd,
+            "paper_pnl": paper_pnl_rollup_usd,
+            "paper_pnl_rollup_usd": paper_pnl_rollup_usd,
+            "query_errors": {
+                key: value
+                for key, value in {
+                    "assignments": assignments_error,
+                    "paper_accounts": paper_error,
+                    "heartbeats": heartbeat_error,
+                    "subscriptions": subscriptions_error,
+                }.items()
+                if value
+            },
+            "source": "supabase",
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # SECURITY FIX (V22 audit): Sensitive GET convenience endpoints require API key.
     # Previously these called handle_mcp_request(is_owner=True) with no auth check —
     # any unauthenticated client could scrape live bot metrics and heartbeat status.
+    # Marketplace listings are the exception: this is public, read-only catalogue
+    # data and Command Center health probes call the legacy GET route directly.
+
+    @app_http.get("/api/marketplace")
+    async def get_marketplace(
+        asset_class: str = "all",
+        status: str = "all",
+        limit: int = 50,
+    ):
+        """Convenience endpoint: public marketplace listings."""
+        safe_limit = max(1, min(int(limit), 100))
+        return await handle_mcp_request(
+            "get_marketplace_listings",
+            {
+                "asset_class": asset_class,
+                "status": status,
+                "limit": safe_limit,
+            },
+            is_owner=False,
+        )
 
     @app_http.get("/api/bots")
     async def get_all_bots(
@@ -664,7 +946,8 @@ def create_fastapi_app():
         )
         if not key_valid or subscriber is not None:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner, caller_scope=caller_scope)
+        metrics = await handle_mcp_request("get_all_bot_metrics", {}, is_owner=is_owner, caller_scope=caller_scope)
+        return _with_bot_list_aliases(metrics)
 
     @app_http.get("/api/bots/{bot_id}")
     async def get_bot(
@@ -703,7 +986,7 @@ def create_fastapi_app():
         """Get full bot card data. Public card data is unauthenticated; attachments require owner."""
         if bot_id not in {"mnq", "cl", "mes", "nq"}:
             raise HTTPException(status_code=400, detail="bot_id must be mnq | cl | mes | nq")
-        _key_valid, is_owner, _subscriber, caller_scope = _resolve_auth(
+        _key_valid, is_owner, _subscriber, _developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
             user_email,
@@ -741,7 +1024,25 @@ def create_fastapi_app():
         )
         if not key_valid or subscriber is not None or not is_owner:
             raise HTTPException(status_code=401, detail="Owner API key required")
-        return await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
+        heartbeat = await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
+        return _with_system_aliases(heartbeat)
+
+    @app_http.get("/api/system")
+    async def system_status(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """Compatibility endpoint for Command Center health probes."""
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+        heartbeat = await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
+        return _with_system_aliases(heartbeat)
 
     @app_http.get("/api/guardrails")
     async def guardrail_status(
@@ -766,10 +1067,7 @@ def create_fastapi_app():
     # Auth: owner BRIDGE_API_KEY or any valid subscriber key (sub_live_…).
     # Subscribers receive a sanitised view — no raw P&L, no account numbers.
 
-    _CT = os.environ.get("ALGOCHAINS_CONTROL_TOWER", os.environ.get("ALGOCHAINS_CONTROL_TOWER_PATH", ""))
-    if not _CT:
-        # resolve relative to this file's location
-        _CT = str(_PathGlobal(__file__).resolve().parents[4] / "algochains-control-tower")
+    _CT = str(default_control_tower())
 
     def _ct_path(*parts: str) -> _PathGlobal:
         return _PathGlobal(_CT, *parts)
@@ -792,7 +1090,7 @@ def create_fastapi_app():
                 return []
             with p.open() as fh:
                 all_lines = fh.readlines()
-            return [l.rstrip() for l in all_lines[-lines:] if l.strip()]
+            return [line.rstrip() for line in all_lines[-lines:] if line.strip()]
         except Exception:
             return []
 
@@ -833,14 +1131,8 @@ def create_fastapi_app():
         }
 
         # E2E sentinel summary
-        sentinel_class = sentinel.get("classification") or {}
-        sentinel_summary = {
-            "outcome": sentinel_class.get("outcome"),
-            "severity": sentinel_class.get("severity"),
-            "reason": sentinel_class.get("reason"),
-            "description": sentinel_class.get("description"),
-            "ts": sentinel.get("last_check"),
-        }
+        sentinel_summary = summarize_e2e_sentinel_state(sentinel)
+        sentinel_summary = apply_effective_sentinel_resolution(sentinel_summary, sentinel)
 
         # Signal health summary per bot
         signal_summaries: dict = {}
@@ -902,8 +1194,8 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY (full view) or subscriber key (sanitised view).
         Latency: <150ms — reads from state files on disk.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
+        if not key_valid or developer is not None or (not is_owner and subscriber is None):
             raise HTTPException(status_code=401, detail="Valid API key required (owner or subscriber)")
         snapshot = await asyncio.to_thread(_build_status_snapshot, is_owner)
         snapshot["access_level"] = "owner" if is_owner else "subscriber"
@@ -920,8 +1212,8 @@ def create_fastapi_app():
 
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
+        if not key_valid or developer is not None or (not is_owner and subscriber is None):
             raise HTTPException(status_code=401, detail="Valid API key required")
         limit = max(1, min(int(limit), 100))
 
@@ -962,8 +1254,8 @@ def create_fastapi_app():
 
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
+        if not key_valid or developer is not None or (not is_owner and subscriber is None):
             raise HTTPException(status_code=401, detail="Valid API key required")
         hours = max(1, min(int(hours), 168))
 
@@ -1003,8 +1295,8 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY or subscriber key.
         Reconnect: standard SSE retry — client reconnects automatically on disconnect.
         """
-        key_valid, is_owner, subscriber, _ = _resolve_auth(x_api_key, authorization)
-        if not key_valid:
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
+        if not key_valid or developer is not None or (not is_owner and subscriber is None):
             raise HTTPException(status_code=401, detail="Valid API key required")
         interval = max(1.0, min(float(poll_interval), 30.0))
 
@@ -1018,16 +1310,16 @@ def create_fastapi_app():
                         "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2")
 
         def _classify_line(line: str) -> str | None:
-            l = line.lower()
-            if any(k in line for k in ("FILL", "filled")):
+            lower_line = line.lower()
+            if any(keyword in lower_line for keyword in ("fill", "filled")):
                 return "fill"
-            if any(k in line for k in ("SIGNAL", "signal_fired", "confidence")):
+            if any(keyword in lower_line for keyword in ("signal", "signal_fired", "confidence")):
                 return "signal"
-            if any(k in line for k in ("EXIT", "exit_reason", "closed")):
+            if any(keyword in lower_line for keyword in ("exit", "exit_reason", "closed")):
                 return "exit"
-            if any(k in line for k in ("ERROR", "Exception", "Traceback", "BRACKET FAILED")):
+            if any(keyword in lower_line for keyword in ("error", "exception", "traceback", "bracket failed")):
                 return "error"
-            if any(k in line for k in ("BRACKET", "stop_order", "target_order")):
+            if any(keyword in lower_line for keyword in ("bracket", "stop_order", "target_order")):
                 return "bracket"
             return None
 
@@ -1103,4 +1395,12 @@ if __name__ == "__main__":
     app = create_fastapi_app()
     # Default to localhost only. Set ALGOCHAINS_BRIDGE_HOST=0.0.0.0 intentionally for LAN access.
     host = os.getenv("ALGOCHAINS_BRIDGE_HOST", "127.0.0.1")
+    _bridge_key = os.getenv("ALGOCHAINS_BRIDGE_API_KEY", "")
+    if host not in ("127.0.0.1", "localhost", "::1") and not _bridge_key:
+        log.warning(
+            "⚠️  HTTP bridge bound to %s (non-localhost) with no ALGOCHAINS_BRIDGE_API_KEY set. "
+            "Public tools are accessible without authentication. "
+            "Set ALGOCHAINS_BRIDGE_API_KEY or restrict the bind address.",
+            host,
+        )
     uvicorn.run(app, host=host, port=port, log_level="info")

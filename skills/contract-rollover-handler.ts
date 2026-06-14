@@ -84,7 +84,7 @@ async function main() {
     }
 
     const urgent = expiryAlerts.filter((a) => a.daysToExpiry <= 3 && a.daysToExpiry >= 0);
-    const channel = urgent.length > 0 ? "C0AFT0GH54Z" : "C09TGL20N4V";
+    const channel = urgent.length > 0 ? (process.env.SLACK_CHANNEL_INCIDENTS ?? "C0AFT0GH54Z") : (process.env.SLACK_CHANNEL_BOT_CHANGELOG ?? "SLACK_CHANNEL_BOT_CHANGELOG");
 
     const lines = [
       `🔄 *Contract Rollover Alert* — ${new Date().toLocaleDateString()}`,

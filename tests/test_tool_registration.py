@@ -126,7 +126,7 @@ def test_no_duplicate_tool_literals_in_server_source():
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1]
-           / "src" / "algochains_mcp" / "server.py").read_text()
+           / "src" / "algochains_mcp" / "server.py").read_text(encoding="utf-8")
     names = re.findall(r'Tool\(\s*name=["\']([^"\']+)', src)
     seen: dict[str, int] = {}
     for n in names:

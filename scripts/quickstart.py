@@ -12,6 +12,7 @@ Usage:
     python scripts/quickstart.py --mode demo       # read-only, no credentials
     python scripts/quickstart.py --mode paper      # Alpaca paper account only
     python scripts/quickstart.py --mode live       # full live broker access
+    python scripts/quickstart.py --subscriber-status  # inspect ALGOCHAINS_SUBSCRIBER_KEY
 
 Modes:
     demo  — no broker credentials required; calls public market data only
@@ -187,6 +188,155 @@ DATA_ENV_VARS: list[tuple[str, str, bool]] = [
 ]
 
 
+def check_subscriber_key() -> bool:
+    """Check ALGOCHAINS_SUBSCRIBER_KEY format. Returns True if a valid-looking key is set."""
+    key = _env("ALGOCHAINS_SUBSCRIBER_KEY")
+    if key and (key.startswith("sub_live_") or key.startswith("sub_test_")):
+        _ok("ALGOCHAINS_SUBSCRIBER_KEY", f"prefix: {key[:12]}…")
+        return True
+    if key:
+        _fail("ALGOCHAINS_SUBSCRIBER_KEY looks invalid", "Expected sub_live_* or sub_test_*")
+    return False
+
+
+def prompt_subscriber_onramp() -> None:
+    """Walk the user through getting a subscriber key when neither sub key nor Alpaca creds exist."""
+    print()
+    print(f"  {WARN}  {YELLOW}No subscriber key found. Get one at algochains.ai or generate a checkout URL:{RESET}")
+    print()
+
+    if not sys.stdin.isatty():
+        print(f"  {INFO} Non-interactive environment detected — visit: {CYAN}https://algochains.ai/pricing{RESET}")
+        print(f"  {INFO} Then set: {CYAN}ALGOCHAINS_SUBSCRIBER_KEY=sub_live_…{RESET}")
+        return
+
+    stripe_key = _env("STRIPE_SECRET_KEY")
+    if stripe_key:
+        # Attempt to generate a checkout session via BillingEngine
+        email = _ask("Enter your email to generate a Stripe checkout URL")
+        if email:
+            try:
+                src_path = Path(__file__).resolve().parent.parent / "src"
+                if str(src_path) not in sys.path:
+                    sys.path.insert(0, str(src_path))
+                import asyncio
+                from algochains_mcp.cloud_saas.billing_engine import BillingEngine
+                result = asyncio.run(BillingEngine().create_platform_checkout_session(email, tier="paper"))
+                url = result.get("checkout_url") or result.get("url", "")
+                if url:
+                    print()
+                    print(f"  {TICK}  {GREEN}Checkout URL generated:{RESET}")
+                    print(f"       {CYAN}{url}{RESET}")
+                    print()
+                    print(f"  {INFO} Complete payment in your browser, then paste the emailed key below.")
+                else:
+                    print(f"  {WARN}  Could not extract URL from billing response: {result}")
+                    print(f"       Visit: {CYAN}https://algochains.ai/pricing{RESET}")
+            except Exception as exc:
+                _warn(f"Could not generate checkout URL ({exc}). Visit: https://algochains.ai/pricing")
+    else:
+        print(f"  {INFO} Visit: {CYAN}https://algochains.ai/pricing{RESET}")
+
+    print()
+    key = _ask("Paste your subscriber key (sub_live_* or sub_test_*), or press Enter to skip", default="")
+    if key:
+        if key.startswith("sub_live_") or key.startswith("sub_test_"):
+            print()
+            _ok("Key format looks valid")
+            print()
+            print(f"  {INFO} To activate, add this to your environment:")
+            print(f"       {CYAN}export ALGOCHAINS_SUBSCRIBER_KEY={key}{RESET}")
+            print()
+            print(f"  {INFO} Or add it to your .env file:")
+            print(f"       {CYAN}ALGOCHAINS_SUBSCRIBER_KEY={key}{RESET}")
+            os.environ["ALGOCHAINS_SUBSCRIBER_KEY"] = key
+        else:
+            _fail("Key format invalid — expected sub_live_* or sub_test_*")
+    else:
+        _info("Skipped — you can set ALGOCHAINS_SUBSCRIBER_KEY later and re-run.")
+
+
+def run_subscriber_status() -> bool:
+    """
+    --subscriber-status: inspect ALGOCHAINS_SUBSCRIBER_KEY via subscriber_auth.resolve_subscriber_key().
+    Returns True if key is valid, False otherwise.
+    """
+    _print_header("AlgoChains — Subscriber Key Status")
+
+    key = _env("ALGOCHAINS_SUBSCRIBER_KEY")
+    if not key:
+        _fail("ALGOCHAINS_SUBSCRIBER_KEY is not set")
+        print(f"\n  {INFO} Get a key at: {CYAN}https://algochains.ai/pricing{RESET}")
+        return False
+
+    prefix = key[:12] + "…" if len(key) > 12 else key
+    _info(f"Key prefix: {CYAN}{prefix}{RESET}")
+
+    # Attempt to resolve via subscriber_auth
+    try:
+        src_path = Path(__file__).resolve().parent.parent / "src"
+        if str(src_path) not in sys.path:
+            sys.path.insert(0, str(src_path))
+        from algochains_mcp.subscriber_auth import resolve_subscriber_key, SUBSCRIBER_KEY_PREFIXES
+    except ImportError as exc:
+        _fail("Cannot import subscriber_auth", str(exc))
+        return False
+
+    if not any(key.startswith(p) for p in SUBSCRIBER_KEY_PREFIXES):
+        _fail(f"Key prefix invalid — expected one of: {', '.join(SUBSCRIBER_KEY_PREFIXES)}")
+        return False
+
+    print()
+    print(f"{BOLD}Resolving key against Supabase...{RESET}")
+    sub = resolve_subscriber_key(key)
+
+    if sub is None:
+        _fail("Key not found or Supabase unreachable — key is invalid or expired")
+        print(f"\n  {INFO} Contact support at: {CYAN}https://algochains.ai/support{RESET}")
+        return False
+
+    _ok("Subscriber key is valid", f"subscriber_id: {sub.subscriber_id[:12]}…")
+
+    # Derive tier from scopes
+    scopes = list(sub.scopes) if sub.scopes else []
+    if "live_execution" in scopes or "live" in scopes:
+        tier = "live ($99/mo)"
+    elif scopes:
+        tier = "paper ($29/mo)"
+    else:
+        tier = "unknown"
+    _ok("Tier", tier)
+
+    if scopes:
+        _ok("Scopes available", ", ".join(sorted(scopes)))
+    else:
+        _warn("No scopes returned — defaulting to paper scope set")
+
+    # Attempt paper balance lookup if Supabase is reachable
+    try:
+        from algochains_mcp.cloud_saas.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        acct = sb.table("subscriber_paper_accounts").select("current_balance_usd").eq(
+            "subscriber_id", sub.subscriber_id
+        ).maybe_single().execute()
+        if acct and acct.data:
+            balance = acct.data.get("current_balance_usd")
+            if balance is not None:
+                _ok("Paper balance", f"${float(balance):,.2f}")
+        bots_resp = sb.table("subscriber_bot_assignments").select("bot").eq(
+            "subscriber_id", sub.subscriber_id
+        ).eq("paused", False).execute()
+        bots = [r["bot"] for r in (getattr(bots_resp, "data", None) or [])]
+        if bots:
+            _ok("Bots assigned", ", ".join(bots))
+    except Exception:
+        _info("Supabase portfolio lookup unavailable (optional)")
+
+    print()
+    print(f"  {GREEN}{BOLD}Subscriber key is active.{RESET}")
+    return True
+
+
 def check_env_vars(mode: str) -> dict[str, bool]:
     """Check env vars for the given mode. Returns {var_name: is_set}."""
     results: dict[str, bool] = {}
@@ -195,19 +345,54 @@ def check_env_vars(mode: str) -> dict[str, bool]:
         _info("Demo mode — no broker credentials required")
         return results
 
-    if mode in ("paper", "live"):
-        broker = "alpaca" if mode == "paper" else "tradovate"
-        vars_to_check = BROKER_ENV_VARS.get(broker, [])
-        for var, desc in vars_to_check:
+    if mode == "paper":
+        # Subscriber key takes precedence over Alpaca paper credentials
+        sub_key = _env("ALGOCHAINS_SUBSCRIBER_KEY")
+        alpaca_key = _env("ALPACA_API_KEY")
+
+        if sub_key:
+            if sub_key.startswith("sub_live_") or sub_key.startswith("sub_test_"):
+                results["ALGOCHAINS_SUBSCRIBER_KEY"] = True
+                print(f"  {TICK}  {GREEN}Subscriber key found — checking validity...{RESET}")
+                _info(f"Key prefix: {sub_key[:12]}…")
+                try:
+                    src_path = Path(__file__).resolve().parent.parent / "src"
+                    if str(src_path) not in sys.path:
+                        sys.path.insert(0, str(src_path))
+                    from algochains_mcp.subscriber_auth import resolve_subscriber_key
+                    sub = resolve_subscriber_key(sub_key)
+                    if sub:
+                        scopes = list(sub.scopes) if sub.scopes else []
+                        _ok("Subscriber key valid", f"{len(scopes)} tools available: {', '.join(sorted(scopes))}")
+                    else:
+                        _warn("Subscriber key could not be resolved — Supabase may be unreachable or key expired")
+                except Exception as exc:
+                    _warn(f"Could not verify subscriber key: {exc}")
+            else:
+                results["ALGOCHAINS_SUBSCRIBER_KEY"] = False
+                _fail("ALGOCHAINS_SUBSCRIBER_KEY invalid format", "Expected sub_live_* or sub_test_*")
+        elif not alpaca_key:
+            # Neither sub key nor Alpaca — run the onramp
+            results["ALGOCHAINS_SUBSCRIBER_KEY"] = False
+            prompt_subscriber_onramp()
+        else:
+            # Alpaca creds present — normal paper path
+            for var, desc in BROKER_ENV_VARS.get("alpaca", []):
+                val = _env(var)
+                results[var] = bool(val)
+                if val:
+                    _ok(f"{var}", "set")
+                else:
+                    _warn(f"{var} not set — {desc}")
+
+    elif mode == "live":
+        for var, desc in BROKER_ENV_VARS.get("tradovate", []):
             val = _env(var)
             results[var] = bool(val)
             if val:
                 _ok(f"{var}", "set")
             else:
-                if mode == "paper":
-                    _warn(f"{var} not set — {desc}")
-                else:
-                    _fail(f"{var} not set", desc)
+                _fail(f"{var} not set", desc)
 
     for var, desc, required in DATA_ENV_VARS:
         val = _env(var)
@@ -379,7 +564,7 @@ def _mcp_server_args() -> dict:
         )
     env.setdefault(
         "ALGOCHAINS_BRIDGE_URL",
-        os.getenv("ALGOCHAINS_BRIDGE_URL", "https://api.algochains.ai"),
+        os.getenv("ALGOCHAINS_BRIDGE_URL", "https://mcp.algochains.ai"),
     )
     return {
         "command": sys.executable,
@@ -614,6 +799,7 @@ def main() -> None:
           python scripts/quickstart.py --health-check --mode live
           python scripts/quickstart.py --generate-config cursor
           python scripts/quickstart.py --generate-config claude-desktop
+          python scripts/quickstart.py --subscriber-status    # inspect ALGOCHAINS_SUBSCRIBER_KEY
         """),
     )
     parser.add_argument(
@@ -633,8 +819,17 @@ def main() -> None:
         choices=list(CONFIG_GENERATORS.keys()),
         help="Generate MCP config file for the specified IDE",
     )
+    parser.add_argument(
+        "--subscriber-status",
+        action="store_true",
+        help="Inspect ALGOCHAINS_SUBSCRIBER_KEY: tier, scopes, bots assigned, paper balance",
+    )
 
     args = parser.parse_args()
+
+    if args.subscriber_status:
+        ok = run_subscriber_status()
+        sys.exit(0 if ok else 1)
 
     if args.generate_config:
         _print_header(f"Generating {args.generate_config} config")

@@ -10,7 +10,7 @@ This document describes every combination of `ALGOCHAINS_TOOL_MODE`, `ALGOCHAINS
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `ALGOCHAINS_TOOL_MODE` | `smart` \| `full` | `smart` | `smart` exposes ~54 Tier-1 tools. `full` exposes all 338 tools. Dev/debug only. |
+| `ALGOCHAINS_TOOL_MODE` | `smart` \| `full` | `smart` | `smart` exposes the documented 148-tool safe set. `full` exposes all 478 tools. Dev/debug only. |
 | `ALGOCHAINS_REQUIRE_CONFIRMATION` | `0` \| `1` | `1` | `1` blocks ORDER_EXEC+ tools when no elicitation client is available. `0` allows pass-through for automated/headless callers. |
 | `OWNER_API_TOKEN` | any string | unset | Secret required for ORDER_EXEC+ tools. If unset, all ORDER_EXEC tools fail-closed regardless of other settings. |
 
@@ -38,14 +38,25 @@ This document describes every combination of `ALGOCHAINS_TOOL_MODE`, `ALGOCHAINS
 
 ### Transport: `http_bridge` (external API callers)
 
-| `BRIDGE_API_KEY` | `OWNER_API_TOKEN` | ORDER_EXEC Reachable? | Notes |
+> **⚠️ Doc/code note (audited 2026-06-14):** The HTTP bridge policy in
+> `evaluate_bridge_tool` currently requires `confirm=true` in arguments for
+> ORDER_EXEC tools, but does **not** independently verify `OWNER_API_TOKEN` at the
+> bridge policy layer. The `OWNER_API_TOKEN` column below reflects the intended
+> end-state under `ALGOCHAINS_BRIDGE_REQUIRE_OWNER_TOKEN=1` (Phase 2 opt-in).
+> Until that flag is enabled, bridge ORDER_EXEC is gated by `BRIDGE_API_KEY` +
+> `confirm=true` only. See `tool_policy.py::evaluate_bridge_tool`.
+
+| `BRIDGE_API_KEY` | `confirm=true` | ORDER_EXEC Reachable? | Notes |
 |-----------------|-------------------|-----------------------|-------|
-| set + correct | set + correct | ✅ Allowed | Full auth path. `confirm=true` also required in envelope. |
-| set + correct | set + wrong | ❌ Blocked | Bridge auth passes but ORDER_EXEC gate fails. |
-| set + correct | unset | ❌ Blocked | OWNER_API_TOKEN unset → fail-closed for ORDER_EXEC. |
-| unset | any | ❌ Blocked | Bridge itself rejects request (401). Never reaches dispatch. |
-| `ALGOCHAINS_BRIDGE_DEV_MODE=true` | set + correct | ✅ Allowed | Dev mode bypasses API key check but ORDER_EXEC gate still enforces owner_token. **Never set in production.** |
-| `ALGOCHAINS_BRIDGE_DEV_MODE=true` | unset | ❌ Blocked | Dev mode + no token → ORDER_EXEC still fail-closed. |
+| set + correct | yes | ✅ Allowed (current) | `confirm=true` required in arguments. `OWNER_API_TOKEN` gate not yet enforced at bridge. |
+| set + correct | no | ❌ Blocked | Missing `confirm=true` → policy denied. |
+| unset | any | ❌ Blocked | Bridge rejects request (401). Never reaches dispatch. |
+| `ALGOCHAINS_BRIDGE_DEV_MODE=true` | yes | ✅ Allowed | Dev mode bypasses API key but confirm still required. **Never set in production.** |
+| `ALGOCHAINS_BRIDGE_DEV_MODE=true` | no | ❌ Blocked | Dev mode + no confirm → still blocked. |
+
+**Planned hardening (Phase 2):** Set `ALGOCHAINS_BRIDGE_REQUIRE_OWNER_TOKEN=1` to
+also require a matching `owner_token` in the request body for ORDER_EXEC tools.
+Warn-only logging will precede enforcement to avoid breaking existing clients.
 
 ---
 
@@ -66,7 +77,7 @@ This document describes every combination of `ALGOCHAINS_TOOL_MODE`, `ALGOCHAINS
 ### Production Bots (Mac M5 treycsa — live trading)
 
 ```bash
-ALGOCHAINS_TOOL_MODE=smart          # Never expose all 338 tools on prod
+ALGOCHAINS_TOOL_MODE=smart          # Never expose all 478 tools on prod
 ALGOCHAINS_REQUIRE_CONFIRMATION=1   # Block ORDER_EXEC without elicitation
 OWNER_API_TOKEN=<secret>            # Required. Set in .env, not env.local.
 ALGOCHAINS_BRIDGE_DEV_MODE=         # Unset (or false)
@@ -107,7 +118,7 @@ When `ALGOCHAINS_TOOL_MODE=full` is set, the MCP server logs this once per proce
 
 ```
 WARNING  algochains_mcp.server: ALGOCHAINS_TOOL_MODE=full — DEVELOPMENT MODE ACTIVE.
-  All 338 tools are exposed for direct stdio call.
+  All 478 tools are exposed for direct stdio call.
   ORDER_EXEC+ tools still require owner_token + ALGOCHAINS_REQUIRE_CONFIRMATION=0.
   Do NOT run live production bots with ALGOCHAINS_TOOL_MODE=full.
   Set ALGOCHAINS_TOOL_MODE=smart for production (default).

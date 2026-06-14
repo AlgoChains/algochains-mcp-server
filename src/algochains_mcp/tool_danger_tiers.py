@@ -127,10 +127,6 @@ _TOOL_TIERS: dict[str, int] = {
     "get_daily_loss_proximity": TIER_READ_ONLY,
     "event_risk_check": TIER_READ_ONLY,
     # Strategy research (read only)
-    # NOTE: validate_strategy appears again at TIER_WRITE_LOCAL below — that
-    # entry overrides this one. The final effective tier is TIER_WRITE_LOCAL
-    # (correct: validation writes sandbox state). Left here for documentation.
-    "validate_strategy": TIER_READ_ONLY,
     "run_backtest": TIER_READ_ONLY,
     "walk_forward_test": TIER_READ_ONLY,
     "optimize_strategy": TIER_READ_ONLY,
@@ -378,6 +374,27 @@ _TOOL_TIERS: dict[str, int] = {
     # Requires NUMERAI_ALLOW_LIVE=1 AND model_id. Gated in submit.py gate logic.
     "numerai_upload_predictions": TIER_ORDER_EXEC,
 
+    # ── Programmatic account / MFA / developer key tools ─────────────────────
+    # Account tools: write session state locally, no broker/order execution
+    "signup_algochains": TIER_WRITE_LOCAL,
+    "verify_email_otp": TIER_WRITE_LOCAL,
+    "login_algochains": TIER_WRITE_LOCAL,
+    "refresh_session": TIER_READ_ONLY,
+    "logout_algochains": TIER_WRITE_LOCAL,
+    # MFA tools
+    "enroll_mfa": TIER_WRITE_LOCAL,
+    "challenge_mfa": TIER_WRITE_LOCAL,
+    "verify_mfa": TIER_WRITE_LOCAL,
+    "list_mfa_factors": TIER_READ_ONLY,
+    "remove_mfa_factor": TIER_ORDER_EXEC,  # Destructive — removes security factor
+    # Developer key lifecycle
+    "create_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
+    "list_developer_keys": TIER_READ_ONLY,
+    "rotate_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
+    "revoke_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
+    "get_developer_key_usage": TIER_READ_ONLY,
+    "test_bridge_connection": TIER_READ_ONLY,
+
     # ── Subscriber tools (HTTP bridge SUBSCRIBER_TOOLS surface) ──────────────
     # Read-only subscriber views
     "get_signal_stream": TIER_READ_ONLY,
@@ -385,7 +402,6 @@ _TOOL_TIERS: dict[str, int] = {
     "get_my_fills": TIER_READ_ONLY,
     "get_my_assignments": TIER_READ_ONLY,
     "get_my_portfolio": TIER_READ_ONLY,
-    "get_marketplace_listings": TIER_READ_ONLY,
     "get_my_paper_positions": TIER_READ_ONLY,
     "place_paper_order": TIER_WRITE_LOCAL,
     "cancel_paper_order": TIER_WRITE_LOCAL,
@@ -520,5 +536,5 @@ TOOL_TIERS = _TOOL_TIERS
 # AST-parses this source (the only place the dup survives) and asserts:
 #   1. every duplicate key is whitelisted below, and
 #   2. no duplicate lowers a tool's effective tier (no silent downgrade).
-# Keep this set in sync with that test. validate_strategy: READ_ONLY -> WRITE_LOCAL.
-_EXPECTED_INTENTIONAL_DUPES: set[str] = {"validate_strategy"}
+# Keep this set in sync with that test.
+_EXPECTED_INTENTIONAL_DUPES: set[str] = set()

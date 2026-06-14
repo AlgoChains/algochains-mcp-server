@@ -94,7 +94,7 @@ src/algochains_mcp/
 | Component | Technology |
 |-----------|-----------|
 | Dev Machine | Mac M3 Max (Priority 1) |
-| GPU Server | Desktop Ubuntu/WSL2, RTX 5080, 16.3GB VRAM (100.99.127.119, Priority 2) |
+| GPU Server | Desktop Ubuntu/WSL2, RTX 5080, 16.3GB VRAM (<TAILSCALE_GPU_HOST>, Priority 2) |
 | GPU Services | ml_enhancer:8001, finbert:8002, vLLM Qwen2.5-7B:8003, Ollama deepseek-r1:11434 |
 | Futures Broker | Tradovate (LIVE account, WebSocket + REST) |
 | Equities | Alpaca REST | Forex: Oanda REST | Multi-asset: IBKR TWS |
@@ -226,7 +226,7 @@ Feature Engineering → Model Training → Model Registry → GPU Dispatcher
          │                  │                │                │
     OHLCV, indicators,  XGBoost, LSTM,   Version control,  Mac MPS (local)
     order flow, sent,   Transformer,     A/B testing,      Desktop CUDA
-    calendar            Ensemble, RL     OOS Sharpe gates  (100.99.127.119)
+    calendar            Ensemble, RL     OOS Sharpe gates  (<TAILSCALE_GPU_HOST>)
 ```
 
 ### 4.2 Tools (12)
@@ -286,7 +286,7 @@ class LLMStrategyGenerator:
 GPU_DISPATCH_CONFIG = {
     "mac": {"device": "mps", "max_batch": 4096, "models": ["xgboost", "ensemble"]},
     "desktop": {
-        "host": "100.99.127.119", "device": "cuda", "max_batch": 32768,
+        "host": "<TAILSCALE_GPU_HOST>", "device": "cuda", "max_batch": 32768,
         "models": ["lstm", "transformer", "rl"],
         "transfer": "rsync -avz --progress",  # NEVER SSHFS/NFS
     }

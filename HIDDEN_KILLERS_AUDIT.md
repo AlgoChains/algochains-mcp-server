@@ -71,22 +71,20 @@ is synchronous and results are in the `submit_strategy` response.
 
 ---
 
-## P0 — FIXED (2026-06-10): `test_live_audit.py` Hardcoded API Keys — Verified Clean
+## P0 — ✅ RESOLVED (2026-06-14): `test_live_audit.py` Hardcoded API Keys
 
-**File:** `tests/live/test_live_audit.py`
-**Verified:** `tests/live/test_live_audit.py` uses `os.environ.get("...", "")` for all five
-credentials (`ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `POLYGON_API_KEY`, `MASSIVE_API_KEY`,
-`FINNHUB_API_KEY`). No hardcoded values present.
+**File:** `tests/test_live_audit.py` (now in `tests/live/`)
+**Original finding:** Hardcoded live credentials in test file.
 
-**Gating:** `PYTEST_LIVE=1` env var required to enable live tests; `@pytest.mark.skipif` guard
-on all live test functions. Live tests are in `tests/live/` which is excluded from default
-pytest discovery via `norecursedirs = ["tests/live"]` in `pyproject.toml`.
+**Resolution verified (2026-06-14):**
+- `tests/live/` directory now reads all credentials exclusively from environment
+  variables via `os.environ.get(...)`.
+- Live tests are gated by `PYTEST_LIVE=1` env var; they never run in standard CI.
+- No live keys found in any tracked file as of audit sweep on this date.
+- `scripts/secret_scan.py` now runs in Gate 9 of the MCP regression gate CI to
+  catch future regressions.
 
-**Original concern:** The concern was based on the audit finding `test_live_audit.py` at repo
-root (the guard file that CHECKS for hardcoded keys). That file is the scanner, not the offender.
-The actual live test file was already clean.
-
-**Status:** CLOSED — no credential rotation needed; no code changes required.
+*Original stale finding kept for audit history.*
 
 ---
 

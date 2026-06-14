@@ -5,18 +5,18 @@ jobs:
   tool-schema-validation:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
       - name: Install AlgoChains MCP + MCPorter
         run: |
           pip install -e ".[dev]"
-          npm install -g mcporter
+          npm install -g mcporter@0.12.0
 
       - name: Configure MCPorter
         run: |
@@ -264,3 +264,23 @@ jobs:
             exit 1
           fi
           echo "✅ No zero-byte source files"
+
+      # Gate 13: pip-audit — scan for known CVEs in direct dependencies
+      - name: "Gate 13: pip-audit CVE Scan"
+        run: |
+          pip install pip-audit --quiet
+          # Audit the installed package; warn-only on vulnerability (exit 0) until
+          # lockfile workflow is in place so this doesn't block PRs on transitive CVEs.
+          pip-audit --requirement <(pip freeze) --skip-editable --format json \
+            | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          vulns = [d for d in data.get('dependencies', []) if d.get('vulns')]
+          if vulns:
+              print(f'⚠️  pip-audit: {len(vulns)} package(s) with known CVEs (warn-only):')
+              for dep in vulns:
+                  for v in dep['vulns']:
+                      print(f\"  {dep['name']}=={dep['version']}: {v['id']} — {v.get('description','')[:80]}\")
+          else:
+              print('✅ pip-audit: no known CVEs in installed packages')
+          " || true

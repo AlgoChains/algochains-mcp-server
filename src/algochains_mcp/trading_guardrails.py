@@ -454,6 +454,16 @@ class TradingGuardrails:
                     f"Circuit breaker HALF_OPEN for broker '{broker}': "
                     "waiting for test call result.",
                 )
+            with self._state_lock:
+                if cb.state != CBState.HALF_OPEN or not cb.half_open_test_allowed:
+                    raise GuardrailTripped(
+                        cb.trip_reason or GuardrailReason.MANUAL_TRIP,
+                        f"Circuit breaker HALF_OPEN for broker '{broker}': "
+                        "waiting for test call result.",
+                    )
+                cb.half_open_test_allowed = False
+            self._save_state()
+            logger.warning("Circuit breaker HALF_OPEN test call consumed for broker=%s", broker)
 
     def record_order_success(self, broker: str) -> None:
         """Call after a successful order fill to allow HALF_OPEN → CLOSED."""

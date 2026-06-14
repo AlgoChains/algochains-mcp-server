@@ -1,0 +1,34 @@
+name: Validate Migrations
+
+on:
+  push:
+    paths:
+      - "supabase/migrations/**"
+  pull_request:
+    paths:
+      - "supabase/migrations/**"
+
+jobs:
+  apply-migrations:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start local Supabase
+        run: supabase start || (supabase db start)
+
+      - name: Apply all migrations against a fresh database
+        # Replays every migration in supabase/migrations/ on a clean Postgres.
+        # Fails the build if any migration has a SQL error, bad column
+        # reference, or broken RPC/trigger definition.
+        run: supabase db reset --debug
+
+      - name: Stop Supabase
+        if: always()
+        run: supabase stop || true

@@ -1,0 +1,44 @@
+# Smithery registry manifest — https://smithery.ai/docs/build/project-config/smithery.yaml
+# Lists AlgoChains MCP Server for discovery on Smithery, PulseMCP, Glama, etc.
+name: algochains-mcp-server
+description: >-
+  AI-to-broker trading protocol: 503 tools across 20 domains. Live futures bots
+  (MNQ/CL/MES/NQ) with real fills, copy-trade signals, marketplace strategy
+  validation (MCPT), and a hosted paper account that needs zero broker
+  credentials. Real fills from the platform's own live futures bots; copy-trade signals are published for subscribers to review and act on (no automated execution).
+homepage: https://algochains.ai
+icon: https://algochains.ai/icon.png
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      ALGOCHAINS_SUBSCRIBER_KEY:
+        type: string
+        title: Subscriber Key
+        description: >-
+          sub_live_* key from algochains.ai (free paper tier). Unlocks the
+          subscriber copy-trade and paper-trading tools.
+      OWNER_API_TOKEN:
+        type: string
+        title: Owner Token
+        description: Owner token for live trading and destructive tools.
+      ALGOCHAINS_TOOL_MODE:
+        type: string
+        enum: [smart, full]
+        default: smart
+        title: Tool Mode
+        description: >-
+          'smart' exposes 168 curated tools (recommended); 'full' exposes all 503.
+    required: []
+  commandFunction: |-
+    (config) => ({
+      command: "algochains-mcp",
+      args: [],
+      env: {
+        ...(config.ALGOCHAINS_SUBSCRIBER_KEY ? { ALGOCHAINS_SUBSCRIBER_KEY: config.ALGOCHAINS_SUBSCRIBER_KEY } : {}),
+        ...(config.OWNER_API_TOKEN ? { OWNER_API_TOKEN: config.OWNER_API_TOKEN } : {}),
+        ALGOCHAINS_TOOL_MODE: config.ALGOCHAINS_TOOL_MODE || (config.OWNER_API_TOKEN ? "full" : "smart")
+      }
+    })

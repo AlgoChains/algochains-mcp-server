@@ -148,15 +148,15 @@ def test_missing_scope_preserves_legacy_owner_gate():
 
 def test_tools_listing_respects_autonomous_scope(monkeypatch):
     """Owner tool listing should not advertise tools blocked by caller scope."""
-    monkeypatch.setenv("ALGOCHAINS_BRIDGE_API_KEY", "test-owner-key-xyz")
-    monkeypatch.setenv("ALGOCHAINS_BRIDGE_DEV_MODE", "false")
-    bridge = _bridge()
-    app = bridge.create_fastapi_app()
-
     try:
         from fastapi.testclient import TestClient
     except Exception as exc:  # pragma: no cover - dependency-level skip
         pytest.skip(f"FastAPI TestClient unavailable: {exc}")
+
+    monkeypatch.setenv("ALGOCHAINS_BRIDGE_API_KEY", "test-owner-key-xyz")
+    monkeypatch.setenv("ALGOCHAINS_BRIDGE_DEV_MODE", "false")
+    bridge = _bridge()
+    app = bridge.create_fastapi_app()
 
     client = TestClient(app)
     response = client.get(

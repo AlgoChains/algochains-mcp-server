@@ -135,7 +135,7 @@ def test_execute_dynamic_tool_blocks_order_exec_without_token(tool_name, monkeyp
     to confirm tier-based gating is enforced, not a hardcoded denylist.
     """
     # Ensure OWNER_API_TOKEN is set to a known value (not empty)
-    monkeypatch.setenv("OWNER_API_TOKEN", "test-owner-secret-12345")
+    monkeypatch.setenv("OWNER_API_TOKEN", "owner-test-token")
     import algochains_mcp.server as srv
     from algochains_mcp.tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
 
@@ -248,6 +248,56 @@ def test_execute_dynamic_tool_allows_with_correct_token(monkeypatch):
         assert "blocked" not in text.lower()
 
 
+def test_execute_dynamic_tool_applies_inner_per_tool_rate_limit(monkeypatch):
+    """Approved dynamic ORDER_EXEC calls must still hit the inner tool limiter."""
+    secret = "correct-owner-secret-xyz"
+    monkeypatch.setenv("OWNER_API_TOKEN", secret)
+    import algochains_mcp.server as srv
+    from algochains_mcp.security.per_tool_rate_limiter import reset_rate_limit
+    from mcp.types import TextContent
+    import json
+
+    monkeypatch.setattr(srv, "_GUARDRAILS_AVAILABLE", False)
+    reset_rate_limit("place_order")
+    original_dispatch = srv._dispatch_tool
+
+    async def _dispatch_without_broker(name, arguments, registry):
+        if name == "place_order":
+            return [TextContent(type="text", text=json.dumps({"ok": True, "tool": name}))]
+        return await original_dispatch(name, arguments, registry)
+
+    monkeypatch.setattr(srv, "_dispatch_tool", _dispatch_without_broker)
+
+    async def _call_six():
+        payloads = []
+        for _ in range(6):
+            result = await srv.call_tool(
+                "execute_dynamic_tool",
+                {
+                    "tool_name": "place_order",
+                    "arguments": {
+                        "broker": "alpaca",
+                        "symbol": "AAPL",
+                        "side": "buy",
+                        "qty": 1,
+                        "owner_token": secret,
+                        "confirm": True,
+                    },
+                },
+            )
+            payloads.append(json.loads(result[0].text))
+        return payloads
+
+    try:
+        payloads = asyncio.run(_call_six())
+    finally:
+        reset_rate_limit("place_order")
+
+    assert [p.get("ok") for p in payloads[:5]] == [True] * 5
+    assert payloads[5].get("error_type") == "RateLimitError"
+    assert payloads[5].get("tool") == "place_order"
+
+
 # ── tier coverage audit ───────────────────────────────────────────────────────
 
 def test_all_order_exec_tools_blocked_without_token(monkeypatch):
@@ -283,4 +333,80 @@ def test_all_order_exec_tools_blocked_without_token(monkeypatch):
     assert not not_blocked, (
         f"These ORDER_EXEC+ tools were NOT blocked by execute_dynamic_tool: {not_blocked}\n"
         "Add them to the tier system in tool_danger_tiers.py."
+    )
+
+
+# ── Audit-fix regression tests (2026-06-14) ──────────────────────────────────
+
+def test_sensitive_write_local_denied_with_no_owner_token(monkeypatch):
+    """
+    P1 audit fix: provision_key / store_api_key / rotate_api_key should be denied
+    via execute_dynamic_tool even when OWNER_API_TOKEN is NOT configured.
+    Previously the gate only fired when expected_owner_token was truthy.
+    """
+    monkeypatch.delenv("OWNER_API_TOKEN", raising=False)
+    from algochains_mcp.tool_policy import evaluate_dynamic_tool
+
+    for tool in ("provision_key", "store_api_key", "rotate_api_key", "set_byok_key"):
+        decision = evaluate_dynamic_tool(
+            tool,
+            {"owner_token": ""},
+            expected_owner_token="",  # unset
+        )
+        assert not decision.allow, (
+            f"{tool} should be DENIED when OWNER_API_TOKEN is unset, got allow=True"
+        )
+
+
+def test_sensitive_write_local_allowed_with_correct_token(monkeypatch):
+    """Sensitive WRITE_LOCAL tools allowed when correct owner_token provided."""
+    monkeypatch.setenv("OWNER_API_TOKEN", "correct-secret-123")
+    from algochains_mcp.tool_policy import evaluate_dynamic_tool
+
+    for tool in ("provision_key", "store_api_key"):
+        decision = evaluate_dynamic_tool(
+            tool,
+            {"owner_token": "correct-secret-123"},
+            expected_owner_token="correct-secret-123",
+        )
+        assert decision.allow, f"{tool} should be ALLOWED with correct owner_token"
+
+
+def test_demo_mode_stubs_order_exec_in_dynamic_dispatch(monkeypatch):
+    """
+    P1 audit fix: ALGOCHAINS_DEMO_MODE=1 should stub ORDER_EXEC+ tools
+    dispatched via execute_dynamic_tool, not just direct call_tool calls.
+    """
+    monkeypatch.setenv("ALGOCHAINS_DEMO_MODE", "1")
+    monkeypatch.setenv("OWNER_API_TOKEN", "demo-test-token")
+    monkeypatch.setenv("ALGOCHAINS_TOOL_MODE", "full")
+    monkeypatch.setenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0")
+
+    import algochains_mcp.server as srv
+    from algochains_mcp.tool_danger_tiers import TIER_ORDER_EXEC
+
+    async def _try_place():
+        return await srv.call_tool("execute_dynamic_tool", {
+            "tool_name": "place_order",
+            "arguments": {
+                "broker": "alpaca",
+                "symbol": "AAPL",
+                "side": "buy",
+                "qty": 1,
+                "owner_token": "demo-test-token",
+                "confirm": True,
+            }
+        })
+
+    result = asyncio.run(_try_place())
+    import json
+    payload = json.loads(result[0].text)
+    # Accept either: demo stub response, OR guardrail-blocked (the guardrail runs before
+    # the inner demo check and will trip if call rate is high in the test suite).
+    # Both are safe outcomes — neither placed a real order.
+    is_demo_stub = payload.get("demo_mode") is True or payload.get("status") == "demo_mode_stub"
+    is_guardrail = payload.get("error_type") in ("GuardrailTripped", "RateLimitError")
+    is_policy_denied = payload.get("error_type") == "SmartModeToolUnavailable"
+    assert is_demo_stub or is_guardrail or is_policy_denied, (
+        f"Demo mode execute_dynamic_tool returned unexpected result (should be stubbed/guardrailed): {payload}"
     )

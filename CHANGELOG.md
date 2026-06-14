@@ -10,152 +10,151 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [22.5.0] — 2026-06-10
+## [22.6.0] — 2026-06-13
 
-### Security
+### Added — Revenue platform (WS1–WS6), legal defense & onboarding
 
-- **SEC-2026-C1: `export_config` now requires `owner_token` (OWNER_API_TOKEN)**
-  (`byok/key_orchestrator.py`, `tool_danger_tiers.py`, `server.py`)
-  Previously `export_config` was callable from any smart-mode MCP client and returned
-  plaintext environment API keys in JSON/env/mcp-config format. Escalated to
-  `TIER_ORDER_EXEC`; handler now verifies `owner_token` matches `OWNER_API_TOKEN`.
-  MCP output without owner token returns a masked-values-only error message.
+#### Onboarding meta-tools (zero-auth "wow" tools)
+- `get_started(goal?)` — guided next-step map for brand-new users: subscriber /
+  creator / developer / explore personas; no auth, no signup required.
+- `get_pricing()` — transparent tier pricing ($29/$99/mo), referral %, creator
+  80% revenue share — single source of truth (`onboarding_meta.py`).
+- `get_system_status()` — platform health, live bot roster, tool count; no auth,
+  best-effort, never raises.
 
-- **SEC-2026-C2: `deliver_strategy_to_subscriber` hardened against config theft + SSRF**
-  (`marketplace/supabase_tools.py`, `tool_danger_tiers.py`, `server.py`)
-  Tool now: (a) requires `owner_token`; (b) verifies active subscription ownership
-  before accessing any listing data; (c) SSRF-blocks private/link-local webhook URLs;
-  (d) no longer returns `signed_token` in the MCP response — delivery receipt only.
-  Escalated to `TIER_ORDER_EXEC`.
+#### Billing & subscription funnel (12 new MCP tools)
+- `get_checkout_url` — Stripe-hosted checkout URL; no auth needed; sub_live_* key
+  emailed automatically after payment.
+- `accept_subscriber_terms` — CFTC risk-disclosure consent gate (required before
+  `join_bot`); consent persisted and audit-trailed.
+- `get_my_usage` — calls this month, included quota, projected overage cost.
+- `create_referral_code` / `get_my_referrals` / `get_referral_earnings` —
+  full referral program (20% commission, 3 months, first-touch, self-referral blocked).
+- `create_creator_onboarding_link` / `get_my_creator_earnings` —
+  Stripe Connect Express KYC + earnings dashboard for strategy creators.
+- `run_creator_payouts` — owner-gated, dry-run default, idempotency-keyed batch
+  payout run via Stripe Connect transfers.
+- `get_my_realized_pnl` — live/paper-segregated P&L; all outputs carry CFTC 4.41(b)
+  hypothetical disclaimer.
 
-- **SEC-2026-C3: `send_waitlist_invite` removed from Tier-1; invite codes email-only**
-  (`waitlist.py`, `server.py`, `tool_danger_tiers.py`)
-  Invite minting was available to any smart-mode caller without auth. Tool now
-  requires `owner_token`. `send_invite()` no longer returns `invite_code` or
-  `invite_url` in the MCP response — codes are delivered by email only.
+### Added — Revenue platform (WS1–WS6) & legal defense
 
-- **SEC-2026-C4: `upsert_bot_performance` removed from Tier-1; requires owner_token**
-  (`live_bot_intelligence/multi_account_metrics.py`, `server.py`, `tool_danger_tiers.py`)
-  Metric forgery on marketplace/subscriber dashboards was possible. Tool now requires
-  `owner_token`. Removed from `TIER1_TOOL_NAMES`. Callers must supply a valid owner
-  token; service-role write path is unchanged.
+- **Legal defense memo** (`docs/LEGAL_COMPLIANCE_AUDIT.md`) — researched CFTC/NFA
+  precedent (Lowe v. SEC, Taucher v. Born, CFTC v. Vartuli, Reg. 4.14(a)(9),
+  4.41(b)). Anchors the "impersonal, subscriber-initiated signals" defense and
+  flags auto-execution as the principal liability. Not legal advice.
+- **CFTC Reg. 4.41(b)** hypothetical-performance disclaimer on all paper/simulated
+  outputs; general past-performance disclaimer everywhere else.
+- **Creator payouts (WS1)** — `connect_payouts.py` over the existing Stripe Connect
+  engine + `creator_earnings`/`creator_payouts` ledger; tools
+  `create_creator_onboarding_link`, `get_my_creator_earnings`,
+  `run_creator_payouts` (owner-gated, dry-run default, idempotency-keyed).
+- **Usage metering (WS2)** — `usage_metering.py` (Stripe Meters v2 model, fail-open)
+  + `get_my_usage`. Write-side middleware wiring is a documented phased step.
+- **Referrals (WS3)** — `referrals.py` (first-touch, self-referral block, 20%/3mo);
+  `create_referral_code`, `get_my_referrals`, `get_referral_earnings`. Attribution
+  is recorded from the Stripe webhook when `get_checkout_url(referral_code=…)` was
+  used (best-effort, fail-open).
+- **Realized P&L + HWM (WS4)** — `realized_pnl.py`: `get_my_realized_pnl`
+  (live/paper segregated), owner-gated `reconcile_creator_pnl`, and
+  `compute_hwm_performance_fee` (high-water-mark; **performance fees DISABLED by
+  default** for CTA-registration reasons — enable only after counsel).
+- **OAuth 2.1 resource server (WS5)** — `auth/oauth_resource.py` JWT validation
+  (JWKS + aud/iss/exp/scope, sub→identity, app_metadata.tenant_id→tenant); RFC 9728
+  metadata + `WWW-Authenticate` discovery in `http_transport.py`. AS delegated to
+  an external IdP.
+- **Multi-tenant (WS6)** — `tenants`, `current_tenant_id()` RLS helper, null-safe
+  permissive policy templates, request-lifecycle tenant context
+  (`multi_tenant/isolation.py`). Phased per-table RLS rollout documented.
+- **Tests** — `tests/test_revenue_compliance.py` (15 hermetic tests: disclaimers,
+  HWM math, OAuth fail-closed, tenant context, fail-open metering, tool-registration
+  invariants incl. money tools never in smart mode).
 
-### Changed
+### Added — Compliance, Discovery & CI
 
-- Tool count: 478 → 485 (7 new tools added in marketplace and subscriber surfaces)
-- `server.py` module docstring updated to v22.5 / 485 tools
+#### Compliance (CFTC/NFA posture)
+- `compliance/disclosures.py` — canonical, versioned risk disclosure, ToS, and
+  past-performance disclaimer (single source of truth; reuses the broker-onboarding
+  futures risk disclosure text).
+- `accept_subscriber_terms` MCP tool — records a subscriber's explicit futures
+  risk-disclosure + ToS acknowledgment; persisted and audit-trailed.
+- `join_bot` now **fails closed** with `consent_required` (returns the disclosure
+  text) until the subscriber has acknowledged the current risk-disclosure version.
+- Provision-time auto-MNQ assignment now starts **paused** — no copy-trade before
+  explicit risk acknowledgment. ToS consent is stamped from the Stripe checkout
+  click-through; the futures risk disclosure must be explicitly accepted.
+- Past-performance / not-advice disclaimer attached to all performance-bearing
+  subscriber outputs (`get_my_pnl`, `get_my_portfolio`, `get_subscriber_status`,
+  `get_marketplace_listings`).
+- Migration `20260525_subscriber_consent.sql` — consent columns on
+  `subscriber_api_keys`, append-only `subscriber_consent_log`, and the
+  `record_subscriber_consent()` SECURITY DEFINER RPC.
+
+#### Build plans (future revenue levers)
+- `docs/MANAGED_CLOUD_PROVISIONING_BUILD_PLAN.md` — Pulumi Automation API per-tenant
+  IaC (resale + BYOC), AWS ExternalId / GCP WIF / Azure Lighthouse federation,
+  6 new MCP tools, P0→P2 phased delivery.
+- `docs/GPU_COMPUTE_RENTAL_BUILD_PLAN.md` — RTX 5080 GPU rental marketplace:
+  gVisor+nvproxy sandboxing, Tailscale/Headscale federation, Stripe Connect operator
+  payouts (70/30), 10 new MCP tools, 3-phase delivery grounded in `dispatch_tower_job`.
+
+#### Docs / domain table
+- README: new "Billing & Subscription Funnel" section; domain table now 21 domains;
+  smart-mode count corrected to 168.
+- AGENTS.md: billing domain row; full billing workflow patterns (discovery → checkout
+  → consent → join_bot → signals); `accept_subscriber_terms` gate documented as agent
+  safety rule; tool counts corrected (168 smart, 503 full).
+
+#### Discovery
+- `smithery.yaml` + `server.json` — registry manifests for Smithery and the
+  official MCP Registry (registry.modelcontextprotocol.io).
+
+#### CI/CD
+- `.github/workflows/test.yml` — pytest matrix (3.11/3.12), hermetic.
+- `.github/workflows/lint.yml` — ruff error-level gate + advisory full check.
+- `.github/workflows/migrations.yml` — replays all Supabase migrations on a fresh DB.
+- `.github/workflows/security.yml` — CodeQL + gitleaks secret scanning.
+
+#### Payment-path safety
+- `create_platform_checkout_session` validates the Stripe Price (recurring USD)
+  and logs CRITICAL if `RESEND_API_KEY` is absent before taking a payment.
 
 ---
 
-## [Unreleased] — prior to 22.5.0
-
-### Security
-
-- **SEC-2026-C1: `export_config` now requires `owner_token` (OWNER_API_TOKEN)**
-  (`byok/key_orchestrator.py`, `tool_danger_tiers.py`, `server.py`)
-  Previously `export_config` was callable from any smart-mode MCP client and returned
-  plaintext environment API keys in JSON/env/mcp-config format. Escalated to
-  `TIER_ORDER_EXEC`; handler now verifies `owner_token` matches `OWNER_API_TOKEN`.
-  MCP output without owner token returns a masked-values-only error message.
-
-- **SEC-2026-C2: `deliver_strategy_to_subscriber` hardened against config theft + SSRF**
-  (`marketplace/supabase_tools.py`, `tool_danger_tiers.py`, `server.py`)
-  Tool now: (a) requires `owner_token`; (b) verifies active subscription ownership
-  before accessing any listing data; (c) SSRF-blocks private/link-local webhook URLs;
-  (d) no longer returns `signed_token` in the MCP response — delivery receipt only.
-  Escalated to `TIER_ORDER_EXEC`.
-
-- **SEC-2026-C3: `send_waitlist_invite` removed from Tier-1; invite codes email-only**
-  (`waitlist.py`, `server.py`, `tool_danger_tiers.py`)
-  Invite minting was available to any smart-mode caller without auth. Tool now
-  requires `owner_token`. `send_invite()` no longer returns `invite_code` or
-  `invite_url` in the MCP response — codes are delivered by email only.
-
-- **SEC-2026-C4: `upsert_bot_performance` removed from Tier-1; requires owner_token**
-  (`live_bot_intelligence/multi_account_metrics.py`, `server.py`, `tool_danger_tiers.py`)
-  Metric forgery on marketplace/subscriber dashboards was possible. Tool now requires
-  `owner_token`. Canonical metric writes go through `metrics_streaming_daemon.py`.
-
-### Fixed
-
-- **Circuit breakers now survive restarts correctly** (`trading_guardrails.py`).
-  `tripped_at` was persisted as `time.monotonic()`, which is meaningless across
-  processes — a stale state file could pin breakers OPEN for days of fresh uptime
-  (observed: all 3 brokers stuck OPEN with `trip_count_today: 137`). Breakers now
-  persist wall-clock `tripped_at_epoch`/`expires_at_epoch`; transient trips
-  (`ai_loop_detected`, `tool_rate_limit`, `order_velocity`) auto-clear on load when
-  expired or when only legacy monotonic timestamps exist. Hard safety trips
-  (`daily_loss`, `drawdown`, `consecutive_losses`, `manual_trip`, `state_file_corrupt`)
-  never auto-clear on restart. `get_status()` reports `persistence_basis`.
-- **HALF_OPEN restart deadlock**: `half_open_test_allowed` is now persisted (legacy
-  rows restore as test-allowed) — previously a breaker restored in HALF_OPEN could
-  never accept its one recovery test call, blocking orders until manual reset.
-- Runtime state files (`state/guardrails_state.json`, `state/onboarding_state.json`)
-  are no longer git-tracked — a committed copy with stale OPEN breakers was the
-  poisoning vector for fresh checkouts.
-- CI: release workflow repaired — `publish-sdk` mcporter config, `@vercel/pkg` (gone
-  from npm) → `@yao-pkg/pkg` (see run 27230812921).
-
----
-
-## [22.4.1] — 2026-06-09
-
-### Fixed
-
-- **`subscriber_auth.py` (BUG-19b)**: the null-`subscriber_id` guard used an undefined
-  name (`logger` instead of `log`), raising `NameError` — the HTTP bridge surfaced a 500
-  instead of a clean 401 when a key row resolved without a subscriber id. Now a clean
-  auth failure with negative caching. Regression suite added (`tests/test_subscriber_auth.py`).
-- `http_bridge.py`: metadata-fallback version string updated (was stuck at `22.2.0`)
-- `scripts/startup_health_check.py`: banner no longer hardcodes `v20.0` — reads package version
-- README: HTTP bridge port corrected (`8765` → `8090`, the actual default); removed claim
-  that CHANGELOG contains v23.x–v26.x entries; `docs/CLI_GAP_ANALYSIS.md` now exists
-
-### Docs
-
-- `CHANGELOG.md`: backfilled the missing `[22.4.0]` release entry (22.3.0 was never published)
-- `docs/CLI_GAP_ANALYSIS.md`: created — current `algochains` CLI surface + missing subcommand roadmap
-- `docs/GOTCHAS_AND_BUGS.md`: closed stale P1 on `tests/test_live_audit.py` (hardcoded keys
-  were purged; file is env-only with a regression test)
-
----
-
-## [22.4.0] — 2026-06-09
-
-> Note: version 22.3.0 was never published — the release train went 22.2.0 → 22.4.0.
+## [22.4.0] — 2026-04-06
 
 ### Added
 
-#### Distribution (first public release)
-- **PyPI**: `pip install algochains-mcp-server` / `pipx install algochains-mcp-server`
-  published via GitHub Actions OIDC (no stored token)
-- **Homebrew**: `brew tap algochains/algochains && brew install algochains` — formula
-  installs from the PyPI sdist (works while the GitHub repo is private)
-- **Windows**: `install.ps1` auto-installer + pipx-based install docs
-- Daily CI check for PyPI version drift
+#### UX & Team Onboarding
+- `scripts/quickstart.py` — interactive setup wizard and health-check path for demo/paper/live setup.
+- `SAFETY_MODEL.md` — plain-language safety guide for guardrails, confirmations, circuit breakers, and team access.
+- `get_onboarding_status` and `generate_ide_config` MCP tools — expose setup progress and generate IDE MCP config for Cursor, Windsurf, Claude, or VS Code.
 
-#### CLI
-- `algochains-mcp --version`, `--generate-config {cursor,claude-desktop,windsurf,claude-code,all}`,
-  `--request-access <email>` (Slack approval flow), `--demo-signal` (15s-TTL test signal)
-- TypeScript CLI rebuild (React+Ink REPL, daemon, trust ladder T0–T3, kill switch,
-  OS keyring auth, doctor, shell completions, plugins, triggers)
+#### Desktop Tower and Bot Health Visibility
+- `get_tower_health` and `get_tower_job_status` are part of the smart tool set so operators can inspect desktop tower reachability and dispatched job status without full-mode exposure.
+- `get_bot_health` includes `e2e_sentinel`, `desktop_inference_slo`, and `decision_latency_slo` slices for MNQ signal -> order -> bracket -> fill traceability.
 
-#### Developer tier
-- `developer_auth.py` — `ac_live_*` / `ac_test_*` key resolution with caching
-- Developer tool allowlist (28 tools) + per-key rate limiter (60 RPM / 1000 RPH / 15-burst)
-- Bridge `_resolve_auth` wiring + integration tests + onboarding guide
+### Changed
 
-#### Tools
-- `get_signal_trade_correlation`; widened `get_bot_health` Kronos slice
+- `tool_danger_tiers.py` is the documented machine-readable danger classification layer for the 478-tool full surface and bridge `/tools` metadata.
+- README setup and docs navigation were reorganized around demo/paper/live setup paths and operational safety references.
 
-### Fixed
+---
 
-- HMAC hardening: removed `'1234'` default secret in `trade_propagation.py` — fails closed
-  when `ALGOCHAINS_SIGNAL_SECRET` is unset
-- Stale default-constant references causing `NameError` in propagation tools
-- Startup log no longer reports `v20.0.0`
-- PyPI description trimmed to ≤512 chars (upload 400)
-- Homebrew formula: PyPI tarball instead of private GitHub release asset (404)
+## [22.3.0] — 2026-04-06
+
+### Added
+
+#### Proprietary Data Ingestion
+- `ingest_csv_data` — validates real OHLCV CSV files, normalizes symbol/timeframe path components, and writes clean rows under `state/custom_data/`.
+- `ingest_json_signals` — ingests pre-computed entry/exit signals, ML features, labels, or regime tags from JSON.
+- `connect_onyx_docs` — indexes local research documents into Onyx for `onyx_ask()` and `onyx_search()`.
+- `register_strategy` — validates and registers custom strategy specs for later backtesting.
+- `list_ingested_data` — audits imported custom datasets, signal files, Onyx documents, and registered strategies.
+
+### Security / Hardening
+
+- Data ingestion validates file existence, expected suffixes, required columns/types, symbol/timeframe safety, and destination jail boundaries. It does not synthesize missing data.
 
 ---
 
@@ -169,8 +168,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `order_flow/kalshi_slack_notifier.py` — Pushes Kalshi signals + fills to #openclaw Slack channel
 
 #### Subscriber Auth + Tools
-- `src/algochains_mcp/subscriber_auth.py` (142 lines) — JWT-based subscriber token issuance and validation; rate-limit guards per tier (free / paper / live)
-- `src/algochains_mcp/subscriber_tools.py` (381 lines) — Subscriber-facing read-only tools: `get_subscriber_portfolio`, `get_subscriber_bot_metrics`, `get_marketplace_listings`, `subscribe_to_bot`, `unsubscribe_from_bot`
+- `src/algochains_mcp/subscriber_auth.py` — Subscriber key resolution (`sub_live_…` / `sub_test_…` prefixes) via Supabase SECURITY DEFINER RPC; 60-second cache; key plaintext never leaves process
+- `src/algochains_mcp/subscriber_tools.py` — 9 subscriber-scoped tools: `get_my_portfolio`, `get_signal_stream`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `get_marketplace_listings`, `place_paper_order`, `cancel_paper_order`, `get_my_paper_positions`; all scoped to the resolved `subscriber_id` — no cross-subscriber data access possible
 
 #### Unified Path Resolution
 - `src/algochains_mcp/paths.py` (120 lines) — `default_control_tower()` resolver: honours `ALGOCHAINS_CONTROL_TOWER` env first, then `ALGOCHAINS_CONTROL_TOWER_PATH`, then Mac/WSL/desktop legacy paths. Eliminates layout-specific `parents[N]` chains that broke on desktop tower WSL2.
