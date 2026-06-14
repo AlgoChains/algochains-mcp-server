@@ -12,14 +12,15 @@
 
 > **The only MCP server with live futures bots, real fill data, real-time ML inference, and 503 tools across 20 domains — all backed by real APIs, zero synthetic data.**
 
-Connect your AI assistant (Claude, Cursor, ChatGPT) to your trading infrastructure in 3 commands. Ask Claude "What's my MNQ P&L today?" — it calls Tradovate, gets the real answer, and tells you.
+Connect your AI assistant (Claude, Cursor, ChatGPT) to your trading infrastructure in 3 commands. Ask Claude "What's my paper P&L today?" — it reads your AlgoChains virtual paper account and tells you. No broker required.
 
 ```
-You ask Claude:                    Claude calls:                    Server calls:
-"What's my NQ position?"   →  get_positions()           →  Tradovate API → real data
-"Run a backtest on MNQ"    →  run_backtest()             →  Databento tick archive
-"Is the market trending?"  →  detect_market_regime()    →  Polygon + FRED → analysis
-"Check my MNQ bot health"  →  get_bot_health(bot="MNQ") →  launchd + logs → live state
+You ask Claude:                       Claude calls:                    Server calls:
+"What's my paper P&L?"        →  get_my_portfolio()        →  AlgoChains paper account → real signals
+"What signals did MNQ fire?"  →  get_signal_stream()       →  copy-trade signal feed → live bot output
+"Run a backtest on MNQ"       →  run_backtest()             →  Databento tick archive
+"Is the market trending?"     →  detect_market_regime()    →  Polygon + FRED → analysis
+"What's my live NQ position?" →  get_positions()           →  Tradovate API → real data  (live users)
 ```
 
 ---
@@ -37,7 +38,70 @@ python scripts/quickstart.py --generate-config cursor
 python scripts/quickstart.py --mode demo
 ```
 
-That's it. Your AI now has 168 tools (smart mode) available immediately. Add broker credentials for live trading access. See [Option C](#option-c-full-live-setup) for live credentials.
+That's it. Your AI now has 168 tools (smart mode) available immediately.
+
+**Recommended next step — no broker needed:** Sign up at [algochains.ai](https://algochains.ai) for a free hosted virtual paper account, set `ALGOCHAINS_SUBSCRIBER_KEY=sub_live_…`, and start copy-trading MNQ signals instantly. See [Option B](#option-b--algochains-hosted-paper-free-no-broker-needed) below.
+
+For live broker connectivity (Tradovate, Alpaca, etc.), see [Option C](#option-c-full-live-setup).
+
+---
+
+## Subscriber Onramp — Try It Free (No Broker Required)
+
+The fastest way to get value from this server is as a **subscriber**: sign up at
+[algochains.ai](https://algochains.ai), get a free hosted virtual paper account, and
+start copy-trading the live MNQ bot's signals in seconds. No Tradovate credentials.
+No Alpaca account. No real money.
+
+### How it works
+
+1. Sign up at **algochains.ai** — free paper account provisioned automatically
+2. Dashboard shows your `sub_live_…` subscriber key — copy it
+3. Set `ALGOCHAINS_SUBSCRIBER_KEY=sub_live_…` in your shell or `.env`
+4. Claude now has 9 subscriber-scoped tools available:
+
+| Tool | What it does |
+|------|-------------|
+| `get_my_portfolio` | Paper balance + active bot assignments + open signals + 7-day P&L in one call |
+| `get_signal_stream` | Unread copy-trade signals for the bots you follow (MNQ by default) |
+| `get_my_pnl` | Today's P&L and 7-day P&L from your paper fills |
+| `get_my_fills` | Paginated fill history — symbol, side, qty, fill price, P&L per trade |
+| `get_my_assignments` | Which bots you're subscribed to and their risk caps |
+| `get_marketplace_listings` | Browse all approved bots available to subscribe to |
+| `place_paper_order` | Place a self-directed paper order (filled at real quotes) |
+| `cancel_paper_order` | Cancel a pending paper order |
+| `get_my_paper_positions` | Open and recently filled self-directed paper orders |
+
+All 9 tools require only the `sub_live_…` key — no `OWNER_API_TOKEN`, no broker credentials.
+
+### Subscriber key format
+
+Keys always start with `sub_live_` (production) or `sub_test_` (sandbox). Set the key
+as `ALGOCHAINS_SUBSCRIBER_KEY` in your `.env` — the server resolves your `subscriber_id`
+server-side via Supabase. Your key never touches this repo.
+
+### Subscriber quick-start prompts
+
+```
+Portfolio snapshot:
+"Run get_my_portfolio. What's my paper balance and how did the MNQ bot do today?"
+
+Signal stream:
+"Call get_signal_stream. What signals has the MNQ bot fired in the last hour?"
+
+Fill history:
+"Run get_my_fills with limit=20. List the last 20 fills with P&L per trade."
+
+Marketplace browse:
+"Run get_marketplace_listings. Which bots are available to subscribe to?"
+
+Paper trade:
+"I want to paper-trade 1 MES long at market. Use place_paper_order."
+```
+
+> **Bot owners:** See [MARKETPLACE_CREATOR_GUIDE.md](MARKETPLACE_CREATOR_GUIDE.md) and
+> `check_propagation_health` / `test_signal_propagation` for the copy-trade pipeline
+> health tools (requires `OWNER_API_TOKEN`).
 
 ---
 
@@ -130,65 +194,6 @@ status = get_all_bot_ops_status()
 ```
 
 No credentials needed if you have `ALGOCHAINS_BRIDGE_API_KEY`. Read-only.
-
----
-
-## Subscriber Onramp — Try It Free (No Broker Required)
-
-The fastest way to get value from this server is as a **subscriber**: sign up at
-[algochains.ai](https://algochains.ai), get a free hosted virtual paper account, and
-start copy-trading the live MNQ bot's signals in seconds. No Tradovate credentials.
-No Alpaca account. No real money.
-
-### How it works
-
-1. Sign up at **algochains.ai** — free paper account provisioned automatically
-2. Dashboard shows your `sub_live_…` subscriber key — copy it
-3. Set `ALGOCHAINS_SUBSCRIBER_KEY=sub_live_…` in your shell or `.env`
-4. Claude now has 9 subscriber-scoped tools available:
-
-| Tool | What it does |
-|------|-------------|
-| `get_my_portfolio` | Paper balance + active bot assignments + open signals + 7-day P&L in one call |
-| `get_signal_stream` | Unread copy-trade signals for the bots you follow (MNQ by default) |
-| `get_my_pnl` | Today's P&L and 7-day P&L from your paper fills |
-| `get_my_fills` | Paginated fill history — symbol, side, qty, fill price, P&L per trade |
-| `get_my_assignments` | Which bots you're subscribed to and their risk caps |
-| `get_marketplace_listings` | Browse all approved bots available to subscribe to |
-| `place_paper_order` | Place a self-directed paper order (filled at real quotes) |
-| `cancel_paper_order` | Cancel a pending paper order |
-| `get_my_paper_positions` | Open and recently filled self-directed paper orders |
-
-All 9 tools require only the `sub_live_…` key — no `OWNER_API_TOKEN`, no broker credentials.
-
-### Subscriber key format
-
-Keys always start with `sub_live_` (production) or `sub_test_` (sandbox). Set the key
-as `ALGOCHAINS_SUBSCRIBER_KEY` in your `.env` — the server resolves your `subscriber_id`
-server-side via Supabase. Your key never touches this repo.
-
-### Subscriber quick-start prompts
-
-```
-Portfolio snapshot:
-"Run get_my_portfolio. What's my paper balance and how did the MNQ bot do today?"
-
-Signal stream:
-"Call get_signal_stream. What signals has the MNQ bot fired in the last hour?"
-
-Fill history:
-"Run get_my_fills with limit=20. List the last 20 fills with P&L per trade."
-
-Marketplace browse:
-"Run get_marketplace_listings. Which bots are available to subscribe to?"
-
-Paper trade:
-"I want to paper-trade 1 MES long at market. Use place_paper_order."
-```
-
-> **Bot owners:** See [MARKETPLACE_CREATOR_GUIDE.md](MARKETPLACE_CREATOR_GUIDE.md) and
-> `check_propagation_health` / `test_signal_propagation` for the copy-trade pipeline
-> health tools (requires `OWNER_API_TOKEN`).
 
 ---
 
