@@ -31,6 +31,7 @@ Start with:  algochains-mcp  (or python -m algochains_mcp.server)
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -699,6 +700,24 @@ def _compute_consecutive_losses_from_fills(fills: Any) -> tuple[int, bool]:
         else:
             return consecutive_losses, True
     return consecutive_losses, True
+
+
+async def _get_guardrail_fills(conn: Any, symbol: str) -> Any:
+    """Fetch fills narrowly when a connector supports symbol-filtered reads."""
+    get_fills = getattr(conn, "get_fills")
+    try:
+        signature = inspect.signature(get_fills)
+    except (TypeError, ValueError):
+        supports_symbol = True
+    else:
+        supports_symbol = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD or name == "symbol"
+            for name, param in signature.parameters.items()
+        )
+
+    if supports_symbol:
+        return await get_fills(symbol=symbol)
+    return await get_fills()
 
 
 def _get_validator() -> StrategyValidator:
@@ -5601,7 +5620,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 _loss_streak_from_fills = False
                 _fills_api_err_str: str = ""  # persist outside except block (Python 3 deletes except-vars)
                 try:
-                    _fills = await conn.get_fills()
+                    _fills = await _get_guardrail_fills(conn, _symbol)
                     _fills_source_ok = True
                     _consecutive_losses, _loss_streak_from_fills = _compute_consecutive_losses_from_fills(_fills)
                 except Exception as _fills_err:
