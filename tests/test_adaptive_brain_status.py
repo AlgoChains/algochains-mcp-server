@@ -61,6 +61,8 @@ def test_status_does_not_treat_false_positive_ps_lines_as_running(tmp_path):
 
     assert status["status"] == "not_running"
     assert status["running"] is False
+    assert status["process_running"] is False
+    assert status["launchd_running"] is False
     assert status["pid"] is None
     assert status["processes"] == []
     assert status["script_exists"] is True
@@ -82,8 +84,47 @@ def test_status_reports_actual_python_daemon_process(tmp_path):
 
     assert status["status"] == "running"
     assert status["running"] is True
+    assert status["process_running"] is True
+    assert status["launchd_running"] is False
+    assert status["liveness_evidence"] == "process"
     assert status["pid"] == 222
     assert status["last_line_preview"] == "heartbeat ok"
+
+
+def test_status_reports_launchd_managed_daemon_without_process_match(tmp_path):
+    root = _make_control_tower(tmp_path)
+    ps_output = "\n".join(
+        [
+            "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND",
+            _ps_line(111, "rg adaptive_brain.py /workspace"),
+        ]
+    )
+    launchctl_output = """
+    gui/501/com.algochains.adaptive-brain = {
+        active count = 1
+        path = /Users/treycsa/Library/LaunchAgents/com.algochains.adaptive-brain.plist
+        state = running
+        pid = 444
+        program = /bin/bash
+        last exit code = 0
+    }
+    """
+
+    status = get_adaptive_brain_status(
+        control_tower=root,
+        ps_output=ps_output,
+        launchctl_output=launchctl_output,
+        now=1_780_000_000,
+    )
+
+    assert status["status"] == "running"
+    assert status["running"] is True
+    assert status["process_running"] is False
+    assert status["launchd_running"] is True
+    assert status["liveness_evidence"] == "launchd"
+    assert status["pid"] == 444
+    assert status["launchd"]["state"] == "running"
+    assert status["launchd"]["last_exit_status"] == 0
 
 
 def test_adaptive_brain_status_registered_and_callable(monkeypatch, tmp_path):
