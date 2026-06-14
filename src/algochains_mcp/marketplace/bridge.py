@@ -130,6 +130,8 @@ class MarketplaceBridge:
 
     async def subscribe(self, slug: str, broker: str | None = None, mode: str = "paper") -> dict:
         self._require_listing_key()
+        if mode != "paper" and not (broker or "").strip():
+            raise SubscriptionError("Broker is required for live subscriptions")
         client = await self._ensure_client()
         payload = {"mode": mode}
         if mode != "paper" or broker:

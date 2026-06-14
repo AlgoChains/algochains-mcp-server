@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 
 from algochains_mcp.config import MarketplaceConfig
 from algochains_mcp.errors import (
-    ListingNotFoundError,
     MarketplaceError,
     MarketplaceNotConfiguredError,
     RateLimitError,
@@ -124,3 +123,15 @@ def test_paper_subscribe_does_not_require_broker(monkeypatch):
     assert out == {"ok": True}
     client.post.assert_awaited_once()
     assert client.post.await_args.kwargs["json"] == {"mode": "paper"}
+
+
+def test_live_subscribe_requires_broker(monkeypatch):
+    monkeypatch.setenv("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", "1")
+    bridge = MarketplaceBridge(_mock_config())
+    client = AsyncMock()
+    bridge._client = client
+
+    with pytest.raises(SubscriptionError, match="Broker is required"):
+        asyncio.run(bridge.subscribe("mnq", mode="live"))
+
+    client.post.assert_not_called()

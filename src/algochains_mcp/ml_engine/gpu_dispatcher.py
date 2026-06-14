@@ -6,6 +6,19 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+_SONIA_AIR_FALLBACK_TASKS = frozenset(
+    {
+        "event_source_poll",
+        "event_polling",
+        "kalshi_event_poll",
+        "kalshi_event_polling",
+        "noaa_event_poll",
+        "noaa_event_polling",
+        "usgs_event_poll",
+        "usgs_event_polling",
+    }
+)
+
 try:
     from algochains_library.ops.compute_routing import (
         _SONIA_AIR_EXCLUDED_TASK_TERMS,
@@ -103,7 +116,7 @@ class GPUDispatcher:
                 target = "sonia_air"
             elif task_type in config["desktop"]["models"]:
                 target = "desktop"
-            elif any(term in task for term in ("event_source_poll", "event_polling", "noaa", "usgs", "kalshi")):
+            elif task in _SONIA_AIR_FALLBACK_TASKS:
                 target = "sonia_air"
             else:
                 target = self._platform
