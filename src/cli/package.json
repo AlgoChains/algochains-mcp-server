@@ -22,7 +22,7 @@
     "enquirer": "^2.4.1",
     "eventsource": "^2.0.2",
     "hono": "^4.0.0",
-    "ink": "^5.0.0",
+    "ink": "^7.0.6",
     "ink-spinner": "^5.0.0",
     "keytar": "^7.9.0",
     "node-cron": "^4.2.1",
