@@ -67,7 +67,7 @@
       "lessons_injection": true
     },
     "security": {
-      "key_vault": "aes256_gcm_scrypt",
+      "key_vault": "AES-256-GCM with scrypt",
       "per_agent_isolation": true,
       "account_protection_guards": 12,
       "circuit_breakers": true
