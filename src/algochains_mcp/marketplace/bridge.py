@@ -132,7 +132,9 @@ class MarketplaceBridge:
         self._require_listing_key()
         client = await self._ensure_client()
         payload = {"mode": mode}
-        if mode != "paper" or broker:
+        if mode == "live" and not (broker or "").strip():
+            raise SubscriptionError("broker is required for live subscriptions")
+        if broker:
             payload["broker"] = broker
         resp = await client.post(
             f"/api/v1/listings/{slug}/subscribe/",

@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from algochains_mcp.marketplace.supabase_tools import get_subscriber_bots
+from algochains_mcp.marketplace.supabase_tools import _is_ssrf_target, get_subscriber_bots
 
 
 class _QueryRecorder:
@@ -55,3 +55,19 @@ def test_get_subscriber_bots_reads_subscriber_bot_assignments():
     assert "mode" in sb.query.selected
     assert ("subscriber_id", "sub-uuid") in sb.query.filters
     assert out["subscriptions"][0]["mode"] == "paper"
+
+
+def test_get_subscriber_bots_supports_email_lookup():
+    sb = _SupabaseRecorder([])
+
+    with patch("algochains_mcp.marketplace.supabase_tools._get_sb_client", return_value=sb):
+        get_subscriber_bots("USER@Example.COM")
+
+    assert ("subscriber_email", "user@example.com") in sb.query.filters
+
+
+def test_ssrf_guard_blocks_link_local_and_tailscale_targets():
+    assert _is_ssrf_target("https://169.254.169.254/latest/meta-data")
+    assert _is_ssrf_target("https://100.109.159.111/webhook")
+    assert _is_ssrf_target("ftp://example.com/webhook")
+    assert not _is_ssrf_target("https://example.com/webhook")

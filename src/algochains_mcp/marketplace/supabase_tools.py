@@ -20,7 +20,9 @@ from __future__ import annotations
 import os
 import logging
 import threading
+import ipaddress
 from typing import Any
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
@@ -207,12 +209,14 @@ def get_subscriber_bots(user_id: str) -> dict[str, Any]:
         return {"error": "Supabase service_role not configured", "subscriptions": []}
 
     try:
+        lookup_field = "subscriber_email" if "@" in user_id else "subscriber_id"
+        lookup_value = user_id.lower().strip() if lookup_field == "subscriber_email" else user_id
         q = (
             sb.table("subscriber_bot_assignments")
             .select(
                 "bot,mode,paused,size_multiplier,max_contracts,daily_loss_cap_usd,created_at,updated_at"
             )
-            .eq("subscriber_id", user_id)
+            .eq(lookup_field, lookup_value)
             .order("bot")
         )
 
@@ -230,38 +234,41 @@ def get_subscriber_bots(user_id: str) -> dict[str, Any]:
         return {"error": str(exc), "subscriptions": [], "source": "supabase_error"}
 
 
-_PRIVATE_NETWORK_PREFIXES = (
-    "http://localhost",
-    "http://127.",
-    "http://10.",
-    "http://192.168.",
-    "http://172.16.",
-    "http://172.17.",
-    "http://172.18.",
-    "http://172.19.",
-    "http://172.2",
-    "http://172.3",
-    "https://localhost",
-    "https://127.",
-    "https://10.",
-    "https://192.168.",
-    "https://172.16.",
-    "https://172.17.",
-    "https://172.18.",
-    "https://172.19.",
-    "https://172.2",
-    "https://172.3",
-    "file://",
-    "ftp://",
-    "http://0.",
-    "http://169.254.",  # link-local (AWS metadata)
+_BLOCKED_NETWORKS = (
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("100.64.0.0/10"),  # Tailscale / CGNAT
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local / cloud metadata
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
 )
 
 
 def _is_ssrf_target(url: str) -> bool:
     """Return True if the URL targets a private/link-local/loopback address."""
-    lower = (url or "").lower()
-    return any(lower.startswith(prefix) for prefix in _PRIVATE_NETWORK_PREFIXES)
+    try:
+        parsed = urlparse(url or "")
+    except Exception:
+        return True
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        return True
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return any(ip in network for network in _BLOCKED_NETWORKS) or not ip.is_global
+
+
+def _assignment_matches_strategy(assignment: dict[str, Any], strategy_ids: set[str]) -> bool:
+    bot = str(assignment.get("bot") or "").lower()
+    return bool(bot and bot in strategy_ids)
 
 
 def deliver_strategy_to_subscriber(
@@ -304,8 +311,8 @@ def deliver_strategy_to_subscriber(
     # ── Step 0: SSRF guard on caller-supplied webhook URL ─────────────────────
     if webhook_url and _is_ssrf_target(webhook_url):
         return {
-            "error": f"Blocked: webhook_url targets a private or link-local address. "
-                     f"Provide an externally reachable HTTPS endpoint.",
+            "error": "Blocked: webhook_url targets a private or link-local address. "
+                     "Provide an externally reachable HTTPS endpoint.",
         }
 
     sb = _get_sb_client(use_service_role=True)
@@ -338,6 +345,36 @@ def deliver_strategy_to_subscriber(
                 .execute()
             )
             sub_rows = sub_check2.data or []
+        if not sub_rows:
+            # New subscriber model: subscriber_bot_assignments is canonical for assigned bots.
+            assignment_check = (
+                sb.table("subscriber_bot_assignments")
+                .select("bot,paused")
+                .eq("subscriber_id", subscriber_id)
+                .execute()
+            )
+            assignment_rows = assignment_check.data or []
+            strategy_ids = {str(strategy_id).lower()}
+            public_listing = (
+                sb.table("marketplace_listing")
+                .select("id,symbol,strategy_title")
+                .eq("id", strategy_id)
+                .limit(1)
+                .execute()
+            )
+            for listing_row in public_listing.data or []:
+                for key in ("symbol", "strategy_title"):
+                    value = listing_row.get(key)
+                    if value:
+                        strategy_ids.add(str(value).lower())
+            for assignment in assignment_rows:
+                if _assignment_matches_strategy(assignment, strategy_ids):
+                    sub_rows = [{
+                        "id": None,
+                        "status": "paused" if assignment.get("paused") else "active",
+                        "webhook_url": None,
+                    }]
+                    break
         if not sub_rows:
             return {
                 "error": f"No active subscription found for subscriber={subscriber_id!r} "
@@ -423,6 +460,7 @@ def deliver_strategy_to_subscriber(
                     "X-AlgoChains-Delivery-ID": delivery_id,
                 },
                 timeout=10.0,
+                follow_redirects=False,
             )
             webhook_code = resp.status_code
             webhook_status = "delivered" if resp.status_code < 300 else f"failed_{resp.status_code}"

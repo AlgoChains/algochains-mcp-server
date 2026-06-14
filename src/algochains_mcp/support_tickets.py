@@ -20,13 +20,10 @@ Optional:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
-import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -113,6 +110,76 @@ def _load_local_tickets() -> dict[str, dict]:
 def _save_local_tickets(tickets: dict[str, dict]) -> None:
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     _LOCAL_TICKETS_FILE.write_text(json.dumps(tickets, indent=2, default=str))
+
+
+def _local_ticket(ticket_id: str) -> dict[str, Any] | None:
+    return _load_local_tickets().get(ticket_id)
+
+
+def _ticket_matches(
+    ticket: dict[str, Any],
+    *,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    category: Optional[str] = None,
+    user_email: Optional[str] = None,
+) -> bool:
+    return (
+        (not status or ticket.get("status") == status)
+        and (not priority or ticket.get("priority") == priority)
+        and (not category or ticket.get("category") == category)
+        and (not user_email or ticket.get("user_email") == user_email.lower())
+    )
+
+
+def _local_ticket_rows(
+    *,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    category: Optional[str] = None,
+    user_email: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    rows = [
+        ticket
+        for ticket in _load_local_tickets().values()
+        if _ticket_matches(
+            ticket,
+            status=status,
+            priority=priority,
+            category=category,
+            user_email=user_email,
+        )
+    ]
+    return sorted(rows, key=lambda ticket: ticket.get("created_at", ""), reverse=True)
+
+
+def _merge_local_tickets(
+    rows: list[dict[str, Any]],
+    local_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    seen = {row.get("ticket_id") for row in rows}
+    merged = rows + [row for row in local_rows if row.get("ticket_id") not in seen]
+    return sorted(merged, key=lambda ticket: ticket.get("created_at", ""), reverse=True)
+
+
+def _stats_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    by_status: dict[str, int] = {}
+    by_priority: dict[str, int] = {}
+    by_category: dict[str, int] = {}
+    for row in rows:
+        by_status[row["status"]] = by_status.get(row["status"], 0) + 1
+        by_priority[row["priority"]] = by_priority.get(row["priority"], 0) + 1
+        by_category[row["category"]] = by_category.get(row["category"], 0) + 1
+    return {
+        "success": True,
+        "total": len(rows),
+        "by_status": by_status,
+        "by_priority": by_priority,
+        "by_category": by_category,
+        "open_critical": sum(
+            1 for row in rows if row["status"] == "open" and row["priority"] == "critical"
+        ),
+    }
 
 
 # ── Notion sync ───────────────────────────────────────────────────────────────
@@ -375,12 +442,15 @@ async def get_ticket(ticket_id: str) -> dict[str, Any]:
                     rows = resp.json()
                     if rows:
                         return {"success": True, "ticket": rows[0]}
-                    return {"success": False, "error": f"Ticket {ticket_id} not found"}
+                else:
+                    logger.warning("Supabase get_ticket failed %s: %s", resp.status_code, resp.text[:200])
         except Exception as e:
             logger.error("Supabase get_ticket error: %s", e)
-            return {"success": False, "error": f"Supabase get_ticket failed: {e}"}
 
-    return {"success": False, "error": "Supabase not configured — ticket reads require SUPABASE_URL + SUPABASE_SERVICE_KEY"}
+    local = _local_ticket(ticket_id)
+    if local:
+        return {"success": True, "ticket": local, "source": "local_fallback"}
+    return {"success": False, "error": f"Ticket {ticket_id} not found"}
 
 
 async def list_tickets(
@@ -409,12 +479,28 @@ async def list_tickets(
                 resp = await client.get(url, headers=_sb_headers())
                 if resp.status_code == 200:
                     rows = resp.json()
-                    return {"success": True, "tickets": rows, "count": len(rows)}
+                    rows = _merge_local_tickets(
+                        rows,
+                        _local_ticket_rows(
+                            status=status,
+                            priority=priority,
+                            category=category,
+                            user_email=user_email,
+                        ),
+                    )
+                    return {"success": True, "tickets": rows[:limit], "count": len(rows)}
+                logger.warning("Supabase list_tickets failed %s: %s", resp.status_code, resp.text[:200])
         except Exception as e:
             logger.error("Supabase list_tickets error: %s", e)
-            return {"success": False, "error": f"Supabase list_tickets failed: {e}"}
 
-    return {"success": False, "error": "Supabase not configured — ticket list requires SUPABASE_URL + SUPABASE_SERVICE_KEY"}
+    rows = _local_ticket_rows(
+        status=status,
+        priority=priority,
+        category=category,
+        user_email=user_email,
+    )
+    page = rows[offset:offset + limit]
+    return {"success": True, "tickets": page, "count": len(rows), "source": "local_fallback"}
 
 
 async def update_ticket_status(
@@ -475,26 +561,10 @@ async def get_ticket_stats() -> dict[str, Any]:
                     headers=_sb_headers(),
                 )
                 if resp.status_code == 200:
-                    rows = resp.json()
-                    by_status: dict[str, int] = {}
-                    by_priority: dict[str, int] = {}
-                    by_category: dict[str, int] = {}
-                    for row in rows:
-                        by_status[row["status"]] = by_status.get(row["status"], 0) + 1
-                        by_priority[row["priority"]] = by_priority.get(row["priority"], 0) + 1
-                        by_category[row["category"]] = by_category.get(row["category"], 0) + 1
-                    return {
-                        "success": True,
-                        "total": len(rows),
-                        "by_status": by_status,
-                        "by_priority": by_priority,
-                        "by_category": by_category,
-                        "open_critical": sum(
-                            1 for r in rows if r["status"] == "open" and r["priority"] == "critical"
-                        ),
-                    }
+                    rows = _merge_local_tickets(resp.json(), _local_ticket_rows())
+                    return _stats_from_rows(rows)
+                logger.warning("Supabase ticket stats failed %s: %s", resp.status_code, resp.text[:200])
         except Exception as e:
             logger.error("Supabase ticket stats error: %s", e)
-            return {"success": False, "error": f"Supabase ticket stats failed: {e}"}
 
-    return {"success": False, "error": "Supabase not configured — ticket stats require SUPABASE_URL + SUPABASE_SERVICE_KEY"}
+    return _stats_from_rows(_local_ticket_rows())

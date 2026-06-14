@@ -130,32 +130,35 @@ class GPUDispatcher:
                     "source": "algochains_library.ops.compute_routing",
                 }
             config = _fallback_config()
+            nodes = {
+                "mac": {
+                    "platform": "mac",
+                    "device": "mps",
+                    "available": sys.platform == "darwin",
+                },
+                "desktop": {
+                    "platform": "desktop",
+                    "host": config["desktop"]["host"],
+                    "device": "cuda",
+                    "available": False,
+                    "note": f"Check via SSH: ssh {config['desktop']['host']} nvidia-smi",
+                },
+                "sonia_air": {
+                    "platform": "sonia_air",
+                    "host": config["sonia_air"]["host"],
+                    "device": "mps",
+                    "available": False,
+                    "note": (
+                        f"Check via SSH: ssh {config['sonia_air']['host']} uptime  "
+                        "| Passively cooled — no CUDA, no large_backtest"
+                    ),
+                },
+            }
             return {
                 "status": "ok",
-                "nodes": {
-                    "mac": {
-                        "platform": "mac",
-                        "device": "mps",
-                        "available": sys.platform == "darwin",
-                    },
-                    "desktop": {
-                        "platform": "desktop",
-                        "host": config["desktop"]["host"],
-                        "device": "cuda",
-                        "available": False,
-                        "note": f"Check via SSH: ssh {config['desktop']['host']} nvidia-smi",
-                    },
-                    "sonia_air": {
-                        "platform": "sonia_air",
-                        "host": config["sonia_air"]["host"],
-                        "device": "mps",
-                        "available": False,
-                        "note": (
-                            f"Check via SSH: ssh {config['sonia_air']['host']} uptime  "
-                            "| Passively cooled — no CUDA, no large_backtest"
-                        ),
-                    },
-                },
+                "local": nodes["mac"],
+                "desktop": nodes["desktop"],
+                "nodes": nodes,
                 "checked_at": datetime.now(timezone.utc).isoformat(),
                 "source": "fallback_config",
             }
