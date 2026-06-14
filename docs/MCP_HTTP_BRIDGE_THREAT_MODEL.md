@@ -230,19 +230,19 @@ curl -s -X POST $BASE/api/mcp \
 
 # Subscriber: call owner tool → expect 403
 curl -s -X POST $BASE/api/mcp \
-  -H "X-Api-Key: sub_live_TESTKEY" \
+  -H "X-Api-Key: $ALGOCHAINS_TEST_SUBSCRIBER_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"tool":"get_account","arguments":{}}' | jq .
 
 # Developer: allowed read tool → expect 200
 curl -s -X POST $BASE/api/mcp \
-  -H "X-Api-Key: ac_live_TESTKEY" \
+  -H "X-Api-Key: $ALGOCHAINS_TEST_DEVELOPER_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"tool":"detect_market_regime","arguments":{}}' | jq .
 
 # Developer: dynamic escalation blocked
 curl -s -X POST $BASE/api/mcp \
-  -H "X-Api-Key: ac_live_TESTKEY" \
+  -H "X-Api-Key: $ALGOCHAINS_TEST_DEVELOPER_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"tool":"execute_dynamic_tool","arguments":{"tool_name":"place_order"}}' | jq .
 

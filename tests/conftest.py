@@ -179,6 +179,25 @@ def rate_limiter():
     return get_rate_limiter()
 
 
+@pytest.fixture(autouse=True)
+def reset_singleton_safety_state():
+    """Keep stateful safety middleware from leaking between independent tests."""
+    from algochains_mcp import middleware
+    from algochains_mcp import trading_guardrails
+
+    middleware.get_rate_limiter().reset()
+    middleware._circuits.clear()
+    middleware._semaphores.clear()
+    trading_guardrails._guardrails = None
+    trading_guardrails.TradingGuardrails._instance = None
+    yield
+    middleware.get_rate_limiter().reset()
+    middleware._circuits.clear()
+    middleware._semaphores.clear()
+    trading_guardrails._guardrails = None
+    trading_guardrails.TradingGuardrails._instance = None
+
+
 # ── Common test data ─────────────────────────────────────────────────────────
 
 @pytest.fixture
