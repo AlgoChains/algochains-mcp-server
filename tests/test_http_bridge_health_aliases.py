@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 from algochains_mcp.http_bridge import create_fastapi_app
 
 
-OWNER_KEY = "test-owner-key-12345"
+OWNER_KEY = "owner-test-token"
 
 
 def _client() -> TestClient:
