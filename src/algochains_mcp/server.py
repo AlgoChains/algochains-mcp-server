@@ -221,6 +221,7 @@ except ImportError:
 # ─── V20 Memory Safety — import first so we can monitor from startup ─────────
 # Memory safety is lightweight and has no heavy sub-deps.
 from .memory_safety import get_memory_monitor, MemoryMonitor
+from .handlers.physical_world import PHYSICAL_WORLD_HANDLERS
 from .tool_manifest import build_manifest
 from .tool_policy import evaluate_dynamic_tool, evaluate_stdio_direct_tool
 from .otel_tracing import redacted_argument_hash, trace_span
@@ -438,6 +439,9 @@ SERVER_INSTRUCTIONS = (
 )
 
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
+_HANDLER_REGISTRY = {
+    **PHYSICAL_WORLD_HANDLERS,
+}
 
 # ═══════════════════════════════════════════════════════════════════
 # MCP 2025-06-18 Tool Behavior Annotations — safety metadata
@@ -3013,6 +3017,18 @@ TOOLS = [
     Tool(name="mcp_tool_manifest", description="Return JSON manifest of all registered MCP tools with implementation_status (full|partial|stub), required env vars, and Tier-1 flags. Use for CI, Onyx indexing, and honest agent planning — call before relying on V8-V20 tools.",
          inputSchema={"type": "object", "properties": {"include_tool_details": {"type": "boolean", "default": True, "description": "If false, return summary counts only (smaller payload)"}}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_physical_event_sources", description="List physical-world event sources polled by Sonia Air and tower nodes, including license/dependency status. Read-only; no broker or execution access.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="map_physical_event_assets", description="Map physical-world event classes to affected assets (CL/NG/MNQ/NQ/MES/ES/BTC/ETH). Read-only research mapping.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Optional symbol to filter, e.g. CL or BTC"}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="score_physical_event_alpha", description="Compute an advisory physical-event priority score from provided real event fields. Research queue only; not broker truth and not a trade signal.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "event_type": {"type": "string"}, "severity": {"type": "number"}, "freshness_minutes": {"type": "number"}, "liquidity_proxy": {"type": "number"}}, "required": ["symbol", "event_type"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_sonia_air_heartbeat", description="Read Sonia Air heartbeat state and fallback status for three-node physical-world polling. Read-only.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     # ═══════════════════════════════════════════════════════════════
     # V18: Intent-Based Trading + Autonomous Intelligence (8 tools)
     # ═══════════════════════════════════════════════════════════════
@@ -5008,6 +5024,9 @@ def _require_broker(registry: BrokerRegistry, broker_name: str):
 async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -> list[TextContent]:
     """Route tool calls to their implementations."""
     args = arguments  # alias used by some handlers
+    registered_handler = _HANDLER_REGISTRY.get(name)
+    if registered_handler is not None:
+        return _text(await registered_handler(arguments))
 
     # ── Trading ──────────────────────────────────────────────
     if name == "place_order":

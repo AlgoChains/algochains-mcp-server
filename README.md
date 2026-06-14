@@ -310,6 +310,42 @@ algochains-mcp --generate-config claude-desktop  # Claude Desktop
 algochains-mcp --generate-config windsurf        # Windsurf
 ```
 
+### Which URL Do I Use?
+
+Local installs and remote connectors use different transports:
+
+| Client | Use this | Why |
+|--------|----------|-----|
+| Cursor, Claude Desktop, Windsurf | Generated `stdio` config from `algochains-mcp --generate-config ...` | These apps can spawn the local PyPI package on your machine. |
+| Claude.ai web/mobile custom connector | Public HTTPS URL such as `https://<your-domain>/mcp` | Claude.ai calls the server from Anthropic's infrastructure, so it cannot reach your `localhost`, phone, LAN, or Tailscale-only URL. |
+| Local remote-connector test | `algochains-mcp-http --host 127.0.0.1 --port 8080` plus a secure HTTPS tunnel | The tunnel provides the public `https://.../mcp` URL that Claude.ai requires. |
+
+For a mobile Claude test, the PyPI package alone is not enough because it runs locally.
+Start the HTTP transport, expose it through a secure tunnel, then paste the tunnel's
+`https://.../mcp` URL into Claude.ai:
+
+```bash
+pipx install "algochains-mcp-server[http]"
+export ALGOCHAINS_HTTP_TRANSPORT_SECRET="<random-token>"
+algochains-mcp-http --host 127.0.0.1 --port 8080
+cloudflared tunnel --url http://127.0.0.1:8080
+```
+
+Use the tunnel URL as the custom connector URL:
+
+```text
+https://<cloudflared-subdomain>.trycloudflare.com/mcp
+```
+
+If the connector UI asks for authentication, use the value of
+`ALGOCHAINS_HTTP_TRANSPORT_SECRET` as the bearer token. For production, replace the
+temporary tunnel with a stable hosted endpoint such as `https://mcp.algochains.ai/mcp`
+or your own domain behind Cloudflare.
+
+Never expose owner/live trading tools publicly without bearer auth, WAF/IP restrictions,
+and strict tool policy checks. See [Remote Connectors](docs/REMOTE_CONNECTORS.md) for the
+full transport matrix and security checklist.
+
 ---
 
 ## Data Backends

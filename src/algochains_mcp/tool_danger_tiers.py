@@ -152,6 +152,10 @@ _TOOL_TIERS: dict[str, int] = {
     "get_polymarket_market_history": TIER_READ_ONLY,
     "list_polymarket_markets": TIER_READ_ONLY,
     "get_kalshi_settlements": TIER_READ_ONLY,
+    "get_physical_event_sources": TIER_READ_ONLY,
+    "map_physical_event_assets": TIER_READ_ONLY,
+    "score_physical_event_alpha": TIER_READ_ONLY,
+    "get_sonia_air_heartbeat": TIER_READ_ONLY,
     "place_kalshi_order": TIER_ORDER_EXEC,
     # BUG-07 FIX: run_safe_compounder and run_kalshi_full_pipeline call
     # kalshi_signed_post (live Kalshi orders) when execute=true + confirmed=true.
