@@ -259,6 +259,8 @@ jobs:
 
       - name: Publish to PyPI (OIDC — no API token needed)
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
 
   # ─── npm: bump version + publish SDK ──────────────────────────────────────────
   publish-sdk:
