@@ -118,7 +118,7 @@ def test_execute_dynamic_tool_blocks_order_exec_without_token(tool_name, monkeyp
     to confirm tier-based gating is enforced, not a hardcoded denylist.
     """
     # Ensure OWNER_API_TOKEN is set to a known value (not empty)
-    monkeypatch.setenv("OWNER_API_TOKEN", "test-owner-secret-12345")
+    monkeypatch.setenv("OWNER_API_TOKEN", "owner-test-token")
     import algochains_mcp.server as srv
     from algochains_mcp.tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
 

@@ -10,8 +10,11 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 import sys
+import time
 
 import pytest
 
@@ -24,10 +27,22 @@ def _make_connector(access_token: str = ""):
     cfg = TradovateConfig(
         access_token=access_token,
         username="testuser",
-        password="testpass",  # noqa: secret-scan-skip — test fixture only
+        password="testpass",  # secret-scan-skip — test fixture only
         env="demo",
     )
     return TradovateConnector(cfg)
+
+
+def _jwt_with_exp(exp: int) -> str:
+    """Build an unsigned JWT-shaped test token with an exp claim."""
+    header = {"alg": "none", "typ": "JWT"}
+    payload = {"exp": exp}
+
+    def _segment(data: dict) -> str:
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return f"{_segment(header)}.{_segment(payload)}."
 
 
 def test_streaming_capability_is_false():
@@ -81,7 +96,6 @@ def test_connect_prefers_preexisting_token(monkeypatch):
 
     # Track HTTP calls — should be 0 if pre-existing token is used
     http_calls: list[str] = []
-    original_post = conn._http.post
 
     async def _mock_post(url, *a, **kw):
         http_calls.append(url)
@@ -106,10 +120,83 @@ def test_connect_prefers_preexisting_token(monkeypatch):
         f"connect() made unexpected OAuth HTTP calls when TRADOVATE_ACCESS_TOKEN "
         f"was present: {http_calls}"
     )
-    _expected = "guardian-token-abc123"  # noqa: secret-scan-skip — test fixture value
+    _expected = "guardian-token-abc123"  # secret-scan-skip — test fixture value
     assert conn._access_token == _expected, (
         f"Expected _access_token={_expected!r}, got: {conn._access_token!r}"
     )
+
+
+def test_connect_uses_preexisting_jwt_expiry(monkeypatch):
+    """A Guardian JWT with >60 min remaining must not reconnect immediately."""
+    expires_at = int(time.time() + (76 * 60))
+    access_token = _jwt_with_exp(expires_at)
+    monkeypatch.setenv("TRADOVATE_ACCESS_TOKEN", access_token)
+
+    from algochains_mcp.brokers.tradovate import TradovateConnector, TradovateConfig
+    cfg = TradovateConfig(
+        access_token=os.environ.get("TRADOVATE_ACCESS_TOKEN", ""),
+        username="user",
+        password="pass",
+        env="demo",
+    )
+    conn = TradovateConnector(cfg)
+
+    async def _mock_get(url, *a, **kw):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"id": 99, "name": "TEST123"}]
+        return resp
+
+    async def _run():
+        conn._http.get = _mock_get  # type: ignore
+        assert await conn.connect() is True
+
+        reconnects = 0
+
+        async def _unexpected_reconnect():
+            nonlocal reconnects
+            reconnects += 1
+            return True
+
+        conn.connect = _unexpected_reconnect  # type: ignore
+        await conn._ensure_token()
+        return reconnects
+
+    reconnects = asyncio.run(_run())
+    assert conn._token_expires_at == expires_at
+    assert reconnects == 0
+
+
+def test_connect_falls_back_for_opaque_preexisting_token(monkeypatch):
+    """Non-JWT Guardian tokens retain the conservative 60-minute fallback."""
+    monkeypatch.setenv("TRADOVATE_ACCESS_TOKEN", "opaque-guardian-token")
+
+    from algochains_mcp.brokers.tradovate import TradovateConnector, TradovateConfig
+    cfg = TradovateConfig(
+        access_token=os.environ.get("TRADOVATE_ACCESS_TOKEN", ""),
+        username="user",
+        password="pass",
+        env="demo",
+    )
+    conn = TradovateConnector(cfg)
+
+    async def _mock_get(url, *a, **kw):
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"id": 99, "name": "TEST123"}]
+        return resp
+
+    async def _run():
+        conn._http.get = _mock_get  # type: ignore
+        before = time.time()
+        assert await conn.connect() is True
+        after = time.time()
+        return before, after
+
+    before, after = asyncio.run(_run())
+    assert before + 3600 <= conn._token_expires_at <= after + 3600
 
 
 def test_no_ws_import_in_connector():
@@ -130,3 +217,49 @@ def test_no_ws_import_in_connector():
         f"WebSocket import/usage found in tradovate.py connector: {found}. "
         "MCP connector must be REST-only; WS belongs to the control tower bots."
     )
+
+
+def test_get_account_uses_cash_balance_when_total_cash_value_is_null():
+    """Nullable Tradovate fields must not leak as JSON null account balances."""
+    conn = _make_connector()
+
+    async def _mock_get(path, *args, **kwargs):
+        if path == "/account/list":
+            return [{"id": 99, "name": "TEST123"}]
+        if path == "/cashBalance/getCashBalanceSnapshot":
+            return {"totalCashValue": None, "cashBalance": "12500.75"}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_account()
+
+    account = asyncio.run(_run())
+    payload = account.to_dict()
+    assert payload["equity"] == 12500.75
+    assert payload["cash"] == 12500.75
+    assert payload["balance"] == 12500.75
+    assert payload["account_balance"] == 12500.75
+
+
+def test_get_account_raises_when_snapshot_has_no_numeric_balance():
+    """A missing live balance is a degraded broker read, not a zero/null balance."""
+    from algochains_mcp.errors import BrokerConnectionError
+
+    conn = _make_connector()
+
+    async def _mock_get(path, *args, **kwargs):
+        if path == "/account/list":
+            return [{"id": 99, "name": "TEST123"}]
+        if path == "/cashBalance/getCashBalanceSnapshot":
+            return {"totalCashValue": None, "cashBalance": None}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_account()
+
+    with pytest.raises(BrokerConnectionError, match="numeric balance"):
+        asyncio.run(_run())

@@ -27,28 +27,55 @@
 -- v_owner_bot_live: standardized live bot status in mcp-server shape
 -- Maps bot_metrics_live columns to algochains_bot_performance column naming
 -- so MCP server code can use a consistent schema for both owner and subscriber bots.
-CREATE OR REPLACE VIEW v_owner_bot_live
-    WITH (security_invoker = true)
-AS
-SELECT
-    -- Match algochains_bot_performance shape for unified MCP queries
-    NULL::UUID                  AS id,
-    'owner'                     AS subscription_id,   -- sentinel for owner bots
-    bot_id,
-    bot_name                    AS strategy_name,
-    symbol,
-    daily_pnl,
-    NULL::DOUBLE PRECISION      AS weekly_pnl,        -- not available from live metrics
-    win_rate_today              AS win_rate,
-    daily_trades                AS trade_count,
-    is_running,
-    'tradovate'                 AS broker,
-    NULL::DOUBLE PRECISION      AS sharpe_ratio,       -- computed offline, not live
-    NULL::DOUBLE PRECISION      AS max_drawdown,       -- computed offline, not live
-    NULL::DOUBLE PRECISION      AS win_rate_validated, -- from backtest, not live
-    last_signal_time            AS last_trade_at,
-    updated_at                  AS recorded_at
-FROM bot_metrics_live;
+DO $$
+BEGIN
+    IF to_regclass('public.bot_metrics_live') IS NOT NULL THEN
+        CREATE OR REPLACE VIEW v_owner_bot_live
+            WITH (security_invoker = true)
+        AS
+        SELECT
+            -- Match algochains_bot_performance shape for unified MCP queries
+            NULL::UUID                  AS id,
+            'owner'                     AS subscription_id,   -- sentinel for owner bots
+            bot_id,
+            bot_name                    AS strategy_name,
+            symbol,
+            daily_pnl,
+            NULL::DOUBLE PRECISION      AS weekly_pnl,        -- not available from live metrics
+            win_rate_today              AS win_rate,
+            daily_trades                AS trade_count,
+            is_running,
+            'tradovate'                 AS broker,
+            NULL::DOUBLE PRECISION      AS sharpe_ratio,       -- computed offline, not live
+            NULL::DOUBLE PRECISION      AS max_drawdown,       -- computed offline, not live
+            NULL::DOUBLE PRECISION      AS win_rate_validated, -- from backtest, not live
+            last_signal_time            AS last_trade_at,
+            updated_at                  AS recorded_at
+        FROM bot_metrics_live;
+    ELSE
+        CREATE OR REPLACE VIEW v_owner_bot_live
+            WITH (security_invoker = true)
+        AS
+        SELECT
+            NULL::UUID                  AS id,
+            'owner'::TEXT               AS subscription_id,
+            NULL::TEXT                  AS bot_id,
+            NULL::TEXT                  AS strategy_name,
+            NULL::TEXT                  AS symbol,
+            NULL::DOUBLE PRECISION      AS daily_pnl,
+            NULL::DOUBLE PRECISION      AS weekly_pnl,
+            NULL::DOUBLE PRECISION      AS win_rate,
+            NULL::INTEGER               AS trade_count,
+            FALSE                       AS is_running,
+            'tradovate'::TEXT           AS broker,
+            NULL::DOUBLE PRECISION      AS sharpe_ratio,
+            NULL::DOUBLE PRECISION      AS max_drawdown,
+            NULL::DOUBLE PRECISION      AS win_rate_validated,
+            NULL::TIMESTAMPTZ           AS last_trade_at,
+            NULL::TIMESTAMPTZ           AS recorded_at
+        WHERE FALSE;
+    END IF;
+END $$;
 
 -- Grant SELECT to anon and authenticated roles (RLS on underlying table controls access)
 GRANT SELECT ON v_owner_bot_live TO anon, authenticated;

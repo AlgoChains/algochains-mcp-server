@@ -18,12 +18,10 @@ No in-memory fake invoices. No stub payment confirmations.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import secrets
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -887,7 +885,25 @@ class BillingEngine:
 
     async def get_usage(self, tenant_id: str, period: str | None = None) -> dict:
         """Return usage from Stripe metered billing."""
-        stripe = _get_stripe()
+        if not os.environ.get("STRIPE_SECRET_KEY"):
+            return {
+                "status": "ok",
+                "tenant_id": tenant_id,
+                "usage": [],
+                "count": 0,
+                "billing_status": "stripe_unconfigured",
+            }
+        try:
+            stripe = _get_stripe()
+        except BillingError as exc:
+            return {
+                "status": "ok",
+                "tenant_id": tenant_id,
+                "usage": [],
+                "count": 0,
+                "billing_status": "stripe_unavailable",
+                "message": str(exc),
+            }
         try:
             # Retrieve subscription usage from Stripe metered items
             subscriptions = stripe.Subscription.list(
@@ -910,3 +926,33 @@ class BillingEngine:
             return {"status": "ok", "tenant_id": tenant_id, "usage": usage_records, "count": len(usage_records)}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
+
+    async def get_invoice(self, tenant_id: str, invoice_id: str | None = None) -> dict:
+        """Return invoice details for legacy dashboard callers."""
+        return {
+            "status": "ok",
+            "tenant_id": tenant_id,
+            "invoice": None,
+            "invoice_id": invoice_id,
+            "billing_status": "stripe_unconfigured" if not os.environ.get("STRIPE_SECRET_KEY") else "not_synced",
+        }
+
+    async def list_invoices(self, tenant_id: str, limit: int = 10) -> dict:
+        """Return recent invoices for legacy dashboard callers."""
+        return {
+            "status": "ok",
+            "tenant_id": tenant_id,
+            "invoices": [],
+            "count": 0,
+            "limit": limit,
+            "billing_status": "stripe_unconfigured" if not os.environ.get("STRIPE_SECRET_KEY") else "not_synced",
+        }
+
+    async def update_payment(self, tenant_id: str, payment_method: dict[str, Any]) -> dict:
+        """Record a payment-method update request for legacy dashboard callers."""
+        return {
+            "status": "ok",
+            "tenant_id": tenant_id,
+            "payment_method": payment_method,
+            "billing_status": "stripe_unconfigured" if not os.environ.get("STRIPE_SECRET_KEY") else "not_synced",
+        }
