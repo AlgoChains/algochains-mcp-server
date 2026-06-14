@@ -24,7 +24,7 @@ from algochains_mcp.http_bridge import create_fastapi_app, PUBLIC_TOOLS, OWNER_T
 from algochains_mcp.subscriber_auth import ResolvedSubscriber
 from algochains_mcp.subscriber_tools import SUBSCRIBER_TOOLS
 
-FAKE_OWNER_KEY = "test-owner-key-12345"
+FAKE_OWNER_KEY = "owner-test-token"
 FAKE_OWNER_EMAIL = "owner@test.algochains.ai"
 FAKE_SUB_KEY = "sub_live_testkeyXXXXXX"
 

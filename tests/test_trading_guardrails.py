@@ -1,8 +1,11 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from algochains_mcp.brokers.base import AccountInfo, Order, OrderSide, OrderStatus, OrderType, Quote
 from algochains_mcp import trading_guardrails as tg
+from algochains_mcp.server import _compute_consecutive_losses_from_fills
 
 
 @pytest.fixture
@@ -44,6 +47,137 @@ def test_expired_ai_loop_breaker_is_cleared_after_restart(isolated_guardrails, m
     assert status["all_clear"] is True
     assert status["broker_circuit_breakers"] == {}
     assert json.loads(state_path.read_text()) == {}
+
+
+def test_latest_winning_fill_is_authoritative_zero_loss_streak():
+    """Fresh broker fills must not be overwritten by stale signal_health state."""
+    losses, authoritative = _compute_consecutive_losses_from_fills(
+        [
+            SimpleNamespace(realized_pnl=-12.50),
+            SimpleNamespace(realized_pnl=8.25),
+        ]
+    )
+
+    assert losses == 0
+    assert authoritative is True
+
+
+def test_latest_breakeven_fill_is_not_treated_as_missing_pnl():
+    losses, authoritative = _compute_consecutive_losses_from_fills(
+        [
+            SimpleNamespace(realized_pnl=-12.50),
+            SimpleNamespace(realized_pnl=0.0),
+        ]
+    )
+
+    assert losses == 0
+    assert authoritative is True
+
+
+def test_unparseable_latest_fill_allows_reconciliation_fallback():
+    losses, authoritative = _compute_consecutive_losses_from_fills(
+        [
+            SimpleNamespace(realized_pnl=-12.50),
+            SimpleNamespace(realized_pnl=None),
+        ]
+    )
+
+    assert losses == 0
+    assert authoritative is False
+
+
+def test_place_order_uses_fresh_broker_winner_over_stale_signal_health(
+    isolated_guardrails, monkeypatch, tmp_path
+):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "signal_health.json").write_text(
+        json.dumps({"MNQ_Upgraded_Scalper": {"consecutive_losses": tg.MAX_CONSECUTIVE_LOSSES}})
+    )
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+    monkeypatch.setenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0")
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return SimpleNamespace(text="DATE,OPEN,HIGH,LOW,CLOSE\n2026-06-12,0,0,0,12.5\n")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    class FakeBroker:
+        async def get_fills(self):
+            return [
+                SimpleNamespace(realized_pnl=-12.50),
+                SimpleNamespace(realized_pnl=8.25),
+            ]
+
+        async def get_quote(self, symbol):
+            return Quote(symbol=symbol, bid=100.0, ask=101.0, last=100.5)
+
+        async def get_account(self):
+            return AccountInfo(
+                broker="tradovate",
+                account_id="test",
+                equity=100_000.0,
+                cash=100_000.0,
+                buying_power=100_000.0,
+            )
+
+        async def place_order(
+            self,
+            symbol,
+            side,
+            qty,
+            order_type=OrderType.MARKET,
+            limit_price=None,
+            stop_price=None,
+            trail_pct=None,
+            time_in_force="day",
+        ):
+            return Order(
+                id="ok-1",
+                broker="tradovate",
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                qty=qty,
+                status=OrderStatus.ACCEPTED,
+            )
+
+    class FakeRegistry:
+        def get(self, name):
+            return FakeBroker() if name == "tradovate" else None
+
+    import asyncio
+    import algochains_mcp.server as srv
+
+    result = asyncio.run(
+        srv._dispatch_tool(
+            "place_order",
+            {
+                "broker": "tradovate",
+                "symbol": "MNQ",
+                "side": OrderSide.BUY.value,
+                "qty": 1,
+                "order_type": OrderType.MARKET.value,
+            },
+            FakeRegistry(),
+        )
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["id"] == "ok-1"
+    assert payload["status"] == OrderStatus.ACCEPTED.value
 
 
 def test_unexpired_ai_loop_breaker_survives_restart(isolated_guardrails, monkeypatch):

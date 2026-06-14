@@ -34,6 +34,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from mcp.server import Server
@@ -660,6 +661,44 @@ def _get_registry() -> BrokerRegistry:
         _config = load_config()
         _registry = BrokerRegistry(_config)
     return _registry
+
+
+def _coerce_fill_pnl(fill: Any) -> float | None:
+    """Return a fill's realized P&L without treating zero as missing."""
+    for attr in ("realized_pnl", "pnl"):
+        if isinstance(fill, Mapping):
+            value = fill.get(attr)
+        else:
+            value = getattr(fill, attr, None)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _compute_consecutive_losses_from_fills(fills: Any) -> tuple[int, bool]:
+    """Compute trailing loss streak from newest fills.
+
+    The boolean indicates whether broker fills were sufficient to derive an
+    authoritative streak. A latest winning or breakeven fill is authoritative
+    even though the streak is zero.
+    """
+    if not fills:
+        return 0, False
+
+    consecutive_losses = 0
+    for fill in reversed(list(fills)[-20:]):
+        fill_pnl = _coerce_fill_pnl(fill)
+        if fill_pnl is None:
+            return consecutive_losses, False
+        if fill_pnl < 0:
+            consecutive_losses += 1
+        else:
+            return consecutive_losses, True
+    return consecutive_losses, True
 
 
 def _get_validator() -> StrategyValidator:
@@ -5559,20 +5598,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 # If both fail: warn and assume 0 (gate weakened, logged explicitly).
                 _consecutive_losses = 0
                 _fills_source_ok = False
+                _loss_streak_from_fills = False
                 _fills_api_err_str: str = ""  # persist outside except block (Python 3 deletes except-vars)
                 try:
                     _fills = await conn.get_fills()
-                    if _fills:
-                        # Scan last 20 fills newest-first for trailing loss streak
-                        for _f in reversed(_fills[-20:]):
-                            _f_pnl = getattr(_f, "realized_pnl", None) or getattr(_f, "pnl", None)
-                            if _f_pnl is None:
-                                break  # fill has no P&L — can't continue streak
-                            if float(_f_pnl) < 0:
-                                _consecutive_losses += 1
-                            else:
-                                break  # winner stops streak
-                        _fills_source_ok = True
+                    _fills_source_ok = True
+                    _consecutive_losses, _loss_streak_from_fills = _compute_consecutive_losses_from_fills(_fills)
                 except Exception as _fills_err:
                     _fills_api_err_str = str(_fills_err)  # capture before Python 3 deletes the var
                     logger.warning(
@@ -5581,9 +5612,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                         _fills_api_err_str,
                     )
 
-                # Reconciliation: if fills API returned empty or failed, try signal_health.json
-                # (written by bot every candle). This is 1-bar behind at most, but better than 0.
-                if not _fills_source_ok or _consecutive_losses == 0:
+                # Reconciliation: only fall back when broker fills cannot produce
+                # an authoritative streak. A fresh winner/breakeven from the broker
+                # is authoritative streak=0 and must not be overwritten by stale state.
+                if not _loss_streak_from_fills:
                     try:
                         import json as _cljson
                         from pathlib import Path as _clPath
@@ -5596,11 +5628,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                                     _sh_streak = _bot_data.get("consecutive_losses", 0)
                                     if isinstance(_sh_streak, int) and _sh_streak > _consecutive_losses:
                                         _consecutive_losses = _sh_streak
-                                        if not _fills_source_ok:
-                                            logger.info(
-                                                "place_order guardrail: consecutive_losses=%d from signal_health.json reconciliation",
-                                                _consecutive_losses,
-                                            )
+                                        logger.info(
+                                            "place_order guardrail: consecutive_losses=%d from signal_health.json reconciliation",
+                                            _consecutive_losses,
+                                        )
                     except Exception as _sh_err:
                         if not _fills_source_ok:
                             logger.warning(

@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS developer_api_keys (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE developer_api_keys
+    ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    ADD COLUMN IF NOT EXISTS clerk_user_id TEXT,
+    ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT 'default',
+    ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_dev_api_keys_user_id   ON developer_api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_dev_api_keys_key_hash  ON developer_api_keys(key_hash);
 CREATE INDEX IF NOT EXISTS idx_dev_api_keys_env       ON developer_api_keys(env);
@@ -51,7 +57,7 @@ CREATE POLICY "Users can create own dev keys" ON developer_api_keys
 
 -- Only service role may update (for last_used_at, revoked_at)
 CREATE POLICY "Service role manages dev key updates" ON developer_api_keys
-    FOR UPDATE USING (auth.role() = 'service_role');
+    FOR UPDATE TO service_role USING (true);
 
 
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -62,28 +68,21 @@ CREATE POLICY "Service role manages dev key updates" ON developer_api_keys
 
 CREATE OR REPLACE FUNCTION resolve_developer_api_key(p_key_hash TEXT)
 RETURNS TABLE (
-    id            UUID,
-    user_id       UUID,
-    clerk_user_id UUID,   -- alias for backward-compat with developer_auth.py
-    name          TEXT,
+    clerk_user_id TEXT,
     scopes        TEXT[],
-    env           TEXT,
-    revoked_at    TIMESTAMPTZ
+    env           TEXT
 )
 LANGUAGE sql
 SECURITY DEFINER
 STABLE
 AS $$
     SELECT
-        id,
-        user_id,
-        user_id AS clerk_user_id,   -- developer_auth.py reads clerk_user_id
-        name,
+        COALESCE(clerk_user_id, user_id::TEXT) AS clerk_user_id,
         scopes,
-        env,
-        revoked_at
+        env
     FROM developer_api_keys
     WHERE key_hash = p_key_hash
+      AND revoked_at IS NULL
     LIMIT 1;
 $$;
 

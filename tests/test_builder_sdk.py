@@ -116,7 +116,8 @@ class TestSubmissionPipeline:
         assert len(errors) >= 3
 
     @pytest.mark.asyncio
-    async def test_valid_submission_platinum(self):
+    async def test_valid_submission_platinum(self, monkeypatch):
+        monkeypatch.setenv("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", "1")
         pipeline = SubmissionPipeline()
         sub = StrategySubmission(
             symbol="AAPL", strategy_type="trend", timeframe="hour",

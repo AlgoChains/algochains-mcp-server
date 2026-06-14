@@ -167,7 +167,7 @@ class EarningsCatalystEngine:
                 self._sentiment_model = hf_pipeline(
                     "sentiment-analysis",
                     model="ProsusAI/finbert",
-                    tokenizer="ProsusAI/finbert",
+                    tokenizer="ProsusAI/finbert",  # gitleaks:allow - public Hugging Face model id
                     device=-1,  # CPU
                     truncation=True,
                     max_length=512,
