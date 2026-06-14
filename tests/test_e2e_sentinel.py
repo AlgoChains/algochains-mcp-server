@@ -65,6 +65,30 @@ def test_failed_reconciliation_preserves_warning_state():
     assert result["raw_severity"] == "warning"
 
 
+def test_prior_stale_reconciliation_does_not_hide_new_warning():
+    raw = _resolved_payload()
+    raw["classification"] = {
+        "state": "warning",
+        "severity": "warning",
+        "issue_class": "broker_cancel_failed",
+        "why": "Latest cancel request returned an error",
+    }
+    summary = {
+        "state": "warning",
+        "severity": "warning",
+        "issue_class": "broker_cancel_failed",
+        "why": "Latest cancel request returned an error",
+    }
+
+    result = apply_effective_sentinel_resolution(summary, raw)
+
+    assert result["state"] == "warning"
+    assert result["severity"] == "warning"
+    assert result.get("resolved") is not True
+    assert result["raw_state"] == "warning"
+    assert result["raw_severity"] == "warning"
+
+
 def test_outcome_summary_uses_raw_outcome_for_http_bridge_status():
     raw = {
         "classification": {

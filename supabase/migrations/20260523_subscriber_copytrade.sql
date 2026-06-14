@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS public.copy_trade_signals (
 
 CREATE INDEX IF NOT EXISTS idx_cts_bot_emitted   ON public.copy_trade_signals(bot, emitted_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cts_expires       ON public.copy_trade_signals(expires_at);
-CREATE INDEX IF NOT EXISTS idx_cts_active        ON public.copy_trade_signals(bot) WHERE expires_at > now();
+CREATE INDEX IF NOT EXISTS idx_cts_active        ON public.copy_trade_signals(bot, expires_at);
 
 ALTER TABLE public.copy_trade_signals ENABLE ROW LEVEL SECURITY;
 
