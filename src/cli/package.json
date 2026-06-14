@@ -18,7 +18,7 @@
     "@hono/node-server": "^2.0.4",
     "chalk": "^5.0.0",
     "chokidar": "^3.6.0",
-    "commander": "^12.0.0",
+    "commander": "^15.0.0",
     "enquirer": "^2.4.1",
     "eventsource": "^2.0.2",
     "hono": "^4.0.0",
