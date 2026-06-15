@@ -11,7 +11,6 @@ This enables the MCP server to self-identify its role in the dual-node setup.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import time
 from dataclasses import dataclass, asdict
@@ -92,6 +91,8 @@ def _script_token_for_command(command: str) -> str:
         return ""
 
     if executable.startswith("python"):
+        if "-c" in parts[1:]:
+            return ""
         for token in parts[1:]:
             if token.startswith("-"):
                 continue
