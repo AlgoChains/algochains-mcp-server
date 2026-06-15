@@ -18,6 +18,19 @@ def test_tower_tools_use_defined_control_tower_resolver():
     assert "_default_control_tower()" in tower_block or "default_control_tower()" in tower_block
 
 
+def test_server_control_tower_resolver_delegates_to_shared_paths(monkeypatch, tmp_path):
+    from algochains_mcp import paths
+    from algochains_mcp import server
+
+    desktop_tower = tmp_path / "algochains-control-tower"
+    desktop_tower.mkdir()
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER", raising=False)
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER_PATH", raising=False)
+    monkeypatch.setattr(paths, "_LEGACY_POSSIBLE_ROOTS", (desktop_tower,))
+
+    assert server._default_control_tower() == str(desktop_tower)
+
+
 def test_tower_health_and_status_are_tier1_tools():
     source = SERVER.read_text(encoding="utf-8")
     tier1_block = source[source.index("TIER1_TOOL_NAMES = {") : source.index("TOOLS_TIER1 =")]
