@@ -57,7 +57,12 @@ def test_status_does_not_treat_false_positive_ps_lines_as_running(tmp_path):
         ]
     )
 
-    status = get_adaptive_brain_status(control_tower=root, ps_output=ps_output, now=1_780_000_000)
+    status = get_adaptive_brain_status(
+        control_tower=root,
+        ps_output=ps_output,
+        launchd_evidence={"running": False},
+        now=1_780_000_000,
+    )
 
     assert status["status"] == "not_running"
     assert status["running"] is False
@@ -66,6 +71,43 @@ def test_status_does_not_treat_false_positive_ps_lines_as_running(tmp_path):
     assert status["script_exists"] is True
     assert status["log_exists"] is True
     assert status["state"]["last_cycle"] == "2026-06-12T04:00:00Z"
+
+
+def test_status_reports_launchd_managed_daemon_when_ps_has_no_match(monkeypatch, tmp_path):
+    import algochains_mcp.adaptive_brain_status as adaptive_status
+
+    root = _make_control_tower(tmp_path)
+
+    def fake_run(cmd, *_args, **_kwargs):
+        if cmd[:2] == ["ps", "aux"]:
+            return SimpleNamespace(stdout="USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND\n")
+        if cmd[:2] == ["launchctl", "print"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="""
+                state = running
+                pid = 444
+                program = /usr/bin/python3
+                last exit code = 0
+                """,
+                stderr="",
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(adaptive_status.os, "getuid", lambda: 501)
+    monkeypatch.setattr(adaptive_status.subprocess, "run", fake_run)
+
+    status = get_adaptive_brain_status(control_tower=root, now=1_780_000_000)
+
+    assert status["status"] == "running"
+    assert status["running"] is True
+    assert status["process_running"] is False
+    assert status["launchd_running"] is True
+    assert status["liveness_evidence"] == "launchd"
+    assert status["pid"] == 444
+    assert status["launchd"]["label"] == "gui/501/com.algochains.adaptive-brain"
+    assert status["launchd"]["program"] == "/usr/bin/python3"
+    assert status["launchd"]["last_exit_status"] == 0
 
 
 def test_status_reports_actual_python_daemon_process(tmp_path):
@@ -78,7 +120,12 @@ def test_status_reports_actual_python_daemon_process(tmp_path):
         ]
     )
 
-    status = get_adaptive_brain_status(control_tower=root, ps_output=ps_output, now=1_780_000_000)
+    status = get_adaptive_brain_status(
+        control_tower=root,
+        ps_output=ps_output,
+        launchd_evidence={"running": False},
+        now=1_780_000_000,
+    )
 
     assert status["status"] == "running"
     assert status["running"] is True
