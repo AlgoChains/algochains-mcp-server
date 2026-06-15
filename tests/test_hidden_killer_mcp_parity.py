@@ -36,3 +36,22 @@ def test_cc_health_maps_current_state_file_shape():
     assert 'get("last_status")' in cc_block
     assert "last_alerted_issues_key" in cc_block
     assert "last_unhandled_error" in cc_block
+
+
+def test_server_control_tower_resolver_delegates_to_shared_paths(monkeypatch, tmp_path):
+    from algochains_mcp import paths
+    from algochains_mcp import server
+
+    desktop_control_tower = tmp_path / "desktop" / "algochains-control-tower"
+    desktop_control_tower.mkdir(parents=True)
+    missing_mac_control_tower = tmp_path / "mac" / "algochains-control-tower"
+
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER", raising=False)
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER_PATH", raising=False)
+    monkeypatch.setattr(
+        paths,
+        "_LEGACY_POSSIBLE_ROOTS",
+        (missing_mac_control_tower, desktop_control_tower),
+    )
+
+    assert server._default_control_tower() == str(desktop_control_tower)
