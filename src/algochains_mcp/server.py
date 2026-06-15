@@ -3922,6 +3922,10 @@ TOOLS = [
          description="Read adaptive_brain.py daemon liveness from bounded process, script, state, and log evidence. Read-only; does not restart or mutate daemon state.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_fleet_daemon_status",
+         description="Read a bounded, deduplicated control-tower daemon liveness summary for autonomous_watchdog.py, tradovate_token_guardian.py, adaptive_brain.py, and health_endpoint.py. Also reports launchd labels that are orphaned from the control-tower manifest when a manifest is available. Read-only; does not restart or mutate launchd.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_strategy_academic_citations",
          description="Get all academic citations, SSRN papers, and published works that provide the theoretical basis for a specific bot's strategy. Includes authors, year, venue, DOI/SSRN link, and relevance explanation. Bot IDs: mnq, cl, mes, nq.",
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
@@ -5050,6 +5054,7 @@ TIER1_TOOL_NAMES = {
     "get_all_bot_metrics",
     "get_system_heartbeat",
     "get_adaptive_brain_status",
+    "get_fleet_daemon_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
     "list_bot_research_attachments",
@@ -9478,6 +9483,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(get_adaptive_brain_status())
         except Exception as exc:
             return _text({"error": f"Adaptive brain status error: {exc}"})
+
+    elif name == "get_fleet_daemon_status":
+        try:
+            from .fleet_daemon_status import get_fleet_daemon_status
+            return _text(get_fleet_daemon_status())
+        except Exception as exc:
+            return _text({"error": f"Fleet daemon status error: {exc}"})
 
     elif name == "get_strategy_academic_citations":
         try:

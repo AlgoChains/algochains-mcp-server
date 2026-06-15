@@ -195,6 +195,7 @@ _TOOL_TIERS: dict[str, int] = {
     "get_system_health": TIER_READ_ONLY,
     "get_incident_report": TIER_READ_ONLY,
     "get_adaptive_brain_status": TIER_READ_ONLY,
+    "get_fleet_daemon_status": TIER_READ_ONLY,
     "get_evolution_status": TIER_READ_ONLY,
     "list_evolved_strategies": TIER_READ_ONLY,
     "get_strategy_rankings": TIER_READ_ONLY,
