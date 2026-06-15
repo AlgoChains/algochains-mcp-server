@@ -135,7 +135,7 @@ and creator earnings can optionally include a performance component.
   `/.well-known/oauth-protected-resource` (RFC 9728), `/authorize`, `/token`,
   optional `/register` (RFC 7591 dynamic client registration).
 - **Flow:** Authorization Code + PKCE S256 (RFC 7636). Bearer token (signed,
-  short-lived) maps to a `sub_live_*` subscriber identity.
+  short-lived) maps to a subscriber identity.
 - **Discovery:** 401 responses carry `WWW-Authenticate: Bearer
   resource_metadata="…"` so MCP clients find the auth server.
 - **Schema:** `oauth_clients`, `oauth_authorization_codes`, `oauth_tokens`.

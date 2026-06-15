@@ -16,9 +16,9 @@ Subscriber tools let a paying or sandbox subscriber:
 - report daemon health/fills back into the copy-trade pipeline.
 
 They do not grant owner access, live broker order execution, or access to another
-subscriber's data. The bridge resolves `subscriber_id` from the `sub_live_*` or
-`sub_test_*` key server-side; callers must not pass or trust a client-supplied
-`subscriber_id`.
+subscriber's data. The bridge resolves `subscriber_id` from the production or
+sandbox subscriber API key server-side; callers must not pass or trust a
+client-supplied `subscriber_id`.
 
 ## Transport Surfaces
 
@@ -26,8 +26,8 @@ There are two subscriber paths. They intentionally expose different surfaces.
 
 | Path | Auth | Tool surface | Use it for |
 |---|---|---|---|
-| Local stdio MCP | `ALGOCHAINS_SUBSCRIBER_KEY=sub_live_*` or `sub_test_*` | Subscriber funnel/status tools registered in `server.py` | New-user onboarding, consent, joining bots, usage, referrals, realized P&L |
-| HTTP bridge | `X-Api-Key: sub_live_*` or `Authorization: Bearer sub_live_*` | all `SUBSCRIBER_TOOLS` from `subscriber_tools.py` | Portfolio, signal stream, fills, paper orders, daemon callbacks, plus the onboarding/status tools |
+| Local stdio MCP | `ALGOCHAINS_SUBSCRIBER_KEY=<SUBSCRIBER_API_KEY>` | Subscriber funnel/status tools registered in `server.py` | New-user onboarding, consent, joining bots, usage, referrals, realized P&L |
+| HTTP bridge | `X-Api-Key: <SUBSCRIBER_API_KEY>` or `Authorization: Bearer <SUBSCRIBER_API_KEY>` | all `SUBSCRIBER_TOOLS` from `subscriber_tools.py` | Portfolio, signal stream, fills, paper orders, daemon callbacks, plus the onboarding/status tools |
 
 The HTTP bridge should be the default for dashboards, daemons, and any workflow
 that needs portfolio, signal, fill, or paper-order tools. Local stdio remains
@@ -41,9 +41,9 @@ The compliant subscriber funnel is:
 1. Call `get_started(goal="subscriber")`, `get_pricing()`, or
    `get_system_status()` without auth to inspect the public offer.
 2. Call `get_checkout_url(email="you@example.com", tier="paper")` to generate a
-   Stripe-hosted checkout link. Payment provisioning emails a `sub_live_*` key.
+   Stripe-hosted checkout link. Payment provisioning emails a subscriber API key.
 3. Store the key in a secrets store, `.env`, or MCP client header. For local
-   stdio, set `ALGOCHAINS_SUBSCRIBER_KEY=sub_live_*`.
+   stdio, set `ALGOCHAINS_SUBSCRIBER_KEY=<SUBSCRIBER_API_KEY>`.
 4. Call `accept_subscriber_terms()` once without an acknowledgment to retrieve
    the current futures risk disclosure and exact acknowledgment phrase.
 5. Call `accept_subscriber_terms(acknowledgment="<exact phrase>")`.
@@ -70,7 +70,7 @@ List the subscriber surface and required scopes:
 
 ```bash
 curl -sS https://api.algochains.ai/tools \
-  -H "X-Api-Key: sub_live_YOUR_KEY"
+  -H "X-Api-Key: <SUBSCRIBER_API_KEY>"
 ```
 
 Call a subscriber tool:
@@ -78,7 +78,7 @@ Call a subscriber tool:
 ```bash
 curl -sS https://api.algochains.ai/api/mcp \
   -H "Content-Type: application/json" \
-  -H "X-Api-Key: sub_live_YOUR_KEY" \
+  -H "X-Api-Key: <SUBSCRIBER_API_KEY>" \
   -d '{
     "tool": "get_my_portfolio",
     "arguments": {}
@@ -90,7 +90,7 @@ Join a bot after consent:
 ```bash
 curl -sS https://api.algochains.ai/api/mcp \
   -H "Content-Type: application/json" \
-  -H "X-Api-Key: sub_live_YOUR_KEY" \
+  -H "X-Api-Key: <SUBSCRIBER_API_KEY>" \
   -d '{
     "tool": "join_bot",
     "arguments": {
@@ -106,7 +106,7 @@ Stream copy-trade signals over Server-Sent Events:
 
 ```bash
 curl -N https://api.algochains.ai/api/signals/stream?bots=MNQ \
-  -H "X-Api-Key: sub_live_YOUR_KEY"
+  -H "X-Api-Key: <SUBSCRIBER_API_KEY>"
 ```
 
 Daemons should reconnect on disconnect and can resync missed entries with

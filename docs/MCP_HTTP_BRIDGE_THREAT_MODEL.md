@@ -13,7 +13,7 @@
 |-------|----------|-------------|
 | Tradovate session / OAuth tokens | `.env` + `state/tradovate_token.json` | CRITICAL — enables live order placement |
 | `ALGOCHAINS_BRIDGE_API_KEY` (owner key) | `.env` | HIGH — full owner tool access |
-| `sub_live_*` subscriber keys | Supabase `subscriber_api_keys` table | HIGH — subscriber data + fill reporting |
+| Subscriber API keys | Supabase `subscriber_api_keys` table | HIGH — subscriber data + fill reporting |
 | `ac_live_*` / `ac_test_*` developer keys | Supabase `developer_api_keys` table | HIGH — developer strategy, data, and marketplace write-local tools |
 | Supabase service role key | `.env` | HIGH — row-level security bypass capability |
 | ML model artifacts (`.pkl`, `.json`) | `models/` | MEDIUM — IP; integrity tied to SHA-256 checks |
@@ -27,7 +27,7 @@
 |-------|---------------|-------------|------------------------|
 | Anonymous / no key | None | `PUBLIC_TOOLS` only (13 tools) | No |
 | Owner | `ALGOCHAINS_BRIDGE_API_KEY` | `PUBLIC_TOOLS` + `OWNER_TOOLS` | Yes — with `confirm=true` |
-| Subscriber | `sub_live_*` key resolved against Supabase | `SUBSCRIBER_TOOLS` (16 tools, scoped) | No |
+| Subscriber | Subscriber key resolved against Supabase | `SUBSCRIBER_TOOLS` (16 tools, scoped) | No |
 | Developer | `ac_live_*` / `ac_test_*` key resolved against Supabase | `DEVELOPER_TOOLS` (scoped, no broker execution) | No `ORDER_EXEC`; max `WRITE_LOCAL` |
 | Dev mode (localhost only) | `ALGOCHAINS_BRIDGE_DEV_MODE=true` | Public tools without key | No |
 

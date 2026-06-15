@@ -147,8 +147,8 @@ No Alpaca account. No real money.
 ### How it works
 
 1. Sign up at **algochains.ai** — free paper account provisioned automatically
-2. Dashboard shows your `sub_live_…` subscriber key — copy it
-3. Set `ALGOCHAINS_SUBSCRIBER_KEY=sub_live_…` for local stdio onboarding tools,
+2. Dashboard shows your subscriber API key — copy it
+3. Set `ALGOCHAINS_SUBSCRIBER_KEY=<SUBSCRIBER_API_KEY>` for local stdio onboarding tools,
    or send it as `X-Api-Key` to the HTTP bridge
 4. Use the local stdio tools for consent/status/join flows, and use the HTTP
    bridge for the full subscriber portfolio, signal, fill, and paper-order surface:
@@ -169,13 +169,13 @@ No Alpaca account. No real money.
 | `get_my_paper_positions` | Open and recently filled self-directed paper orders |
 | `report_fill`, `ack_signal`, `heartbeat` | Subscriber daemon callbacks for fill reporting, signal acknowledgments, and liveness |
 
-All subscriber tools require only the `sub_live_…` key — no `OWNER_API_TOKEN`, no
+All subscriber tools require only your subscriber API key — no `OWNER_API_TOKEN`, no
 broker credentials. See [docs/SUBSCRIBER_TOOLS.md](docs/SUBSCRIBER_TOOLS.md) for
 the stdio-vs-bridge split, scopes, examples, and daemon tools.
 
 ### Subscriber key format
 
-Keys always start with `sub_live_` (production) or `sub_test_` (sandbox). Set the key
+Subscriber keys are issued for production or sandbox accounts. Set the key
 as `ALGOCHAINS_SUBSCRIBER_KEY` in your `.env` for local stdio tools, or pass it as
 `X-Api-Key` to the HTTP bridge. The server resolves your `subscriber_id`
 server-side via Supabase; callers should not pass `subscriber_id` in tool
@@ -226,7 +226,7 @@ get_system_status()              # platform health, bot roster, live tool count
 # 1. Get a Stripe-hosted checkout URL (one call — no browser needed after this)
 get_checkout_url(email="you@example.com", tier="paper")
 # → returns a checkout_url the user visits once to enter payment details
-# → sub_live_... key is emailed automatically after payment
+# → subscriber API key is emailed automatically after payment
 
 # 2. Set ALGOCHAINS_SUBSCRIBER_KEY, then accept the CFTC risk disclosure
 #    (required before signals; subscriber_id is resolved from the key)
@@ -283,12 +283,12 @@ get_my_realized_pnl()
 | `get_pricing` | None | Public |
 | `get_system_status` | None | Public |
 | `get_checkout_url` | None | Public (Stripe handles billing) |
-| `accept_subscriber_terms` | `sub_live_*` key | Paper / Live |
-| `get_my_usage` | `sub_live_*` key | Paper / Live |
-| `create_referral_code` | `sub_live_*` key | Paper / Live |
-| `get_my_referrals` | `sub_live_*` key | Paper / Live |
-| `get_referral_earnings` | `sub_live_*` key | Paper / Live |
-| `get_my_realized_pnl` | `sub_live_*` key | Live |
+| `accept_subscriber_terms` | Subscriber API key | Paper / Live |
+| `get_my_usage` | Subscriber API key | Paper / Live |
+| `create_referral_code` | Subscriber API key | Paper / Live |
+| `get_my_referrals` | Subscriber API key | Paper / Live |
+| `get_referral_earnings` | Subscriber API key | Paper / Live |
+| `get_my_realized_pnl` | Subscriber API key | Live |
 | `create_creator_onboarding_link` | `OWNER_API_TOKEN` | Owner |
 | `get_my_creator_earnings` | `OWNER_API_TOKEN` | Owner |
 | `run_creator_payouts` | `OWNER_API_TOKEN` | Owner |
@@ -420,7 +420,7 @@ OWNER_API_TOKEN=your-owner-token-here
 | | Path | Credential needed | Best for |
 |---|------|:-----------------:|----------|
 | **A** | Demo mode | None | Market data, regime detection, tools exploration |
-| **B** | AlgoChains hosted paper | `sub_live_…` key (free signup) | Copy-trade MNQ bot, zero broker setup |
+| **B** | AlgoChains hosted paper | Subscriber API key (free signup) | Copy-trade MNQ bot, zero broker setup |
 | **B-2** | Alpaca paper | Alpaca paper API key | Your own paper equity account |
 | **C** | Full live | Tradovate + others | Real futures/equities trading |
 
@@ -443,11 +443,11 @@ Available immediately (no credentials):
 No Tradovate account. No Alpaca account. No broker credentials at all.
 
 1. Sign up at **[algochains.ai](https://algochains.ai)** — free hosted virtual paper account
-2. Copy your subscriber key from the dashboard (`sub_live_…`)
+2. Copy your subscriber key from the dashboard
 3. Set it and run:
 
 ```bash
-export ALGOCHAINS_SUBSCRIBER_KEY=sub_live_your_key_here
+export ALGOCHAINS_SUBSCRIBER_KEY="<SUBSCRIBER_API_KEY>"
 python scripts/quickstart.py --mode paper
 ```
 
