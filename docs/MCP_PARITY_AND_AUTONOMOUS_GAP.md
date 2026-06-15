@@ -39,7 +39,7 @@ pass** without extra scripting or multiple repos.
 |-----|----------------|-----------|
 | **No merged “incident” object** | Control tower writes `logs/incidents/incident_*.json`; CC watchdog writes `cc_health_state.json`; bridge has `guardrails_state.json`. Agents must know three paths. | One read-only tool or an extension of `get_bot_health` returning `{ cc_health, bridge_guardrails?, last_incident_summary? }` with size caps. |
 | **Copy-trade / paper executor** | OpenClaw alerts mention `paper_trade_executor` — not clearly exposed as MCP health. | Optional: parse bridge HTTP health or a small state file if the bridge writes it. |
-| **Supabase migration / schema drift** | MCP marketplace tools assume DB; agents do not get “migration 20260420 not applied” style signals. | Read-only `supabase_schema_probe` or document bridge endpoint only (avoid raw service_role in MCP). |
+| **Supabase migration / schema drift** | MCP marketplace tools assume DB; agents do not get “subscriber copy-trade / subscriber_api_keys migration not applied” style signals. | Read-only `supabase_schema_probe` or document bridge endpoint only (avoid raw service_role in MCP). |
 
 ### 2.2 ML ops and promotion discipline
 
