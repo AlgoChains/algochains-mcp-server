@@ -11,14 +11,12 @@ This enables the MCP server to self-identify its role in the dual-node setup.
 from __future__ import annotations
 
 import json
-import os
 import shlex
 import subprocess
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 
 from algochains_mcp.paths import default_heartbeat_paths
@@ -91,10 +89,19 @@ def _is_python_eval(tokens: list[str]) -> bool:
     return executable.startswith("python") and "-c" in tokens[1:]
 
 
+def _is_shell_eval(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    executable = Path(tokens[0]).name
+    return executable in {"sh", "bash", "zsh"} and any(
+        arg in {"-c", "-lc"} for arg in tokens[1:]
+    )
+
+
 def _matching_bot_key(command: str) -> str | None:
     """Return the canonical bot key if a command is a live bot process."""
     tokens = _command_tokens(command)
-    if not tokens or _is_python_eval(tokens):
+    if not tokens or _is_python_eval(tokens) or _is_shell_eval(tokens):
         return None
 
     token_basenames = {Path(token).name for token in tokens}
