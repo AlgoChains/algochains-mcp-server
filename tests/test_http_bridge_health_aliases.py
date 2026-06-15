@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -71,3 +72,55 @@ def test_api_system_alias_wraps_heartbeat_payload():
         is_owner=True,
         caller_scope=None,
     )
+
+
+def test_api_signal_health_reads_control_tower_state(tmp_path):
+    control_tower = tmp_path / "algochains-control-tower"
+    state_dir = control_tower / "state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "signal_health.json").write_text(
+        json.dumps(
+            {
+                "MNQ_Upgraded_Scalper": {
+                    "last_signal_time": "2026-06-15T07:20:00Z",
+                    "last_trade_result": "filled",
+                    "last_confidence": 0.82,
+                    "last_regime": "trend",
+                    "advisory_path": "desktop",
+                }
+            }
+        )
+    )
+
+    env = {
+        "ALGOCHAINS_BRIDGE_API_KEY": OWNER_KEY,
+        "OWNER_EMAIL": "owner@test.algochains.ai",
+        "ALGOCHAINS_BRIDGE_DEV_MODE": "false",
+        "ALGOCHAINS_CONTROL_TOWER": str(control_tower),
+    }
+    with patch.dict(os.environ, env):
+        client = TestClient(create_fastapi_app(), raise_server_exceptions=False)
+        resp = client.get("/api/signal-health", headers={"X-Api-Key": OWNER_KEY})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["signal_count"] == 1
+    assert data["signal_health"]["MNQ_Upgraded_Scalper"]["last_confidence"] == 0.82
+    assert data["signals"] == [
+        {
+            "bot": "MNQ_Upgraded_Scalper",
+            "last_signal_ts": "2026-06-15T07:20:00Z",
+            "last_outcome": "filled",
+            "confidence": 0.82,
+            "regime": "trend",
+            "advisory_path": "desktop",
+        }
+    ]
+
+
+def test_api_signal_health_requires_owner_key():
+    client = _client()
+
+    resp = client.get("/api/signal-health")
+
+    assert resp.status_code == 401
