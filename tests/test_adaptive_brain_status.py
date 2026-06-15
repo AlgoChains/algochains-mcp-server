@@ -140,8 +140,10 @@ def test_adaptive_brain_status_registered_and_callable(monkeypatch, tmp_path):
     root = _make_control_tower(tmp_path)
     monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(root))
 
-    def fake_run(*_args, **_kwargs):
+    def fake_run(cmd, *_args, **_kwargs):
         script = root / "autonomous" / "adaptive_brain.py"
+        if cmd[:2] == ["launchctl", "print"]:
+            return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
         return SimpleNamespace(
             stdout="\n".join(
                 [
