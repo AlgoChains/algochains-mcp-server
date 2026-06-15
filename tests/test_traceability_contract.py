@@ -150,7 +150,50 @@ def test_signal_trade_correlation_retries_transient_supabase_reset(monkeypatch, 
 
     result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
 
-    assert _decode_tool_json(result) == {"status": "ok", "retried": True}
+    data = _decode_tool_json(result)
+    assert data["status"] == "ok"
+    assert data["retried"] is True
+    assert data["_mcp_retry"] == {
+        "attempts": 2,
+        "retry_attempts": 1,
+        "reason": "transient_traceability_failure",
+    }
+    assert len(calls) == 2
+
+
+def test_signal_trade_correlation_retries_transient_supabase_timeout(monkeypatch, tmp_path):
+    """ConnectTimeout / Errno 60 traceability failures should be retried."""
+    import asyncio
+    import subprocess
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# test placeholder\n")
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="trade_log_pending:ConnectTimeout:[Errno 60] Operation timed out",
+            )
+        return SimpleNamespace(returncode=0, stdout='{"status":"ok","timeout_recovered":true}', stderr="")
+
+    monkeypatch.setattr(srv, "_default_control_tower", lambda: str(tmp_path))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(srv.time, "sleep", lambda _seconds: None)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    data = _decode_tool_json(result)
+
+    assert data["status"] == "ok"
+    assert data["timeout_recovered"] is True
+    assert data["_mcp_retry"]["attempts"] == 2
+    assert data["_mcp_retry"]["retry_attempts"] == 1
     assert len(calls) == 2
 
 

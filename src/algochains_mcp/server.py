@@ -119,9 +119,12 @@ def _rate(count: int, total: int) -> float:
 
 _TRACEABILITY_TRANSIENT_MARKERS = (
     "connecterror",
+    "connecttimeout",
     "connection reset by peer",
     "connectionreseterror",
     "errno 54",
+    "errno 60",
+    "operation timed out",
     "readtimeout",
     "read timeout",
     "protocolerror",
@@ -11127,7 +11130,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
                 if _proc.returncode == 0:
                     try:
-                        return _text(_json.loads(_proc.stdout))
+                        payload = _json.loads(_proc.stdout)
+                        if _attempt > 1 and isinstance(payload, dict):
+                            payload.setdefault(
+                                "_mcp_retry",
+                                {
+                                    "attempts": _attempt,
+                                    "retry_attempts": _attempt - 1,
+                                    "reason": "transient_traceability_failure",
+                                },
+                            )
+                        return _text(payload)
                     except Exception:
                         return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
 
