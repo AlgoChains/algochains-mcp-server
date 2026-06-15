@@ -27,7 +27,7 @@
 |-------|---------------|-------------|------------------------|
 | Anonymous / no key | None | `PUBLIC_TOOLS` only (13 tools) | No |
 | Owner | `ALGOCHAINS_BRIDGE_API_KEY` | `PUBLIC_TOOLS` + `OWNER_TOOLS` | Yes — with `confirm=true` |
-| Subscriber | `sub_live_*` key resolved against Supabase | `SUBSCRIBER_TOOLS` (7 tools, scoped) | No |
+| Subscriber | `sub_live_*` key resolved against Supabase | `SUBSCRIBER_TOOLS` (16 tools, scoped) | No |
 | Developer | `ac_live_*` / `ac_test_*` key resolved against Supabase | `DEVELOPER_TOOLS` (scoped, no broker execution) | No `ORDER_EXEC`; max `WRITE_LOCAL` |
 | Dev mode (localhost only) | `ALGOCHAINS_BRIDGE_DEV_MODE=true` | Public tools without key | No |
 
@@ -45,8 +45,17 @@ The owner surface includes live account reads, owner bot metrics, controlled
 marketplace operations, Onyx ingest/status, and explicitly confirmed order
 execution tools.
 
-### Subscriber Tools (7)
-`get_signal_stream`, `ack_signal`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `report_fill`, `heartbeat`
+### Subscriber Tools (16)
+Authoritative list lives in `src/algochains_mcp/subscriber_tools.py::SUBSCRIBER_TOOLS`.
+The bridge surface includes onboarding/status tools, portfolio/P&L/fill reads,
+self-directed paper-order writes, and daemon callbacks:
+`accept_subscriber_terms`, `join_bot`, `get_subscriber_status`,
+`get_my_assignments`, `get_signal_stream`, `get_my_pnl`, `get_my_portfolio`,
+`get_my_fills`, `get_my_usage`, `get_marketplace_listings`,
+`place_paper_order`, `cancel_paper_order`, `get_my_paper_positions`,
+`report_fill`, `ack_signal`, `heartbeat`.
+
+See `docs/SUBSCRIBER_TOOLS.md` for the stdio-vs-bridge split and scope map.
 
 ### Developer Tools
 Authoritative list lives in `src/algochains_mcp/developer_tools.py::DEVELOPER_TOOLS`.
@@ -77,7 +86,8 @@ Accepted headers: `X-Api-Key: ac_live_...` or
              ▼
 ┌─────────────────────────────────┐
 │  MCP Tool dispatch (server.py)  │  ← trust boundary #2 (tool code runs here)
-│  478 tools; some call brokers   │
+│  stdio registry + bridge allowlists │
+│  some owner tools call brokers      │
 └────────────┬────────────────────┘
              │
     ┌────────┼────────┐
