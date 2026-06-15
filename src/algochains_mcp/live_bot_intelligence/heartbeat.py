@@ -11,17 +11,21 @@ This enables the MCP server to self-identify its role in the dual-node setup.
 from __future__ import annotations
 
 import json
-import os
-import re
 import subprocess
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
-
 
 from algochains_mcp.paths import default_heartbeat_paths
+
+
+_BOT_PROCESS_SIGNATURES = {
+    "mnq": ("FUTURES_SCALPER_UPGRADED.py", "FUTURES_SCALPER_UPGRADED"),
+    "cl": ("CL_FUTURES_SCALPER.py", "CL_FUTURES_SCALPER"),
+    "mes": ("mes_swing_live.py", "mes_swing_live"),
+    "nq": ("nq_swing_live.py", "nq_swing_live"),
+    "kalshi": ("kalshi_daemon.py", "kalshi_daemon"),
+}
 
 # Canonical ordered candidate list (control-tower/scripts first, then legacy
 # WSL/Windows/Ubuntu fallbacks). The control-tower path is where the Mac bot
@@ -70,11 +74,11 @@ def _count_running_bots() -> int:
             ["ps", "aux"],
             capture_output=True, text=True, timeout=5
         )
-        count = 0
-        for pattern in ["FUTURES_SCALPER", "CL_FUTURES", "mes_swing", "nq_swing"]:
-            if pattern in result.stdout:
-                count += 1
-        return count
+        return sum(
+            1
+            for signatures in _BOT_PROCESS_SIGNATURES.values()
+            if any(signature in result.stdout for signature in signatures)
+        )
     except (subprocess.SubprocessError, FileNotFoundError):
         return 0
 
