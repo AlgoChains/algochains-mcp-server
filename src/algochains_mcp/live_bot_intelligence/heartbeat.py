@@ -11,14 +11,13 @@ This enables the MCP server to self-identify its role in the dual-node setup.
 from __future__ import annotations
 
 import json
-import os
 import re
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 
 from algochains_mcp.paths import default_heartbeat_paths
@@ -28,6 +27,16 @@ from algochains_mcp.paths import default_heartbeat_paths
 # actually writes the heartbeat, so the prior Linux-first order was inverted
 # for the desktop tower.
 _HEARTBEAT_PATHS = default_heartbeat_paths()
+
+_BOT_PROCESS_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("mnq", ("FUTURES_SCALPER_UPGRADED.py", "FUTURES_SCALPER.py")),
+    ("cl", ("CL_FUTURES_SCALPER.py",)),
+    ("mes", ("mes_swing_live.py",)),
+    ("nq", ("nq_swing_live.py",)),
+    ("kalshi", ("kalshi_daemon.py",)),
+)
+
+_PYTHON_BASENAME_RE = re.compile(r"^python(?:\d+(?:\.\d+)?)?$")
 
 
 @dataclass
@@ -63,18 +72,66 @@ def _read_heartbeat() -> tuple[dict, str]:
     return {}, ""
 
 
+def _command_script_name(command: str) -> str | None:
+    """Return the executed Python/direct script basename for a ps command."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return None
+    if not argv:
+        return None
+
+    executable = Path(argv[0]).name
+    if executable.endswith(".py"):
+        return executable
+
+    if not _PYTHON_BASENAME_RE.match(executable):
+        return None
+
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg in {"-c", "-m"}:
+            return None
+        if arg in {"-B", "-E", "-I", "-O", "-OO", "-P", "-q", "-s", "-S", "-u", "-v"}:
+            i += 1
+            continue
+        if arg in {"-W", "-X"}:
+            i += 2
+            continue
+        if arg.startswith("-"):
+            i += 1
+            continue
+        script = Path(arg).name
+        return script if script.endswith(".py") else None
+    return None
+
+
+def _running_bot_ids_from_ps(ps_output: str) -> set[str]:
+    """Extract canonical live-bot IDs from ps output without shell/search false positives."""
+    running: set[str] = set()
+    for line in ps_output.splitlines():
+        parts = line.split(None, 10)
+        if len(parts) < 11:
+            continue
+        script_name = _command_script_name(parts[10])
+        if script_name is None:
+            continue
+        for bot_id, signatures in _BOT_PROCESS_SIGNATURES:
+            if script_name in signatures:
+                running.add(bot_id)
+                break
+    return running
+
+
 def _count_running_bots() -> int:
-    """Count how many bot processes are running on this node."""
+    """Count expected desktop live-bot/daemon processes on this node."""
     try:
         result = subprocess.run(
             ["ps", "aux"],
             capture_output=True, text=True, timeout=5
         )
-        count = 0
-        for pattern in ["FUTURES_SCALPER", "CL_FUTURES", "mes_swing", "nq_swing"]:
-            if pattern in result.stdout:
-                count += 1
-        return count
+        return len(_running_bot_ids_from_ps(result.stdout))
     except (subprocess.SubprocessError, FileNotFoundError):
         return 0
 
