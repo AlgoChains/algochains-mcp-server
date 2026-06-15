@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from algochains_mcp import paths
+from algochains_mcp.server import _default_control_tower
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "src" / "algochains_mcp" / "server.py"
@@ -36,3 +39,14 @@ def test_cc_health_maps_current_state_file_shape():
     assert 'get("last_status")' in cc_block
     assert "last_alerted_issues_key" in cc_block
     assert "last_unhandled_error" in cc_block
+
+
+def test_server_control_tower_resolver_delegates_to_shared_paths(monkeypatch, tmp_path):
+    desktop_tower = tmp_path / "desktop-control-tower"
+    desktop_tower.mkdir()
+
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER", raising=False)
+    monkeypatch.delenv("ALGOCHAINS_CONTROL_TOWER_PATH", raising=False)
+    monkeypatch.setattr(paths, "_LEGACY_POSSIBLE_ROOTS", (desktop_tower,))
+
+    assert _default_control_tower() == str(desktop_tower)

@@ -62,26 +62,15 @@ from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sen
 
 def _default_control_tower() -> str:
     """
-    Resolve the control-tower path without hardcoding a Mac-only absolute path.
+    Resolve the control-tower path via the shared desktop-aware resolver.
 
-    Order:
-      1. ALGOCHAINS_CONTROL_TOWER env (preferred, used by both Mac + Linux desktop)
-      2. ALGOCHAINS_CONTROL_TOWER_PATH env (legacy alias kept for backwards-compat)
-      3. __file__-relative sibling ``algochains-control-tower`` directory if present
-      4. ``/Users/treycsa/CascadeProjects/algochains-control-tower`` as a last resort
-         (only hit on the original MacBook; desktop failover uses env override).
+    Keep this wrapper for older tests and monkeypatches, but delegate to
+    ``paths.default_control_tower`` so server tools honor the same Mac, desktop,
+    WSL, and sibling fallback list as the rest of the package.
     """
-    for var in ("ALGOCHAINS_CONTROL_TOWER", "ALGOCHAINS_CONTROL_TOWER_PATH"):
-        val = os.environ.get(var)
-        if val:
-            return val
-    try:
-        sibling = _PathGlobal(__file__).resolve().parents[3] / "algochains-control-tower"
-        if sibling.exists():
-            return str(sibling)
-    except Exception:
-        pass
-    return "/Users/treycsa/CascadeProjects/algochains-control-tower"
+    from .paths import default_control_tower
+
+    return str(default_control_tower())
 
 
 def _tail_jsonl(path: _PathGlobal, limit: int = 200) -> list[dict[str, Any]]:
