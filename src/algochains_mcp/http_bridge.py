@@ -308,6 +308,25 @@ def _with_system_aliases(heartbeat: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _signal_health_entries(signal_health: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return a compact probe-friendly list view of signal_health.json."""
+    entries: list[dict[str, Any]] = []
+    for bot_key, bot_data in signal_health.items():
+        if not isinstance(bot_data, dict):
+            continue
+        entries.append(
+            {
+                "bot": bot_key,
+                "last_signal_ts": bot_data.get("last_signal_time"),
+                "last_outcome": bot_data.get("last_trade_result"),
+                "confidence": bot_data.get("last_confidence"),
+                "regime": bot_data.get("last_regime"),
+                "advisory_path": bot_data.get("advisory_path"),
+            }
+        )
+    return entries
+
+
 def create_fastapi_app():
     """Create FastAPI app for standalone HTTP bridge. Install: pip install fastapi uvicorn"""
     try:
@@ -788,6 +807,10 @@ def create_fastapi_app():
             "marketplace_botsubscription",
             "id,subscriber_id,subscriber_email,requester_slack_id,status,created_at,listing_id_id",
         )
+        platform_subscriptions, platform_subscriptions_error = _select_rows(
+            "algochains_subscriptions",
+            "id,user_id,bot_id,status,broker,broker_connected,started_at,expires_at,created_at",
+        )
 
         subscribers: dict[str, dict[str, Any]] = {}
 
@@ -795,6 +818,9 @@ def create_fastapi_app():
             sid = row.get("subscriber_id")
             if sid:
                 return str(sid)
+            user_id = row.get("user_id")
+            if user_id:
+                return str(user_id)
             email = row.get("subscriber_email")
             if email:
                 return str(email)
@@ -810,7 +836,8 @@ def create_fastapi_app():
             return subscribers.setdefault(
                 key,
                 {
-                    "subscriber_id": row.get("subscriber_id"),
+                    "subscriber_id": row.get("subscriber_id") or row.get("user_id"),
+                    "user_id": row.get("user_id"),
                     "subscriber_email": row.get("subscriber_email"),
                     "requester_slack_id": row.get("requester_slack_id"),
                     "assignments": [],
@@ -818,6 +845,9 @@ def create_fastapi_app():
                     "active_assignment_count": 0,
                     "marketplace_subscription_count": 0,
                     "active_marketplace_subscription_count": 0,
+                    "platform_subscriptions": [],
+                    "platform_subscription_count": 0,
+                    "active_platform_subscription_count": 0,
                 },
             )
 
@@ -864,6 +894,15 @@ def create_fastapi_app():
             if row.get("status") == "active":
                 sub["active_marketplace_subscription_count"] += 1
 
+        for row in platform_subscriptions:
+            sub = _ensure_subscriber(row)
+            if sub is None:
+                continue
+            sub["platform_subscriptions"].append(row)
+            sub["platform_subscription_count"] += 1
+            if row.get("status") in {"active", "trial"}:
+                sub["active_platform_subscription_count"] += 1
+
         paper_pnl_rollup_usd = _money_total(
             [
                 sub.get("paper_pnl_rollup_usd")
@@ -880,6 +919,7 @@ def create_fastapi_app():
                 for row in subscribers.values()
                 if row.get("active_assignment_count", 0) > 0
                 or row.get("active_marketplace_subscription_count", 0) > 0
+                or row.get("active_platform_subscription_count", 0) > 0
             ),
             "assignments": assignments,
             "assignment_count": len(assignments),
@@ -887,6 +927,11 @@ def create_fastapi_app():
             "subscriptions": subscriptions,
             "subscription_count": len(subscriptions),
             "active_subscriptions": sum(1 for row in subscriptions if row.get("status") == "active"),
+            "platform_subscriptions": platform_subscriptions,
+            "platform_subscription_count": len(platform_subscriptions),
+            "active_platform_subscriptions": sum(
+                1 for row in platform_subscriptions if row.get("status") in {"active", "trial"}
+            ),
             "paper_account_count": len(paper_accounts),
             "heartbeat_count": len(heartbeats),
             "paper_pnl_usd": paper_pnl_rollup_usd,
@@ -899,6 +944,7 @@ def create_fastapi_app():
                     "paper_accounts": paper_error,
                     "heartbeats": heartbeat_error,
                     "subscriptions": subscriptions_error,
+                    "platform_subscriptions": platform_subscriptions_error,
                 }.items()
                 if value
             },
@@ -1082,6 +1128,30 @@ def create_fastapi_app():
             pass
         return {}
 
+    @app_http.get("/api/signal-health")
+    async def signal_health_status(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """Compatibility endpoint for Command Center signal-health probes."""
+        key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or not is_owner or subscriber is not None or developer is not None:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+        signal_health = _read_json_state("state/signal_health.json")
+        signals = _signal_health_entries(signal_health if isinstance(signal_health, dict) else {})
+        return {
+            "signal_health": signal_health if isinstance(signal_health, dict) else {},
+            "signals": signals,
+            "signal_count": len(signals),
+            "source": str(_ct_path("state/signal_health.json")),
+            "as_of": datetime.now(timezone.utc).isoformat(),
+        }
+
     def _tail_log(rel_path: str, lines: int = 80) -> list[str]:
         """Return last N non-empty lines from a log file."""
         try:
@@ -1236,22 +1306,14 @@ def create_fastapi_app():
 
         def _get_signals():
             sig = _read_json_state("state/signal_health.json")
-            entries = []
-            for bot_key, bot_data in (sig.items() if isinstance(sig, dict) else {}.items()):
-                if not isinstance(bot_data, dict):
-                    continue
-                entry = {
-                    "bot": bot_key,
-                    "last_signal_ts": bot_data.get("last_signal_time"),
-                    "last_outcome": bot_data.get("last_trade_result"),
-                    "confidence": bot_data.get("last_confidence"),
-                    "regime": bot_data.get("last_regime"),
-                    "advisory_path": bot_data.get("advisory_path"),
-                }
-                if is_owner:
+            entries = _signal_health_entries(sig if isinstance(sig, dict) else {})
+            if is_owner:
+                for entry in entries:
+                    bot_data = sig.get(entry["bot"], {}) if isinstance(sig, dict) else {}
+                    if not isinstance(bot_data, dict):
+                        continue
                     entry["kronos_shadow"] = bot_data.get("kronos_shadow")
                     entry["validator_summary"] = bot_data.get("validator_summary")
-                entries.append(entry)
             return {
                 "signals": entries[:limit],
                 "ts": datetime.now(timezone.utc).isoformat(),
