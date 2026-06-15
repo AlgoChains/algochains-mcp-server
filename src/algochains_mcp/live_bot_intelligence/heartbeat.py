@@ -12,13 +12,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 
 from algochains_mcp.paths import default_heartbeat_paths
@@ -28,6 +26,26 @@ from algochains_mcp.paths import default_heartbeat_paths
 # actually writes the heartbeat, so the prior Linux-first order was inverted
 # for the desktop tower.
 _HEARTBEAT_PATHS = default_heartbeat_paths()
+
+_BOT_PROCESS_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("mnq", ("futures_scalper",)),
+    ("cl", ("cl_futures",)),
+    ("mes", ("mes_swing",)),
+    ("nq", ("nq_swing",)),
+    ("kalshi", ("kalshi_daemon",)),
+)
+
+_NON_BOT_EXECUTABLES = {
+    "bash",
+    "dash",
+    "fish",
+    "grep",
+    "pytest",
+    "rg",
+    "sh",
+    "tmux",
+    "zsh",
+}
 
 
 @dataclass
@@ -63,18 +81,46 @@ def _read_heartbeat() -> tuple[dict, str]:
     return {}, ""
 
 
+def _script_token_for_command(command: str) -> str:
+    """Return the script token from a process command, or an empty string."""
+    parts = command.strip().split()
+    if not parts:
+        return ""
+
+    executable = Path(parts[0]).name.lower()
+    if executable in _NON_BOT_EXECUTABLES:
+        return ""
+
+    if executable.startswith("python"):
+        for token in parts[1:]:
+            if token.startswith("-"):
+                continue
+            return token
+        return ""
+
+    return parts[0]
+
+
+def _command_matches_bot(command: str, signatures: tuple[str, ...]) -> bool:
+    script_token = _script_token_for_command(command).lower()
+    if not script_token:
+        return False
+    return any(signature in script_token for signature in signatures)
+
+
 def _count_running_bots() -> int:
     """Count how many bot processes are running on this node."""
     try:
         result = subprocess.run(
-            ["ps", "aux"],
+            ["ps", "-eo", "args="],
             capture_output=True, text=True, timeout=5
         )
-        count = 0
-        for pattern in ["FUTURES_SCALPER", "CL_FUTURES", "mes_swing", "nq_swing"]:
-            if pattern in result.stdout:
-                count += 1
-        return count
+        running_bots = set()
+        for command in result.stdout.splitlines():
+            for bot_name, signatures in _BOT_PROCESS_SIGNATURES:
+                if _command_matches_bot(command, signatures):
+                    running_bots.add(bot_name)
+        return len(running_bots)
     except (subprocess.SubprocessError, FileNotFoundError):
         return 0
 

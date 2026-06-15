@@ -53,7 +53,7 @@ def test_api_system_alias_wraps_heartbeat_payload():
     client = _client()
     heartbeat = {
         "desktop_mode": "primary",
-        "desktop_bots_running": 4,
+        "desktop_bots_running": 5,
         "timestamp": "2026-06-12T03:45:55+00:00",
     }
     with patch("algochains_mcp.http_bridge.handle_mcp_request", new_callable=AsyncMock) as mock_handle:
@@ -63,7 +63,7 @@ def test_api_system_alias_wraps_heartbeat_payload():
     assert resp.status_code == 200
     data = resp.json()
     assert data["desktop_mode"] == "primary"
-    assert data["system"]["desktop_bots_running"] == 4
+    assert data["system"]["desktop_bots_running"] == 5
     assert data["heartbeat"]["timestamp"] == "2026-06-12T03:45:55+00:00"
     mock_handle.assert_awaited_once_with(
         "get_system_heartbeat",
