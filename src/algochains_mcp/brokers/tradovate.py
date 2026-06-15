@@ -126,6 +126,14 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _contract_name(contract: dict | BaseException | None, fallback: object) -> str:
+    if isinstance(contract, dict):
+        name = contract.get("name")
+        if name:
+            return str(name)
+    return str(fallback)
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -477,7 +485,7 @@ class TradovateConnector(BrokerConnector):
         contract_tasks = [self._get("/contract/item", {"id": cid}) for cid in unique_ids]
         contract_results = await _asyncio.gather(*contract_tasks, return_exceptions=True)
         contract_map = {
-            cid: (res.get("name", str(cid)) if isinstance(res, dict) else str(cid))
+            cid: res if isinstance(res, dict) else {}
             for cid, res in zip(unique_ids, contract_results)
         }
 
@@ -485,9 +493,21 @@ class TradovateConnector(BrokerConnector):
         for pos in open_positions:
             net_qty = pos.get("netPos", 0)
             contract_id = pos.get("contractId", 0)
-            symbol = contract_map.get(contract_id, str(contract_id))
-            entry = pos.get("netPrice", 0.0)
-            pnl = pos.get("openPnL", 0.0)
+            contract = contract_map.get(contract_id, {})
+            symbol = _contract_name(contract, contract_id)
+            entry = _first_number(pos, ("netPrice", "prevPrice"))
+            if entry is None:
+                raise BrokerConnectionError(
+                    "Tradovate position did not include a numeric entry price",
+                    broker="tradovate",
+                    details={"contract_id": contract_id, "position_keys": sorted(pos.keys())},
+                )
+            pnl = _first_number(
+                pos,
+                ("openPnL", "openPnl", "unrealizedPnL", "unrealizedPnl", "unrealized_pnl"),
+            )
+            if pnl is None:
+                pnl = await self._calculate_unrealized_pnl(pos, contract, symbol)
             positions.append(Position(
                 broker="tradovate",
                 symbol=symbol,
@@ -501,6 +521,90 @@ class TradovateConnector(BrokerConnector):
                 raw=pos,
             ))
         return positions
+
+    async def _calculate_unrealized_pnl(
+        self,
+        position: dict,
+        contract: dict,
+        symbol: str,
+    ) -> float:
+        """Derive open P&L when Tradovate REST position rows omit it.
+
+        Tradovate's position entities carry net price and quantity but do not
+        reliably carry open P&L. Use the documented formula with live market
+        data and product metadata instead of treating missing P&L as zero.
+        """
+        entry = _first_number(position, ("netPrice", "prevPrice"))
+        net_qty = _optional_float(position.get("netPos"))
+        value_per_point = await self._product_value_per_point(contract)
+        last_price = await self._quote_trade_price(symbol)
+
+        if entry is None or net_qty is None:
+            raise BrokerConnectionError(
+                "Tradovate position did not include numeric net price/quantity for unrealized P&L",
+                broker="tradovate",
+                details={
+                    "contract_id": position.get("contractId"),
+                    "position_keys": sorted(position.keys()),
+                },
+            )
+        if value_per_point is None:
+            raise BrokerConnectionError(
+                "Tradovate product metadata did not include valuePerPoint for unrealized P&L",
+                broker="tradovate",
+                details={
+                    "contract_id": position.get("contractId"),
+                    "symbol": symbol,
+                    "contract_keys": sorted(contract.keys()) if isinstance(contract, dict) else [],
+                },
+            )
+        if last_price is None:
+            raise BrokerConnectionError(
+                "Tradovate quote did not include a trade price for unrealized P&L",
+                broker="tradovate",
+                details={"contract_id": position.get("contractId"), "symbol": symbol},
+            )
+
+        return round((last_price - entry) * value_per_point * net_qty, 2)
+
+    async def _product_value_per_point(self, contract: dict) -> float | None:
+        product = contract.get("product")
+        if isinstance(product, dict):
+            value = _first_number(product, ("valuePerPoint", "pointValue"))
+            if value is not None:
+                return value
+
+        value = _first_number(contract, ("valuePerPoint", "pointValue"))
+        if value is not None:
+            return value
+
+        product_id = contract.get("productId")
+        if product_id is None:
+            return None
+        try:
+            product = await self._get("/product/item", {"id": product_id})
+        except Exception as exc:
+            logger.warning("tradovate product lookup failed for %s: %s", product_id, exc)
+            return None
+        if not isinstance(product, dict):
+            return None
+        return _first_number(product, ("valuePerPoint", "pointValue"))
+
+    async def _quote_trade_price(self, symbol: str) -> float | None:
+        try:
+            quotes = await self._get("/md/getQuote", {"symbol": symbol})
+        except Exception as exc:
+            logger.warning("tradovate quote lookup failed for %s: %s", symbol, exc)
+            return None
+        if not isinstance(quotes, dict):
+            return None
+        entries = quotes.get("entries", {})
+        if not isinstance(entries, dict):
+            return None
+        trade_entry = entries.get("Trade", {})
+        if not isinstance(trade_entry, dict):
+            return None
+        return _optional_float(trade_entry.get("price"))
 
     async def get_orders(self, status: Optional[str] = None, limit: int = 200) -> list[Order]:
         """Get orders, optionally filtered by status.
