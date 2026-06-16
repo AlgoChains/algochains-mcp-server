@@ -7,7 +7,7 @@ Operator/system prompts often *describe* attack phrases (e.g. "never reveal
 system prompt") for defensive guidance. Scanning those trusted roles causes
 false positives that trip skill circuit breakers (adaptive-brain,
 crew-orchestrator, slack-command-listener, output-auditor, fat-finger-protection,
-crew-handoff-router).
+crew-handoff-router, circuit-breaker).
 
 By default, trusted roles (system, system_prompt, developer) are NOT scanned.
 Set PROMPT_GUARD_SCAN_SYSTEM=1 to enforce scanning on every role.
@@ -108,54 +108,134 @@ def _should_scan_role(role: str, *, scan_system: bool) -> bool:
     return True
 
 
-def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
-    """True when *reveal system prompt* appears in operator defensive guidance."""
+_CATALOG_COLON_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "attack",
+        "attacks",
+        "block",
+        "blocked",
+        "catalog",
+        "detect",
+        "detection",
+        "example",
+        "examples",
+        "flag",
+        "injection",
+        "injections",
+        "monitor",
+        "pattern",
+        "patterns",
+        "phrase",
+        "phrases",
+        "policy",
+        "scan",
+        "security",
+        "t094",
+    }
+)
+
+_DEFENSIVE_VERBS: frozenset[str] = frozenset(
+    {
+        "against",
+        "avoid",
+        "block",
+        "check",
+        "decline",
+        "deny",
+        "detect",
+        "dont",
+        "don't",
+        "flag",
+        "including",
+        "like",
+        "monitor",
+        "never",
+        "no",
+        "not",
+        "prevent",
+        "refuse",
+        "reject",
+        "scan",
+        "stop",
+        "unless",
+        "without",
+    }
+)
+
+_FOR_CONTEXT_VERBS: frozenset[str] = frozenset(
+    {"check", "detect", "flag", "monitor", "scan", "watch"}
+)
+
+
+def _line_start(text: str, pos: int) -> int:
+    return text.rfind("\n", 0, pos) + 1
+
+
+def _is_catalog_list_prefix(line_prefix: str) -> bool:
+    stripped = line_prefix.rstrip()
+    if not stripped:
+        return False
+    if stripped.endswith(("(", "[", "/", "`", ":", "-", "*", "•")):
+        return True
+    return bool(re.match(r"^\d+\.$", stripped))
+
+
+def _colon_intro_is_defensive(before_colon: str) -> bool:
+    lowered = before_colon.lower()
+    if any(keyword in lowered for keyword in _CATALOG_COLON_KEYWORDS):
+        return True
+    return bool(re.search(r"\bt\d{2,4}\b", lowered))
+
+
+def _is_defensive_injection_match(text: str, match: re.Match[str]) -> bool:
+    """True when an injection phrase appears in operator defensive guidance."""
     prefix = text[: match.start()]
     stripped_prefix = prefix.rstrip()
-    if stripped_prefix.endswith(("(", "[", "/")):
+    if stripped_prefix.endswith(("(", "[", "/", "`")):
         return True
+
+    line_start = _line_start(text, match.start())
+    line_prefix = text[line_start : match.start()]
+    if _is_catalog_list_prefix(line_prefix):
+        return True
+
+    line = text[line_start : text.find("\n", match.start())]
+    if ":" in line:
+        before_colon, after_colon = line.split(":", 1)
+        if match.start() >= line_start + len(before_colon) + 1:
+            if _colon_intro_is_defensive(before_colon):
+                return True
+
     if stripped_prefix.endswith(":"):
-        doc_tokens = re.findall(r"[A-Za-z']+", prefix)
-        if doc_tokens and doc_tokens[-1].lower() in {
-            "examples",
-            "example",
-            "injections",
-            "injection",
-            "patterns",
-            "pattern",
-            "attacks",
-            "attack",
-            "phrases",
-            "phrase",
-            "e",
-            "g",
-        }:
-            return True
+        doc_tokens = re.findall(r"[A-Za-z0-9']+", prefix)
+        if doc_tokens:
+            last_token = doc_tokens[-1].lower()
+            if last_token in {
+                "examples",
+                "example",
+                "injections",
+                "injection",
+                "patterns",
+                "pattern",
+                "attacks",
+                "attack",
+                "phrases",
+                "phrase",
+                "e",
+                "g",
+            }:
+                return True
+            if re.fullmatch(r"t\d{2,4}", last_token):
+                return True
 
     tokens = re.findall(r"[A-Za-z']+", prefix)
     if not tokens:
         return False
 
     last = tokens[-1].lower()
+    if last in _DEFENSIVE_VERBS:
+        return True
     if last in {
-        "never",
-        "not",
-        "no",
-        "block",
-        "prevent",
-        "avoid",
-        "stop",
-        "refuse",
-        "reject",
-        "decline",
-        "deny",
-        "against",
-        "without",
-        "unless",
-        "dont",
-        "don't",
-        "including",
-        "like",
         "e",
         "g",
         "examples",
@@ -191,7 +271,11 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         return True
     if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch"} and last == "as":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() == "watch" and last == "for":
+    if len(tokens) >= 2 and tokens[-2].lower() in _FOR_CONTEXT_VERBS and last == "for":
+        return True
+    if last == "for" and any(
+        token.lower() in _FOR_CONTEXT_VERBS for token in tokens[:-1]
+    ):
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "e" and last == "g":
         return True
@@ -204,9 +288,7 @@ def find_injection_pattern(text: str) -> Optional[_InjectionPattern]:
         return None
     for pattern in INJECTION_PATTERNS:
         for match in pattern.regex.finditer(text):
-            if pattern.name == "reveal system prompt" and _is_defensive_reveal_match(
-                text, match
-            ):
+            if _is_defensive_injection_match(text, match):
                 continue
             return pattern
     return None
