@@ -126,6 +126,25 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _positive_float(value: object) -> float | None:
+    parsed = _optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _quote_entry_price(entries: dict, names: tuple[str, ...]) -> float | None:
+    for name in names:
+        entry = entries.get(name)
+        if isinstance(entry, dict):
+            price = _positive_float(entry.get("price"))
+        else:
+            price = _positive_float(entry)
+        if price is not None:
+            return price
+    return None
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -745,21 +764,32 @@ class TradovateConnector(BrokerConnector):
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
             if isinstance(quotes, dict):
                 entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
-                return Quote(
-                    symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
-                )
+                if isinstance(entries, dict):
+                    bid = _quote_entry_price(entries, ("Bid", "bid"))
+                    ask = _quote_entry_price(entries, ("Offer", "Ask", "offer", "ask"))
+                    trade = _quote_entry_price(entries, ("Trade", "Last", "trade", "last"))
+
+                    if trade is None:
+                        if bid is not None and ask is not None:
+                            trade = (bid + ask) / 2
+                        else:
+                            trade = bid if bid is not None else ask
+
+                    if trade is not None:
+                        trade_entry = entries.get("Trade", {})
+                        volume = 0
+                        if isinstance(trade_entry, dict):
+                            volume = int(_positive_float(trade_entry.get("size")) or 0)
+                        return Quote(
+                            symbol=symbol,
+                            bid=bid if bid is not None else trade,
+                            ask=ask if ask is not None else trade,
+                            last=trade,
+                            volume=volume,
+                        )
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 
-        # Return None-sentinel prices so callers can distinguish "API error"
-        # from "market genuinely at zero". Callers must check for float("nan").
         raise BrokerQuoteError(
             f"Quote unavailable for {symbol} — API returned no data",
             broker="tradovate",
