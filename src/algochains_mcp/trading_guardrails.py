@@ -21,6 +21,7 @@ CIRCUIT BREAKER STATES:
     OPEN      → Hard limit breached. All orders blocked. Cooldown active.
     HALF_OPEN → Cooldown expired. One test call allowed. Watching.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -35,6 +36,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Deque, Dict, Optional
 
+from algochains_mcp.daily_loss_proximity import (
+    DAILY_LOSS_ALERT_PCT,
+    SCALPER_DAILY_LOSS_BLOCK_PCT,
+    evaluate_daily_loss_proximity,
+)
+
 logger = logging.getLogger("algochains_mcp.guardrails")
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -48,9 +55,9 @@ MAX_ORDERS_PER_MINUTE: int = 10
 MAX_ORDERS_PER_HOUR: int = 60
 
 # Financial loss limits (from CLAUDE.md and AlgoChains validation gates)
-MAX_DAILY_LOSS_USD: float = 500.0          # Tyler's hard limit
-MAX_DRAWDOWN_PCT: float = 0.15             # 15% max drawdown gate
-MAX_CONSECUTIVE_LOSSES: int = 5            # halt + review after 5 straight losses
+MAX_DAILY_LOSS_USD: float = 500.0  # Tyler's hard limit
+MAX_DRAWDOWN_PCT: float = 0.15  # 15% max drawdown gate
+MAX_CONSECUTIVE_LOSSES: int = 5  # halt + review after 5 straight losses
 
 # Position size limits (per symbol, in contracts)
 MAX_POSITION_SIZE_CONTRACTS: int = 5
@@ -60,27 +67,29 @@ MAX_TOTAL_OPEN_NOTIONAL_USD: float = 100_000.0
 VIX_KILL_THRESHOLD: float = 35.0
 
 # AI agent loop detection
-AI_LOOP_WINDOW_SEC: int = 60              # rolling window for loop detection
-AI_LOOP_MAX_IDENTICAL_CALLS: int = 5      # 5 identical calls in window → trip
-AI_LOOP_MAX_CALLS_PER_MINUTE: int = 30   # total tool call rate limit
+AI_LOOP_WINDOW_SEC: int = 60  # rolling window for loop detection
+AI_LOOP_MAX_IDENTICAL_CALLS: int = 5  # 5 identical calls in window → trip
+AI_LOOP_MAX_CALLS_PER_MINUTE: int = 30  # total tool call rate limit
 
 # Read-only status tools that dashboard widgets poll continuously.
 # These are safe to exempt from loop detection — they never place orders
 # and are explicitly designed to be called repeatedly by monitoring UIs.
-LOOP_EXEMPT_TOOLS: frozenset[str] = frozenset({
-    "get_circuit_breaker_status",
-    "get_onboarding_status",
-    "get_latency_profile",
-    "get_system_heartbeat",
-    "get_live_bot_metrics",
-    "get_all_bot_metrics",
-    "get_bot_card_data",
-    "get_onyx_status",
-    "get_signal_conflict_stats",
-})
+LOOP_EXEMPT_TOOLS: frozenset[str] = frozenset(
+    {
+        "get_circuit_breaker_status",
+        "get_onboarding_status",
+        "get_latency_profile",
+        "get_system_heartbeat",
+        "get_live_bot_metrics",
+        "get_all_bot_metrics",
+        "get_bot_card_data",
+        "get_onyx_status",
+        "get_signal_conflict_stats",
+    }
+)
 
 # Circuit breaker cooldown periods
-CB_OPEN_COOLDOWN_SEC: int = 300          # 5 minutes before HALF_OPEN
+CB_OPEN_COOLDOWN_SEC: int = 300  # 5 minutes before HALF_OPEN
 CB_DAILY_LOSS_COOLDOWN_SEC: int = 86400  # 24 hours for daily loss limit
 CB_CONSECUTIVE_LOSS_COOLDOWN_SEC: int = 3600  # 1 hour for consecutive losses
 
@@ -91,6 +100,7 @@ _STATE_PATH = Path(os.environ.get("ALGOCHAINS_STATE_DIR", "state")) / "guardrail
 # ═══════════════════════════════════════════════════════════════════════════
 # DATA STRUCTURES
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class CBState(Enum):
     CLOSED = "CLOSED"
@@ -112,11 +122,13 @@ class GuardrailReason(Enum):
     STATE_FILE_CORRUPT = "state_file_corrupt"
 
 
-AUTO_EXPIRE_ON_RESTART_REASONS: frozenset[GuardrailReason] = frozenset({
-    GuardrailReason.AI_LOOP_DETECTED,
-    GuardrailReason.TOOL_RATE_LIMIT,
-    GuardrailReason.ORDER_VELOCITY,
-})
+AUTO_EXPIRE_ON_RESTART_REASONS: frozenset[GuardrailReason] = frozenset(
+    {
+        GuardrailReason.AI_LOOP_DETECTED,
+        GuardrailReason.TOOL_RATE_LIMIT,
+        GuardrailReason.ORDER_VELOCITY,
+    }
+)
 
 
 class GuardrailTripped(Exception):
@@ -144,9 +156,14 @@ class CBStatus:
 @dataclass
 class OrderVelocityTracker:
     """Sliding-window order velocity tracking. Thread-safe."""
+
     _lock: threading.Lock = field(default_factory=threading.Lock)
-    _minute_window: Deque[float] = field(default_factory=lambda: deque(maxlen=MAX_ORDERS_PER_MINUTE + 1))
-    _hour_window: Deque[float] = field(default_factory=lambda: deque(maxlen=MAX_ORDERS_PER_HOUR + 1))
+    _minute_window: Deque[float] = field(
+        default_factory=lambda: deque(maxlen=MAX_ORDERS_PER_MINUTE + 1)
+    )
+    _hour_window: Deque[float] = field(
+        default_factory=lambda: deque(maxlen=MAX_ORDERS_PER_HOUR + 1)
+    )
 
     def record_order(self) -> None:
         now = time.monotonic()
@@ -170,6 +187,7 @@ class OrderVelocityTracker:
 @dataclass
 class ToolCallTracker:
     """AI loop detection via call hashing + frequency analysis."""
+
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _call_log: Deque[tuple[float, str]] = field(
         default_factory=lambda: deque(maxlen=AI_LOOP_MAX_CALLS_PER_MINUTE * 2)
@@ -236,10 +254,14 @@ class ToolCallTracker:
             return {
                 "calls_last_60s": len(recent),
                 "unique_call_signatures_last_60s": unique_hashes,
-                "loop_risk": "HIGH" if len(recent) > 20 else "MEDIUM" if len(recent) > 10 else "LOW",
+                "loop_risk": "HIGH"
+                if len(recent) > 20
+                else "MEDIUM"
+                if len(recent) > 10
+                else "LOW",
                 "max_identical_any_call": max(
                     (sum(1 for t in times if t >= cutoff) for times in self._hash_counts.values()),
-                    default=0
+                    default=0,
                 ),
             }
 
@@ -247,6 +269,7 @@ class ToolCallTracker:
 # ═══════════════════════════════════════════════════════════════════════════
 # CORE GUARDRAIL ENGINE
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 class TradingGuardrails:
     """
@@ -285,7 +308,9 @@ class TradingGuardrails:
         if self._initialized:
             return
         self._initialized = True
-        self._state_lock = threading.RLock()  # Reentrant — _trip() calls _get_cb() while holding lock
+        self._state_lock = (
+            threading.RLock()
+        )  # Reentrant — _trip() calls _get_cb() while holding lock
         self._cb: Dict[str, CBStatus] = {}  # per-broker circuit breaker
         self._velocity = OrderVelocityTracker()
         self._loop_detector = ToolCallTracker()
@@ -294,7 +319,9 @@ class TradingGuardrails:
         logger.info(
             "TradingGuardrails V22 online — MAX_ORDERS_PER_MINUTE=%d "
             "MAX_DAILY_LOSS_USD=%.0f VIX_KILL=%.1f",
-            MAX_ORDERS_PER_MINUTE, MAX_DAILY_LOSS_USD, VIX_KILL_THRESHOLD,
+            MAX_ORDERS_PER_MINUTE,
+            MAX_DAILY_LOSS_USD,
+            VIX_KILL_THRESHOLD,
         )
 
     # ─── State persistence ───────────────────────────────────────────────
@@ -307,7 +334,9 @@ class TradingGuardrails:
                 changed = False
                 now_epoch = time.time()
                 for broker, data in raw.items():
-                    reason = GuardrailReason(data["trip_reason"]) if data.get("trip_reason") else None
+                    reason = (
+                        GuardrailReason(data["trip_reason"]) if data.get("trip_reason") else None
+                    )
                     state = CBState(data.get("state", "CLOSED"))
                     expires_at_epoch = float(data.get("expires_at_epoch") or 0.0)
                     legacy_monotonic_only = (
@@ -361,7 +390,8 @@ class TradingGuardrails:
                 "all broker circuit breakers reset to CLOSED. "
                 "If a broker CB was OPEN before restart, trading may resume before cooldown expires. "
                 "Verify broker state and re-trip manually if needed.",
-                _STATE_PATH, exc,
+                _STATE_PATH,
+                exc,
             )
             trip_message = (
                 f"STATE_FILE_CORRUPT: circuit breaker state could not be restored from "
@@ -399,8 +429,13 @@ class TradingGuardrails:
                 self._cb[broker] = CBStatus()
             return self._cb[broker]
 
-    def _trip(self, broker: str, reason: GuardrailReason, message: str,
-               cooldown_sec: int = CB_OPEN_COOLDOWN_SEC) -> None:
+    def _trip(
+        self,
+        broker: str,
+        reason: GuardrailReason,
+        message: str,
+        cooldown_sec: int = CB_OPEN_COOLDOWN_SEC,
+    ) -> None:
         with self._state_lock:
             cb = self._get_cb(broker)
             cb.state = CBState.OPEN
@@ -415,7 +450,10 @@ class TradingGuardrails:
         self._save_state()
         logger.critical(
             "CIRCUIT BREAKER TRIPPED broker=%s reason=%s cooldown=%ds | %s",
-            broker, reason.value, cooldown_sec, message,
+            broker,
+            reason.value,
+            cooldown_sec,
+            message,
         )
 
     def _check_cb_state(self, broker: str) -> None:
@@ -437,7 +475,9 @@ class TradingGuardrails:
                     cb.state = CBState.HALF_OPEN
                     cb.half_open_test_allowed = True
                 self._save_state()
-                logger.warning("Circuit breaker HALF_OPEN for broker=%s — test call allowed", broker)
+                logger.warning(
+                    "Circuit breaker HALF_OPEN for broker=%s — test call allowed", broker
+                )
             else:
                 remaining = int(cb.cooldown_sec - elapsed)
                 raise GuardrailTripped(
@@ -498,9 +538,12 @@ class TradingGuardrails:
         per_hour = self._velocity.orders_in_last_hour()
 
         if per_min >= MAX_ORDERS_PER_MINUTE:
-            self._trip(broker, GuardrailReason.ORDER_VELOCITY,
-                       f"Order velocity: {per_min}/min (limit {MAX_ORDERS_PER_MINUTE})",
-                       CB_OPEN_COOLDOWN_SEC)
+            self._trip(
+                broker,
+                GuardrailReason.ORDER_VELOCITY,
+                f"Order velocity: {per_min}/min (limit {MAX_ORDERS_PER_MINUTE})",
+                CB_OPEN_COOLDOWN_SEC,
+            )
             raise GuardrailTripped(
                 GuardrailReason.ORDER_VELOCITY,
                 f"Order velocity limit hit: {per_min} orders in last minute "
@@ -510,9 +553,12 @@ class TradingGuardrails:
             )
 
         if per_hour >= MAX_ORDERS_PER_HOUR:
-            self._trip(broker, GuardrailReason.ORDER_VELOCITY,
-                       f"Order velocity: {per_hour}/hour (limit {MAX_ORDERS_PER_HOUR})",
-                       CB_OPEN_COOLDOWN_SEC)
+            self._trip(
+                broker,
+                GuardrailReason.ORDER_VELOCITY,
+                f"Order velocity: {per_hour}/hour (limit {MAX_ORDERS_PER_HOUR})",
+                CB_OPEN_COOLDOWN_SEC,
+            )
             raise GuardrailTripped(
                 GuardrailReason.ORDER_VELOCITY,
                 f"Hourly order limit hit: {per_hour} orders in last hour "
@@ -520,11 +566,31 @@ class TradingGuardrails:
                 cooldown_sec=3600 - (self._velocity.orders_in_last_hour() * 60),
             )
 
-    def check_daily_loss(self, broker: str, current_daily_pnl: float) -> None:
-        if current_daily_pnl <= -MAX_DAILY_LOSS_USD:
-            self._trip(broker, GuardrailReason.DAILY_LOSS,
-                       f"Daily P&L: ${current_daily_pnl:.2f} (limit -${MAX_DAILY_LOSS_USD:.0f})",
-                       CB_DAILY_LOSS_COOLDOWN_SEC)
+    def check_daily_loss(
+        self,
+        broker: str,
+        current_daily_pnl: float,
+        symbol: str = "",
+        strategy_type: str | None = None,
+        bot_name: str | None = None,
+        is_entry: bool = True,
+    ) -> None:
+        decision = evaluate_daily_loss_proximity(
+            current_daily_pnl,
+            MAX_DAILY_LOSS_USD,
+            symbol=symbol,
+            strategy_type=strategy_type,
+            bot_name=bot_name,
+            is_entry=is_entry,
+        )
+
+        if decision.level == "hard_block":
+            self._trip(
+                broker,
+                GuardrailReason.DAILY_LOSS,
+                f"Daily P&L: ${current_daily_pnl:.2f} (limit -${MAX_DAILY_LOSS_USD:.0f})",
+                CB_DAILY_LOSS_COOLDOWN_SEC,
+            )
             raise GuardrailTripped(
                 GuardrailReason.DAILY_LOSS,
                 f"Daily loss limit reached: ${current_daily_pnl:.2f} "
@@ -532,24 +598,39 @@ class TradingGuardrails:
                 "No new orders until tomorrow's open.",
                 cooldown_sec=CB_DAILY_LOSS_COOLDOWN_SEC,
             )
+        if not decision.approved:
+            logger.warning("Daily-loss proximity guard blocked order: %s", decision.reason)
+            raise GuardrailTripped(
+                GuardrailReason.DAILY_LOSS,
+                decision.reason,
+                cooldown_sec=0,
+            )
+        if decision.warning:
+            logger.warning("Daily-loss proximity guard warning: %s", decision.reason)
 
     def check_drawdown(self, broker: str, current_drawdown_pct: float) -> None:
         if current_drawdown_pct >= MAX_DRAWDOWN_PCT:
-            self._trip(broker, GuardrailReason.DRAWDOWN,
-                       f"Drawdown: {current_drawdown_pct*100:.1f}% (limit {MAX_DRAWDOWN_PCT*100:.0f}%)",
-                       CB_OPEN_COOLDOWN_SEC)
+            self._trip(
+                broker,
+                GuardrailReason.DRAWDOWN,
+                f"Drawdown: {current_drawdown_pct * 100:.1f}% (limit {MAX_DRAWDOWN_PCT * 100:.0f}%)",
+                CB_OPEN_COOLDOWN_SEC,
+            )
             raise GuardrailTripped(
                 GuardrailReason.DRAWDOWN,
-                f"Max drawdown breached: {current_drawdown_pct*100:.1f}% "
-                f"(hard limit: {MAX_DRAWDOWN_PCT*100:.0f}%).",
+                f"Max drawdown breached: {current_drawdown_pct * 100:.1f}% "
+                f"(hard limit: {MAX_DRAWDOWN_PCT * 100:.0f}%).",
                 cooldown_sec=CB_OPEN_COOLDOWN_SEC,
             )
 
     def check_consecutive_losses(self, broker: str, consecutive_losses: int) -> None:
         if consecutive_losses >= MAX_CONSECUTIVE_LOSSES:
-            self._trip(broker, GuardrailReason.CONSECUTIVE_LOSSES,
-                       f"Consecutive losses: {consecutive_losses} (limit {MAX_CONSECUTIVE_LOSSES})",
-                       CB_CONSECUTIVE_LOSS_COOLDOWN_SEC)
+            self._trip(
+                broker,
+                GuardrailReason.CONSECUTIVE_LOSSES,
+                f"Consecutive losses: {consecutive_losses} (limit {MAX_CONSECUTIVE_LOSSES})",
+                CB_CONSECUTIVE_LOSS_COOLDOWN_SEC,
+            )
             raise GuardrailTripped(
                 GuardrailReason.CONSECUTIVE_LOSSES,
                 f"{consecutive_losses} consecutive losses detected "
@@ -608,6 +689,9 @@ class TradingGuardrails:
         consecutive_losses: int = 0,
         vix: float = 0.0,
         total_open_notional: float = 0.0,
+        strategy_type: str | None = None,
+        bot_name: str | None = None,
+        is_entry: bool = True,
     ) -> None:
         """
         Master pre-order gate. Raises GuardrailTripped if ANY hard limit is breached.
@@ -622,6 +706,9 @@ class TradingGuardrails:
             consecutive_losses: Count of losing trades in a row
             vix: Current VIX level (0.0 = skip check)
             total_open_notional: Total USD notional across all open positions
+            strategy_type: Strategy family for proximity policy (scalper, swing, etc.)
+            bot_name: Bot/strategy name used for the MNQ swing exemption
+            is_entry: True for new entries; False for exits/reductions
         """
         # 1. Circuit breaker state (fastest — blocks if already OPEN)
         self._check_cb_state(broker)
@@ -632,7 +719,14 @@ class TradingGuardrails:
 
         # 3. Financial loss limits
         if current_daily_pnl != 0:
-            self.check_daily_loss(broker, current_daily_pnl)
+            self.check_daily_loss(
+                broker,
+                current_daily_pnl,
+                symbol=symbol,
+                strategy_type=strategy_type,
+                bot_name=bot_name,
+                is_entry=is_entry,
+            )
         if current_drawdown_pct > 0:
             self.check_drawdown(broker, current_drawdown_pct)
         if consecutive_losses > 0:
@@ -648,8 +742,12 @@ class TradingGuardrails:
 
         logger.debug(
             "Guardrails PASSED broker=%s symbol=%s qty=%s pnl=%.0f drawdown=%.1f%% vix=%.1f",
-            broker, symbol, qty_contracts, current_daily_pnl,
-            current_drawdown_pct * 100, vix,
+            broker,
+            symbol,
+            qty_contracts,
+            current_daily_pnl,
+            current_drawdown_pct * 100,
+            vix,
         )
 
     def record_tool_call(self, tool_name: str, arguments: dict) -> None:
@@ -672,7 +770,9 @@ class TradingGuardrails:
             for broker, cb in self._cb.items():
                 if cb.expires_at_epoch > 0:
                     elapsed = max(0.0, cb.cooldown_sec - max(0.0, cb.expires_at_epoch - now_epoch))
-                    remaining = max(0, cb.expires_at_epoch - now_epoch) if cb.state == CBState.OPEN else 0
+                    remaining = (
+                        max(0, cb.expires_at_epoch - now_epoch) if cb.state == CBState.OPEN else 0
+                    )
                     persistence_basis = "wall_clock_epoch"
                 else:
                     elapsed = now - cb.tripped_at if cb.tripped_at > 0 else 0
@@ -698,6 +798,8 @@ class TradingGuardrails:
                 "max_orders_per_minute": MAX_ORDERS_PER_MINUTE,
                 "max_orders_per_hour": MAX_ORDERS_PER_HOUR,
                 "max_daily_loss_usd": MAX_DAILY_LOSS_USD,
+                "daily_loss_alert_pct": DAILY_LOSS_ALERT_PCT,
+                "scalper_daily_loss_block_pct": SCALPER_DAILY_LOSS_BLOCK_PCT,
                 "max_drawdown_pct": MAX_DRAWDOWN_PCT,
                 "max_consecutive_losses": MAX_CONSECUTIVE_LOSSES,
                 "max_position_size_contracts": MAX_POSITION_SIZE_CONTRACTS,
@@ -714,10 +816,7 @@ class TradingGuardrails:
             },
             "loop_detection": loop_stats,
             "broker_circuit_breakers": broker_statuses,
-            "all_clear": all(
-                cb.get("state") == "CLOSED"
-                for cb in broker_statuses.values()
-            ),
+            "all_clear": all(cb.get("state") == "CLOSED" for cb in broker_statuses.values()),
         }
 
     def manual_reset(self, broker: str, reason: str = "manual override by owner") -> dict:

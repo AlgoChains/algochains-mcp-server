@@ -1382,6 +1382,9 @@ TOOLS = [
                 "stop_price": {"type": "number", "description": "Stop price (for stop/stop-limit orders)"},
                 "trail_pct": {"type": "number", "description": "Trailing stop percentage"},
                 "time_in_force": {"type": "string", "default": "day"},
+                "strategy_type": {"type": "string", "description": "Optional strategy family for guardrails (e.g. scalper, swing). Missing context is treated as scalper-like near daily-loss limits."},
+                "bot_name": {"type": "string", "description": "Optional bot/strategy name for guardrail exemptions (e.g. MNQ_EMA_Swing)."},
+                "is_entry": {"type": "boolean", "default": True, "description": "Set false for exits/reductions so daily-loss proximity only blocks new entries."},
                 "client_trace_id": {"type": "string", "description": "Optional caller-provided trace/signal ID echoed in the response for join-key audit traceability (e.g. control-tower signal_id UUID)."},
             },
             "required": ["broker", "symbol", "side", "qty"],
@@ -3624,6 +3627,9 @@ TOOLS = [
              "confidence": {"type": "number", "description": "Model confidence 0-1"},
              "vix": {"type": "number", "description": "Current VIX (reads CURRENT_VIX env if omitted)"},
              "daily_pnl": {"type": "number", "description": "Today realized P&L (reads TODAY_REALIZED_PNL env if omitted)"},
+             "strategy_type": {"type": "string", "description": "Optional strategy family for daily-loss proximity policy (e.g. scalper, swing). Missing context is treated as scalper-like."},
+             "bot_name": {"type": "string", "description": "Optional bot/strategy name used to identify MNQ swing exemption."},
+             "is_entry": {"type": "boolean", "default": True, "description": "Set false for exits/reductions; proximity block only applies to new entries."},
              "gates": {"type": "array", "items": {"type": "string"}, "description": "Gate subset to run. Omit for all: vix, daily_loss, stoploss_guard, cooldown, confidence, risk_reward"},
          }, "required": ["symbol", "side"]},
          annotations=ANNOT_READ_SAFE),
@@ -5717,6 +5723,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     consecutive_losses=_consecutive_losses,
                     vix=_vix,
                     total_open_notional=_notional,
+                    strategy_type=arguments.get("strategy_type"),
+                    bot_name=arguments.get("bot_name"),
+                    is_entry=arguments.get("is_entry", True) is not False,
                 )
                 _g.record_order()  # Record velocity after gate passes
             except GuardrailTripped as _gt:
@@ -8550,6 +8559,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 confidence=float(args["confidence"]) if "confidence" in args else None,
                 vix=float(args["vix"]) if "vix" in args else None,
                 daily_pnl=float(args["daily_pnl"]) if "daily_pnl" in args else None,
+                strategy_type=str(args["strategy_type"]) if "strategy_type" in args else None,
+                bot_name=str(args["bot_name"]) if "bot_name" in args else None,
+                is_entry=args.get("is_entry", True) is not False,
                 gates=args.get("gates"),
             )
             return _text(out)
