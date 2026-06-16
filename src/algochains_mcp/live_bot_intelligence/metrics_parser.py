@@ -17,7 +17,7 @@ from typing import Optional
 
 # Resolve control tower path (works on Mac and Desktop WSL).
 # Uses the shared helper so ALGOCHAINS_CONTROL_TOWER env is honored everywhere.
-from algochains_mcp.bot_log_paths import bot_log_path
+from algochains_mcp.bot_log_paths import BOT_LOG_CANDIDATES, bot_log_path
 from algochains_mcp.paths import default_control_tower
 
 CONTROL_TOWER = default_control_tower()
@@ -68,6 +68,13 @@ BOT_META: dict[str, dict] = {
         "asset_class": "futures",
         "timeframe": "15min",
     },
+}
+
+# Back-compat export: canonical log paths (keys used for bot iteration).
+BOT_LOG_PATHS: dict[str, Path] = {
+    bot_id: CONTROL_TOWER / BOT_LOG_CANDIDATES[bot_id][0]
+    for bot_id in BOT_META
+    if bot_id in BOT_LOG_CANDIDATES
 }
 
 
