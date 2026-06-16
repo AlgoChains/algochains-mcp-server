@@ -748,13 +748,40 @@ class TradovateConnector(BrokerConnector):
                 bid_entry = entries.get("Bid", {})
                 ask_entry = entries.get("Offer", {})
                 trade_entry = entries.get("Trade", {})
+
+                bid = _first_number(bid_entry, ("price", "Price"))
+                ask = _first_number(ask_entry, ("price", "Price"))
+                trade = _first_number(trade_entry, ("price", "Price"))
+
+                # Tradovate demo quotes can be bid/ask-only between trade prints.
+                # A zero last price makes downstream safeguards treat REST as down,
+                # so derive a usable market price from live quote fields when safe.
+                positive_bid = bid if bid is not None and bid > 0 else None
+                positive_ask = ask if ask is not None and ask > 0 else None
+                positive_trade = trade if trade is not None and trade > 0 else None
+                if positive_trade is not None:
+                    last = positive_trade
+                elif positive_bid is not None and positive_ask is not None:
+                    last = (positive_bid + positive_ask) / 2.0
+                else:
+                    last = positive_bid if positive_bid is not None else positive_ask
+
+                if last is None:
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — REST quote had no positive price fields",
+                        broker="tradovate",
+                    )
+
+                size = _optional_float(trade_entry.get("size"))
                 return Quote(
                     symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
+                    bid=positive_bid or 0.0,
+                    ask=positive_ask or 0.0,
+                    last=last,
+                    volume=int(size) if size is not None and size > 0 else 0,
                 )
+        except BrokerQuoteError:
+            raise
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 
