@@ -71,3 +71,27 @@ def test_api_system_alias_wraps_heartbeat_payload():
         is_owner=True,
         caller_scope=None,
     )
+
+
+def test_api_bracket_integrity_wraps_guardian_status():
+    client = _client()
+    payload = {
+        "status": "OK",
+        "formatted_line": "[OK] Non-MNQ book flat — Tradovate verified (0 positions checked, LIVE)",
+        "broker_verified": True,
+        "checked_count": 0,
+    }
+    with patch("algochains_mcp.http_bridge.handle_mcp_request", new_callable=AsyncMock) as mock_handle:
+        mock_handle.return_value = payload
+        resp = client.get("/api/bracket-integrity", headers={"X-Api-Key": OWNER_KEY})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["summary"] == payload["formatted_line"]
+    assert data["broker_verified"] is True
+    mock_handle.assert_awaited_once_with(
+        "get_bracket_guardian_status",
+        {},
+        is_owner=True,
+        caller_scope=None,
+    )

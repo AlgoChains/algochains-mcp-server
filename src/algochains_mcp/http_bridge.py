@@ -1060,6 +1060,33 @@ def create_fastapi_app():
             raise HTTPException(status_code=401, detail="Owner API key required")
         return await handle_mcp_request("get_circuit_breaker_status", {}, is_owner=True, caller_scope=caller_scope)
 
+    @app_http.get("/api/bracket-integrity")
+    async def bracket_integrity_status(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """Live bracket integrity status for BRACKET-INTEGRITY-MONITOR watchdogs."""
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+        payload = await handle_mcp_request(
+            "get_bracket_guardian_status",
+            {},
+            is_owner=True,
+            caller_scope=caller_scope,
+        )
+        if isinstance(payload, dict):
+            payload.setdefault(
+                "summary",
+                payload.get("formatted_line") or payload.get("message"),
+            )
+        return payload
+
     # ── /v1/agent/* — multi-agent status API (owner + subscriber access) ───────
     # These endpoints are purpose-built for external OpenClaw skill agents that
     # need live AlgoChains system state. They read state files directly (no MCP
