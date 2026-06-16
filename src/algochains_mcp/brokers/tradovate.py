@@ -126,6 +126,127 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _positive_number(value: object) -> float | None:
+    parsed = _optional_float(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _entry_price(entry: object) -> float | None:
+    """Extract a positive price from Tradovate quote entry variants."""
+    if isinstance(entry, dict):
+        return _first_positive_number(entry, ("price", "Price", "value", "Value", "p"))
+    return _positive_number(entry)
+
+
+def _entry_size(entry: object) -> int:
+    if not isinstance(entry, dict):
+        return 0
+    size = _first_number(entry, ("size", "Size", "volume", "Volume", "qty", "Qty"))
+    return int(size) if size is not None and size > 0 else 0
+
+
+def _first_positive_number(row: dict, keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        value = _positive_number(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _parse_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _quote_rows(payload: object) -> list[dict]:
+    """Return quote-like dictionaries from known Tradovate REST/MD envelopes."""
+    rows: list[dict] = []
+    if isinstance(payload, list):
+        rows.extend(row for row in payload if isinstance(row, dict))
+        return rows
+    if not isinstance(payload, dict):
+        return rows
+
+    if isinstance(payload.get("entries"), dict):
+        rows.append(payload)
+
+    for key in ("quotes", "items", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            rows.extend(row for row in value if isinstance(row, dict))
+        elif isinstance(value, dict) and isinstance(value.get("entries"), dict):
+            rows.append(value)
+
+    nested = payload.get("d")
+    if isinstance(nested, dict):
+        rows.extend(_quote_rows(nested))
+    return rows
+
+
+def _contract_id_matches(row: dict, target_contract_id: object) -> bool:
+    if not target_contract_id:
+        return True
+    row_contract_id = row.get("contractId") or row.get("contractID")
+    if not row_contract_id:
+        return True
+    return str(row_contract_id) == str(target_contract_id)
+
+
+def _quote_from_payload(payload: object, symbol: str, contract: dict) -> Quote | None:
+    target_contract_id = contract.get("id") if isinstance(contract, dict) else None
+
+    for row in _quote_rows(payload):
+        if not _contract_id_matches(row, target_contract_id):
+            continue
+        entries = row.get("entries")
+        if not isinstance(entries, dict):
+            continue
+
+        bid = _entry_price(entries.get("Bid") or entries.get("bid"))
+        ask = _entry_price(
+            entries.get("Offer")
+            or entries.get("Ask")
+            or entries.get("offer")
+            or entries.get("ask")
+        )
+        trade_entry = (
+            entries.get("Trade")
+            or entries.get("Last")
+            or entries.get("trade")
+            or entries.get("last")
+        )
+        last = _entry_price(trade_entry)
+        if last is None and bid is not None and ask is not None:
+            last = (bid + ask) / 2
+
+        live_prices = [price for price in (bid, ask, last) if price is not None]
+        if not live_prices:
+            continue
+
+        timestamp = _parse_datetime(
+            row.get("timestamp")
+            or row.get("time")
+            or (trade_entry.get("timestamp") if isinstance(trade_entry, dict) else None)
+            or (trade_entry.get("time") if isinstance(trade_entry, dict) else None)
+        )
+        return Quote(
+            symbol=symbol,
+            bid=bid or 0.0,
+            ask=ask or 0.0,
+            last=last or 0.0,
+            volume=_entry_size(trade_entry),
+            timestamp=timestamp,
+        )
+
+    return None
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -743,18 +864,9 @@ class TradovateConnector(BrokerConnector):
             )
         try:
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
-            if isinstance(quotes, dict):
-                entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
-                return Quote(
-                    symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
-                )
+            quote = _quote_from_payload(quotes, symbol, contract)
+            if quote:
+                return quote
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 

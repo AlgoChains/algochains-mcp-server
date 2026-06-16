@@ -263,3 +263,111 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_accepts_nested_md_quote_envelope():
+    """Tradovate live MD quotes can arrive wrapped in d.quotes[]."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"id": 123, "name": "MNQM6"}
+
+    async def _mock_get(path, params=None):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {
+            "e": "md",
+            "d": {
+                "quotes": [
+                    {
+                        "contractId": 999,
+                        "entries": {
+                            "Bid": {"price": 1.0},
+                            "Offer": {"price": 2.0},
+                            "Trade": {"price": 1.5},
+                        },
+                    },
+                    {
+                        "contractId": 123,
+                        "timestamp": "2026-06-16T12:30:11Z",
+                        "entries": {
+                            "Bid": {"price": "19750.25"},
+                            "Offer": {"price": "19750.75"},
+                            "Trade": {"price": "19750.50", "size": "7"},
+                        },
+                    },
+                ]
+            },
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    quote = asyncio.run(conn.get_quote("MNQ"))
+    assert quote.bid == 19750.25
+    assert quote.ask == 19750.75
+    assert quote.last == 19750.50
+    assert quote.volume == 7
+    assert quote.timestamp is not None
+
+
+def test_get_quote_derives_last_from_bid_ask_midpoint():
+    """Bid/offer-only Tradovate quotes are live enough for safeguard pricing."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"id": 321, "name": "MNQM6"}
+
+    async def _mock_get(path, params=None):
+        return {
+            "quotes": [
+                {
+                    "contractID": 321,
+                    "entries": {
+                        "Bid": {"price": 19751.0},
+                        "Offer": {"price": 19752.0},
+                    },
+                }
+            ]
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    quote = asyncio.run(conn.get_quote("MNQ"))
+    assert quote.bid == 19751.0
+    assert quote.ask == 19752.0
+    assert quote.last == 19751.5
+
+
+def test_get_quote_fails_closed_without_positive_live_price():
+    """Malformed/empty quote envelopes must still fail closed."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"id": 123, "name": "MNQM6"}
+
+    async def _mock_get(path, params=None):
+        return {
+            "d": {
+                "quotes": [
+                    {
+                        "contractId": 123,
+                        "entries": {
+                            "Bid": {"price": 0},
+                            "Offer": {"price": None},
+                            "Trade": {"price": ""},
+                        },
+                    }
+                ]
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    with pytest.raises(BrokerQuoteError, match="Quote unavailable"):
+        asyncio.run(conn.get_quote("MNQ"))
