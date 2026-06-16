@@ -18,6 +18,7 @@ from typing import Optional
 # Resolve control tower path (works on Mac and Desktop WSL).
 # Uses the shared helper so ALGOCHAINS_CONTROL_TOWER env is honored everywhere.
 from algochains_mcp.paths import default_control_tower
+from .log_paths import BOT_LOG_CANDIDATES, resolve_bot_log_path
 
 CONTROL_TOWER = default_control_tower()
 try:
@@ -27,11 +28,9 @@ except Exception:
     pass
 
 BOT_LOG_PATHS: dict[str, Path] = {
-    "mnq": CONTROL_TOWER / "logs" / "futures_bot_live.log",
-    "cl":  CONTROL_TOWER / "logs" / "cl_futures_live.log",
-    # mes_swing.log and nq_swing.log are stale backup files — use the live paths
-    "mes": CONTROL_TOWER / "logs" / "mes_swing_live.log",
-    "nq":  CONTROL_TOWER / "logs" / "nq_swing_live.log",
+    bot_id: resolve_bot_log_path(CONTROL_TOWER, bot_id) or CONTROL_TOWER / paths[0]
+    for bot_id, paths in BOT_LOG_CANDIDATES.items()
+    if bot_id != "kalshi"
 }
 
 BOT_META: dict[str, dict] = {
@@ -206,8 +205,14 @@ def _parse_errors(lines: list[str]) -> tuple[str, int]:
     one_hour_ago = time.time() - 3600
     error_count = 0
     last_error = ""
+    error_pattern = re.compile(
+        r"\bERROR\b|\bException\b|\bTraceback\b|\b401\b|\b422\b|"
+        r"T4[-_\s]?FAIL[-_\s]?CLOSED|No live market price|"
+        r"REST price fetch failed|md_quote_feed unavailable",
+        re.IGNORECASE,
+    )
     for line in lines:
-        if re.search(r'\bERROR\b|\bException\b|\bTraceback\b|\b401\b|\b422\b', line, re.IGNORECASE):
+        if error_pattern.search(line):
             line_ts = _line_epoch_seconds(line)
             if line_ts is not None and line_ts < one_hour_ago:
                 continue
@@ -340,7 +345,7 @@ def parse_bot_metrics_from_supabase(bot_id: str, sb_client=None) -> BotMetrics |
     metrics.avg_fill_deviation_ticks = _avg("fill_deviation_ticks")
     metrics.avg_exit_slippage_ticks = _avg("exit_slippage_ticks")
     try:
-        log_path = BOT_LOG_PATHS.get(bot_id)
+        log_path = resolve_bot_log_path(CONTROL_TOWER, bot_id)
         if log_path and log_path.exists():
             metrics.last_log_age_sec = time.time() - log_path.stat().st_mtime
             metrics.is_running = metrics.last_log_age_sec < 300
@@ -355,7 +360,7 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
     """
     bot_id = bot_id.lower()
     meta = BOT_META.get(bot_id, {})
-    log_path = BOT_LOG_PATHS.get(bot_id)
+    log_path = resolve_bot_log_path(CONTROL_TOWER, bot_id)
 
     supabase_metrics = parse_bot_metrics_from_supabase(bot_id)
     if supabase_metrics is not None:

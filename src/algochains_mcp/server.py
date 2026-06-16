@@ -5957,10 +5957,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_bot_health":
         # Unified health snapshot across all live bots. Pure filesystem + ps read.
-        import os as _os
+        import re as _re
         import subprocess as _subp
         import time as _time
+        from collections import deque as _deque
         from pathlib import Path as _Path
+        from .live_bot_intelligence.log_paths import resolve_bot_log_path
 
         bot_filter = (arguments.get("bot") or "all").lower()
         control_tower = _Path(_default_control_tower())
@@ -5978,10 +5980,16 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         now = _time.time()
         results = {}
+        error_pattern = _re.compile(
+            r"\bERROR\b|\bException\b|\bTraceback\b|\b401\b|\b422\b|"
+            r"T4[-_\s]?FAIL[-_\s]?CLOSED|No live market price|"
+            r"REST price fetch failed|md_quote_feed unavailable",
+            _re.IGNORECASE,
+        )
         for key, meta in bots.items():
             if bot_filter not in ("all", key):
                 continue
-            log_path = control_tower / meta["log"]
+            log_path = resolve_bot_log_path(control_tower, key) or control_tower / meta["log"]
             running = meta["script"] in ps_out
             last_log_mtime = None
             error_count = 0
@@ -5989,20 +5997,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             if log_path.exists():
                 try:
                     last_log_mtime = int(now - log_path.stat().st_mtime)
-                    # Read last 100 lines with tail for speed
-                    tail = _subp.run(
-                        ["tail", "-n", "100", str(log_path)],
-                        capture_output=True, text=True, timeout=3,
-                    ).stdout
+                    with log_path.open("r", encoding="utf-8", errors="replace") as _log_handle:
+                        tail_lines = list(_deque(_log_handle, maxlen=100))
                     error_count = sum(
-                        1 for ln in tail.splitlines()
-                        if any(tok in ln for tok in ("ERROR", "Exception", "Traceback", " 401", " 422"))
+                        1 for ln in tail_lines
+                        if error_pattern.search(ln)
                     )
-                    tail_preview = tail.splitlines()[-1][:200] if tail.strip() else ""
+                    tail_preview = tail_lines[-1].strip()[:200] if tail_lines else ""
                 except Exception:
                     pass
             results[key] = {
                 "running": running,
+                "log_path": str(log_path),
                 "log_age_seconds": last_log_mtime,
                 "error_count_last_100": error_count,
                 "last_line_preview": tail_preview,

@@ -28,6 +28,7 @@ from typing import Any, Optional
 # the shared legacy list (Mac, /home/trrey, WSL). Behavior on the MacBook is
 # unchanged: env typically unset → first existing legacy path = Mac repo.
 from algochains_mcp.paths import default_control_tower
+from .log_paths import resolve_bot_log_path
 
 CONTROL_TOWER = default_control_tower()
 
@@ -257,7 +258,7 @@ def get_bracket_status(bot_id: str) -> dict:
         return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(BOT_MAP)}"}
 
     cfg = BOT_MAP[bot_id]
-    log_path = CONTROL_TOWER / cfg["log"]
+    log_path = resolve_bot_log_path(CONTROL_TOWER, bot_id) or CONTROL_TOWER / cfg["log"]
 
     if not log_path.exists():
         return {"bot": bot_id, "mode": "unknown", "detail": "Log file not found"}
@@ -312,7 +313,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         return {"error": f"Unknown bot_id. Valid: {list(BOT_MAP)}"}
 
     cfg = BOT_MAP[bot_id]
-    log_path = CONTROL_TOWER / cfg["log"]
+    log_path = resolve_bot_log_path(CONTROL_TOWER, bot_id) or CONTROL_TOWER / cfg["log"]
     detail = None
 
     try:

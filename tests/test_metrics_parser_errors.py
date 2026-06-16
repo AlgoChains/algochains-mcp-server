@@ -50,3 +50,18 @@ def test_parse_errors_counts_untimestamped_errors_for_legacy_logs(monkeypatch):
 
     assert "legacy bot log" in last_error
     assert error_count == 1
+
+
+def test_parse_errors_counts_t4_fail_closed_price_feed_alert(monkeypatch):
+    monkeypatch.setattr(metrics_parser.time, "time", _fixed_now)
+
+    last_error, error_count = metrics_parser._parse_errors(
+        [
+            "heartbeat ok",
+            "T4-FAIL-CLOSED - MNQ No live market price: REST price fetch failed "
+            "AND md_quote_feed unavailable.",
+        ]
+    )
+
+    assert "T4-FAIL-CLOSED" in last_error
+    assert error_count == 1
