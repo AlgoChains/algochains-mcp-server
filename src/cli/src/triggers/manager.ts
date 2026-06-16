@@ -13,7 +13,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
-import { TRIGGERS_FILE } from "../config.js";
+import { ensureConfigDir, TRIGGERS_FILE } from "../config.js";
 import { getTier, isKillSwitchActive } from "../trust.js";
 
 export type TriggerType = "cron" | "watch" | "webhook" | "datetime";
@@ -31,7 +31,16 @@ export interface Trigger {
   last_run?: string;
   run_count: number;
   last_error?: string;
+  cron_retry_count?: number;
+  next_retry_at?: string;
 }
+
+const DEFAULT_CRON_RETRY_BASE_DELAY_MS = 30_000;
+const DEFAULT_CRON_RETRY_MAX_DELAY_MS = 10 * 60_000;
+const DEFAULT_CRON_RETRY_POLL_INTERVAL_MS = 5_000;
+
+let cronRetryTimer: ReturnType<typeof setInterval> | undefined;
+const runningCronRetries = new Set<string>();
 
 // ── Persistence ────────────────────────────────────────────────────────────────
 function loadTriggers(): Trigger[] {
@@ -40,7 +49,35 @@ function loadTriggers(): Trigger[] {
 }
 
 function saveTriggers(triggers: Trigger[]): void {
+  ensureConfigDir();
   writeFileSync(TRIGGERS_FILE, JSON.stringify(triggers, null, 2), { mode: 0o600 });
+}
+
+function envPositiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function calculateCronRetryDelayMs(
+  retryCount: number,
+  baseDelayMs = envPositiveInt("ALGOCHAINS_CRON_RETRY_BASE_MS", DEFAULT_CRON_RETRY_BASE_DELAY_MS),
+  maxDelayMs = envPositiveInt("ALGOCHAINS_CRON_RETRY_MAX_MS", DEFAULT_CRON_RETRY_MAX_DELAY_MS),
+): number {
+  const normalizedRetryCount = Math.max(1, Math.floor(retryCount));
+  const exponent = Math.min(normalizedRetryCount - 1, 30);
+  return Math.min(baseDelayMs * (2 ** exponent), maxDelayMs);
+}
+
+function getCronRetryPollIntervalMs(): number {
+  return envPositiveInt("ALGOCHAINS_CRON_RETRY_POLL_MS", DEFAULT_CRON_RETRY_POLL_INTERVAL_MS);
+}
+
+function isRetryDue(trigger: Trigger, nowMs: number): boolean {
+  if (trigger.type !== "cron" || !trigger.next_retry_at) return false;
+  const retryAtMs = Date.parse(trigger.next_retry_at);
+  return Number.isFinite(retryAtMs) && retryAtMs <= nowMs;
 }
 
 // ── Add ────────────────────────────────────────────────────────────────────────
@@ -106,25 +143,72 @@ export async function executeTrigger(trigger: Trigger): Promise<void> {
   const triggers = loadTriggers();
   const idx = triggers.findIndex(t => t.id === trigger.id);
 
+  const currentTrigger = idx >= 0 ? triggers[idx] : trigger;
+
   try {
     // Execute the CLI command (self-invocation)
     const cliCmd = `${process.argv[0]} ${process.argv[1]} ${trigger.command}`;
     execSync(cliCmd, { stdio: "inherit", timeout: 120_000 });
 
     if (idx >= 0) {
-      triggers[idx].last_run = new Date().toISOString();
+      const now = new Date().toISOString();
+      triggers[idx].last_run = now;
       triggers[idx].run_count = (triggers[idx].run_count ?? 0) + 1;
       delete triggers[idx].last_error;
+      delete triggers[idx].cron_retry_count;
+      delete triggers[idx].next_retry_at;
       saveTriggers(triggers);
     }
   } catch (e) {
     if (idx >= 0) {
+      const now = new Date();
       triggers[idx].last_error = String(e);
-      triggers[idx].last_run = new Date().toISOString();
+      triggers[idx].last_run = now.toISOString();
+      if (currentTrigger.type === "cron") {
+        const retryCount = (currentTrigger.cron_retry_count ?? 0) + 1;
+        triggers[idx].cron_retry_count = retryCount;
+        triggers[idx].next_retry_at = new Date(
+          now.getTime() + calculateCronRetryDelayMs(retryCount),
+        ).toISOString();
+      }
       saveTriggers(triggers);
     }
     throw e;
   }
+}
+
+export async function runDueCronRetries(now = new Date()): Promise<void> {
+  const dueTriggers = loadTriggers()
+    .filter(t => t.enabled && isRetryDue(t, now.getTime()));
+
+  for (const trigger of dueTriggers) {
+    if (runningCronRetries.has(trigger.id)) continue;
+    runningCronRetries.add(trigger.id);
+    try {
+      console.log(
+        `[trigger:${trigger.id}] Retrying failed cron (${trigger.cron_retry_count ?? 0} failure(s)): ${trigger.command}`,
+      );
+      await executeTrigger(trigger);
+    } catch (e) {
+      console.error(`[trigger:${trigger.id}] Retry error: ${e}`);
+    } finally {
+      runningCronRetries.delete(trigger.id);
+    }
+  }
+}
+
+export function startCronRetryLoop(intervalMs = getCronRetryPollIntervalMs()): void {
+  if (cronRetryTimer) return;
+  cronRetryTimer = setInterval(() => {
+    void runDueCronRetries();
+  }, intervalMs);
+  void runDueCronRetries();
+}
+
+export function stopCronRetryLoop(): void {
+  if (!cronRetryTimer) return;
+  clearInterval(cronRetryTimer);
+  cronRetryTimer = undefined;
 }
 
 // ── Start all triggers (called by daemon) ─────────────────────────────────────
@@ -133,6 +217,7 @@ export async function startTriggerLoop(): Promise<void> {
   const { watch } = await import("chokidar");
 
   const triggers = loadTriggers().filter(t => t.enabled);
+  startCronRetryLoop();
 
   for (const trigger of triggers) {
     switch (trigger.type) {
@@ -203,6 +288,7 @@ export function printTriggerList(): void {
     console.log(`          command:  ${t.command}`);
     if (t.last_run) console.log(`          last run: ${t.last_run} (×${t.run_count})`);
     if (t.last_error) console.log(`          error:    \x1b[31m${t.last_error.slice(0, 80)}\x1b[0m`);
+    if (t.next_retry_at) console.log(`          retry:    #${t.cron_retry_count ?? 0} at ${t.next_retry_at}`);
     console.log("");
   }
 }

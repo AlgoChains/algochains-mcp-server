@@ -34,6 +34,7 @@ import {
   loadConfig,
 } from "../config.js";
 import { createMcpClient } from "../mcp_client.js";
+import { startTriggerLoop, stopCronRetryLoop } from "../triggers/manager.js";
 
 const LAUNCHD_PLIST_PATH = join(homedir(), "Library", "LaunchAgents", "com.algochains.cli-daemon.plist");
 
@@ -168,8 +169,15 @@ export async function startDaemonServer(): Promise<void> {
   setTimeout(pollBotHealth, 2_000);
   setTimeout(pollRegime, 5_000);
 
+  try {
+    await startTriggerLoop();
+    log("Trigger loop started");
+  } catch (e) {
+    log(`Trigger loop failed to start: ${e}`);
+  }
+
   // Start server
-  serve({ fetch: app.fetch, port }, (info) => {
+  serve({ fetch: app.fetch, port }, (info: { port: number }) => {
     log(`Daemon listening on http://localhost:${info.port}`);
     log(`SSE stream: http://localhost:${info.port}/api/stream`);
   });
@@ -180,6 +188,7 @@ export async function startDaemonServer(): Promise<void> {
       log(`Daemon shutting down (${sig})`);
       clearInterval(botHealthInterval);
       clearInterval(regimeInterval);
+      stopCronRetryLoop();
       for (const f of [DAEMON_PID_FILE, DAEMON_PORT_FILE, DAEMON_TOKEN_FILE]) {
         try { require("fs").unlinkSync(f); } catch { /* ignore */ }
       }
