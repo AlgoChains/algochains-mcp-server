@@ -1343,7 +1343,7 @@ def create_fastapi_app():
                 # Emit log lines that appeared since last poll
                 def _poll_logs():
                     new_events = []
-                    control_tower = _PathGlobal(_default_control_tower())
+                    control_tower = _PathGlobal(_CT)
                     for bot in LOG_BOTS:
                         log_resolution = resolve_bot_log_path(bot, control_tower)
                         p = log_resolution.path
