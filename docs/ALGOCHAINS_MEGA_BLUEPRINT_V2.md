@@ -1,4 +1,4 @@
-# ALGOCHAINS MEGA BLUEPRINT V2 — THE DEFINITIVE SYSTEM PROMPT
+# ALGOCHAINS MEGA BLUEPRINT V2 — THE DEFINITIVE OPERATOR CONTEXT
 
 > **Purpose:** Single source of truth. Paste to any AI coding agent. Complete system context, architecture, roadmap V10→V18, and the genius-level innovations that separate AlgoChains from every other trading platform.
 >

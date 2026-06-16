@@ -1,7 +1,7 @@
-# AlgoChains MCP Server V22 — System Mega Prompt
+# AlgoChains MCP Server V22 — Operator Context
 **For:** AI agents (Claude, Cursor, Windsurf, Codex) operating inside the AlgoChains ecosystem  
 **Date:** 2026-04-06 | **Version:** V22.2  
-**Classification:** Operator-level system prompt — full context, no redaction
+**Classification:** Operator-level context — complete architecture and safety guidance
 
 ---
 
