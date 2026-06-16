@@ -1016,7 +1016,7 @@ def create_fastapi_app():
         authorization: str | None = Header(default=None),
         x_algochains_caller_scope: str | None = Header(default=None),
     ):
-        """Get system heartbeat. Requires owner API key — reveals infrastructure topology."""
+        """Get system heartbeat. Requires owner API key; returns owner-scoped topology status."""
         key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
             x_api_key,
             authorization,
