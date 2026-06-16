@@ -21,8 +21,6 @@ const prefetchPromises: Promise<unknown>[] = [
 
 // ── Heavy imports ──────────────────────────────────────────────────────────────
 import { Command } from "commander";
-import { render } from "ink";
-import React from "react";
 
 import { runDoctorCheck, printDoctorResults } from "./commands/doctor.js";
 import { authSet, authList, authRotate, authClear, authTest } from "./commands/auth_cmd.js";
@@ -40,7 +38,6 @@ import { readAuditLog, appendAuditLog } from "./trust.js";
 import { loadConfig, writeDefaultConfig } from "./config.js";
 import { createMcpClient, extractText } from "./mcp_client.js";
 import { checkTrustGate, getTier, isKillSwitchActive } from "./trust.js";
-import { ReplApp } from "./repl/App.js";
 
 const VERSION = "22.5.0";
 
@@ -57,9 +54,13 @@ const program = new Command("algochains")
 
 // ── Interactive REPL (no command = launch REPL) ────────────────────────────────
 program.action(async (opts: Record<string, unknown>) => {
-  const { render: inkRender } = await import("ink");
+  const [{ render: inkRender }, React, { ReplApp }] = await Promise.all([
+    import("ink"),
+    import("react"),
+    import("./repl/App.js"),
+  ]);
   await prefetchPromises;
-  inkRender(React.createElement(ReplApp, { profileName: opts.profile as string | undefined }));
+  inkRender(React.default.createElement(ReplApp, { profileName: opts.profile as string | undefined }));
 });
 
 // ── doctor ─────────────────────────────────────────────────────────────────────
