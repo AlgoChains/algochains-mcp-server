@@ -126,6 +126,89 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _positive_price(value: object) -> float | None:
+    parsed = _optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _quote_snapshots(payload: Any, contract_id: int | None = None) -> list[dict]:
+    """Return quote snapshots from either REST-style or md event-style payloads."""
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        if isinstance(payload.get("entries"), dict):
+            candidates = [payload]
+        elif isinstance(payload.get("quotes"), list):
+            candidates = payload["quotes"]
+        elif isinstance(payload.get("d"), dict):
+            candidates = _quote_snapshots(payload["d"], contract_id)
+        elif isinstance(payload.get("quote"), dict):
+            candidates = [payload["quote"]]
+        else:
+            candidates = []
+    else:
+        candidates = []
+
+    snapshots = [
+        item
+        for item in candidates
+        if isinstance(item, dict) and isinstance(item.get("entries"), dict)
+    ]
+    if contract_id is None:
+        return snapshots
+
+    matching = [item for item in snapshots if item.get("contractId") == contract_id]
+    return matching or snapshots
+
+
+def _quote_from_snapshot(symbol: str, snapshot: dict) -> Quote | None:
+    entries = snapshot.get("entries")
+    if not isinstance(entries, dict):
+        return None
+
+    bid_entry = entries.get("Bid") if isinstance(entries.get("Bid"), dict) else {}
+    ask_entry = entries.get("Offer") if isinstance(entries.get("Offer"), dict) else {}
+    trade_entry = entries.get("Trade") if isinstance(entries.get("Trade"), dict) else {}
+    volume_entry = (
+        entries.get("TotalTradeVolume")
+        if isinstance(entries.get("TotalTradeVolume"), dict)
+        else {}
+    )
+
+    bid = _positive_price(bid_entry.get("price"))
+    ask = _positive_price(ask_entry.get("price"))
+    last = _positive_price(trade_entry.get("price"))
+    if last is None and bid is not None and ask is not None:
+        last = (bid + ask) / 2
+    if last is None:
+        last = bid or ask
+    if last is None:
+        return None
+
+    volume = _optional_float(trade_entry.get("size"))
+    if volume is None:
+        volume = _optional_float(volume_entry.get("size"))
+
+    timestamp = None
+    timestamp_raw = snapshot.get("timestamp")
+    if isinstance(timestamp_raw, str) and timestamp_raw:
+        try:
+            timestamp = datetime.fromisoformat(timestamp_raw.replace("Z", "+00:00"))
+        except ValueError:
+            timestamp = None
+
+    return Quote(
+        symbol=symbol,
+        bid=bid or 0.0,
+        ask=ask or 0.0,
+        last=last,
+        volume=int(volume or 0),
+        timestamp=timestamp,
+    )
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -743,25 +826,19 @@ class TradovateConnector(BrokerConnector):
             )
         try:
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
-            if isinstance(quotes, dict):
-                entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
-                return Quote(
-                    symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
-                )
+            contract_id_raw = contract.get("id")
+            contract_id = None
+            if isinstance(contract_id_raw, (int, str)) and str(contract_id_raw).isdigit():
+                contract_id = int(contract_id_raw)
+            for snapshot in _quote_snapshots(quotes, contract_id):
+                quote = _quote_from_snapshot(symbol, snapshot)
+                if quote is not None:
+                    return quote
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 
-        # Return None-sentinel prices so callers can distinguish "API error"
-        # from "market genuinely at zero". Callers must check for float("nan").
         raise BrokerQuoteError(
-            f"Quote unavailable for {symbol} — API returned no data",
+            f"Quote unavailable for {symbol} — API returned no live price",
             broker="tradovate",
         )
 
