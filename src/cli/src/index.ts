@@ -35,7 +35,7 @@ import { daemonStart, daemonStop, daemonStatus, daemonLogs, daemonInstall, daemo
 import { killswitchOn, killswitchOff, killswitchStatus } from "./commands/killswitch.js";
 import { generateBashCompletion, generateFishCompletion, generatePowershellCompletion, generateZshCompletion } from "./commands/completion.js";
 import { installPlugin, listPlugins, removePlugin, printPluginList } from "./plugins/manager.js";
-import { addTrigger, listTriggers, setTriggerEnabled, removeTrigger, printTriggerList } from "./triggers/manager.js";
+import { addTrigger, listTriggers, setTriggerEnabled, removeTrigger, printTriggerList, retryFailedTriggers, printCronRetryResult } from "./triggers/manager.js";
 import { readAuditLog, appendAuditLog } from "./trust.js";
 import { loadConfig, writeDefaultConfig } from "./config.js";
 import { createMcpClient, extractText } from "./mcp_client.js";
@@ -321,6 +321,15 @@ triggerCmd.command("enable <id>")
 triggerCmd.command("remove <id>")
   .description("Remove a trigger by ID")
   .action((id) => { removeTrigger(id); console.log(`  ✓ Trigger ${id} removed`); });
+
+triggerCmd.command("retry")
+  .description("Retry cron triggers that failed on connection/recovery errors (exponential backoff)")
+  .option("--json", "Emit machine-readable retry summary")
+  .action(async (opts: { json?: boolean }) => {
+    const result = await retryFailedTriggers();
+    printCronRetryResult(result, opts.json ?? false);
+    process.exit(result.failed > 0 ? 1 : 0);
+  });
 
 // ── config ─────────────────────────────────────────────────────────────────────
 const configCmd = program.command("config").description("CLI configuration management");

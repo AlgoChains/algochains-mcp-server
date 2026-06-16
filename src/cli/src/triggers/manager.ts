@@ -15,6 +15,13 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { TRIGGERS_FILE } from "../config.js";
 import { getTier, isKillSwitchActive } from "../trust.js";
+import {
+  computeNextRetryAt,
+  formatCronRetryOutput,
+  isRecoverableConnectionError,
+  MAX_CRON_RETRY_ATTEMPTS,
+  type CronRetryResult,
+} from "./retry.js";
 
 export type TriggerType = "cron" | "watch" | "webhook" | "datetime";
 
@@ -31,6 +38,10 @@ export interface Trigger {
   last_run?: string;
   run_count: number;
   last_error?: string;
+  /** Set after a connection/recovery failure; cleared on success. */
+  pending_retry?: boolean;
+  retry_count?: number;
+  next_retry_at?: string;
 }
 
 // ── Persistence ────────────────────────────────────────────────────────────────
@@ -41,6 +52,40 @@ function loadTriggers(): Trigger[] {
 
 function saveTriggers(triggers: Trigger[]): void {
   writeFileSync(TRIGGERS_FILE, JSON.stringify(triggers, null, 2), { mode: 0o600 });
+}
+
+function clearRetryState(trigger: Trigger): void {
+  delete trigger.pending_retry;
+  delete trigger.retry_count;
+  delete trigger.next_retry_at;
+}
+
+function scheduleConnectionRetry(trigger: Trigger, errorMessage: string): void {
+  if (!isRecoverableConnectionError(errorMessage)) {
+    clearRetryState(trigger);
+    return;
+  }
+  const retryCount = (trigger.retry_count ?? 0) + 1;
+  if (retryCount > MAX_CRON_RETRY_ATTEMPTS) {
+    trigger.pending_retry = false;
+    trigger.retry_count = retryCount;
+    delete trigger.next_retry_at;
+    return;
+  }
+  trigger.pending_retry = true;
+  trigger.retry_count = retryCount;
+  trigger.next_retry_at = computeNextRetryAt(retryCount);
+}
+
+function normalizeLegacyRetryQueue(triggers: Trigger[]): void {
+  const now = Date.now();
+  for (const trigger of triggers) {
+    if (!trigger.enabled || trigger.pending_retry || !trigger.last_error) continue;
+    if (!isRecoverableConnectionError(trigger.last_error)) continue;
+    trigger.pending_retry = true;
+    trigger.retry_count = trigger.retry_count ?? 1;
+    trigger.next_retry_at = trigger.next_retry_at ?? new Date(now).toISOString();
+  }
 }
 
 // ── Add ────────────────────────────────────────────────────────────────────────
@@ -115,16 +160,82 @@ export async function executeTrigger(trigger: Trigger): Promise<void> {
       triggers[idx].last_run = new Date().toISOString();
       triggers[idx].run_count = (triggers[idx].run_count ?? 0) + 1;
       delete triggers[idx].last_error;
+      clearRetryState(triggers[idx]);
       saveTriggers(triggers);
     }
   } catch (e) {
     if (idx >= 0) {
-      triggers[idx].last_error = String(e);
+      const message = String(e);
+      triggers[idx].last_error = message;
       triggers[idx].last_run = new Date().toISOString();
+      scheduleConnectionRetry(triggers[idx], message);
       saveTriggers(triggers);
     }
     throw e;
   }
+}
+
+// ── Retry failed cron triggers (connection recovery) ───────────────────────────
+export async function retryFailedTriggers(): Promise<CronRetryResult> {
+  const triggers = loadTriggers();
+  normalizeLegacyRetryQueue(triggers);
+  saveTriggers(triggers);
+
+  const now = Date.now();
+  const pending = triggers.filter(t => t.enabled && t.pending_retry);
+  const waiting = pending
+    .filter(t => t.next_retry_at && Date.parse(t.next_retry_at) > now)
+    .map(t => ({
+      id: t.id,
+      command: t.command,
+      retry_count: t.retry_count ?? 0,
+      next_retry_at: t.next_retry_at!,
+    }))
+    .sort((a, b) => Date.parse(a.next_retry_at) - Date.parse(b.next_retry_at));
+
+  const due = pending.filter(t => !t.next_retry_at || Date.parse(t.next_retry_at) <= now);
+  const result: CronRetryResult = {
+    status: "silent",
+    pending_count: pending.length,
+    due_count: due.length,
+    retried: 0,
+    succeeded: 0,
+    failed: 0,
+    waiting,
+    details: [],
+  };
+
+  for (const trigger of due) {
+    result.retried += 1;
+    try {
+      await executeTrigger(trigger);
+      result.succeeded += 1;
+      result.details.push({ id: trigger.id, command: trigger.command, outcome: "ok" });
+    } catch (e) {
+      result.failed += 1;
+      result.details.push({
+        id: trigger.id,
+        command: trigger.command,
+        outcome: "failed",
+        error: String(e).slice(0, 200),
+      });
+    }
+  }
+
+  if (result.retried > 0) {
+    result.status = "retried";
+  } else if (result.pending_count > 0) {
+    result.status = "waiting";
+  }
+  return result;
+}
+
+export function printCronRetryResult(result: CronRetryResult, json = false): void {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  console.log(formatCronRetryOutput(result));
 }
 
 // ── Start all triggers (called by daemon) ─────────────────────────────────────
@@ -140,7 +251,13 @@ export async function startTriggerLoop(): Promise<void> {
         if (!trigger.schedule) continue;
         cron.schedule(trigger.schedule, async () => {
           console.log(`[trigger:${trigger.id}] Running cron: ${trigger.command}`);
-          await executeTrigger(trigger).catch(e => console.error(`[trigger:${trigger.id}] Error: ${e}`));
+          await executeTrigger(trigger).catch(e => {
+            const msg = String(e);
+            console.error(`[trigger:${trigger.id}] Error: ${msg}`);
+            if (isRecoverableConnectionError(msg)) {
+              console.error(`[trigger:${trigger.id}] Queued for connection-recovery retry`);
+            }
+          });
         });
         console.log(`  ✓ Cron trigger ${trigger.id}: ${trigger.schedule} → ${trigger.command}`);
         break;
@@ -203,6 +320,9 @@ export function printTriggerList(): void {
     console.log(`          command:  ${t.command}`);
     if (t.last_run) console.log(`          last run: ${t.last_run} (×${t.run_count})`);
     if (t.last_error) console.log(`          error:    \x1b[31m${t.last_error.slice(0, 80)}\x1b[0m`);
+    if (t.pending_retry && t.next_retry_at) {
+      console.log(`          retry:    queued (attempt ${t.retry_count ?? 0}, after ${t.next_retry_at})`);
+    }
     console.log("");
   }
 }
