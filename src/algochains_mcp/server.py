@@ -58,30 +58,16 @@ import sys
 from pathlib import Path as _PathGlobal
 
 from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
+from .paths import default_control_tower as _shared_default_control_tower
 
 
 def _default_control_tower() -> str:
     """
-    Resolve the control-tower path without hardcoding a Mac-only absolute path.
+    Resolve the control-tower path through the shared desktop-aware resolver.
 
-    Order:
-      1. ALGOCHAINS_CONTROL_TOWER env (preferred, used by both Mac + Linux desktop)
-      2. ALGOCHAINS_CONTROL_TOWER_PATH env (legacy alias kept for backwards-compat)
-      3. __file__-relative sibling ``algochains-control-tower`` directory if present
-      4. ``/Users/treycsa/CascadeProjects/algochains-control-tower`` as a last resort
-         (only hit on the original MacBook; desktop failover uses env override).
+    Kept as a wrapper because tests and older modules monkeypatch this symbol.
     """
-    for var in ("ALGOCHAINS_CONTROL_TOWER", "ALGOCHAINS_CONTROL_TOWER_PATH"):
-        val = os.environ.get(var)
-        if val:
-            return val
-    try:
-        sibling = _PathGlobal(__file__).resolve().parents[3] / "algochains-control-tower"
-        if sibling.exists():
-            return str(sibling)
-    except Exception:
-        pass
-    return "/Users/treycsa/CascadeProjects/algochains-control-tower"
+    return str(_shared_default_control_tower())
 
 
 def _tail_jsonl(path: _PathGlobal, limit: int = 200) -> list[dict[str, Any]]:
@@ -231,7 +217,7 @@ logger = _logging_init.getLogger("algochains_mcp.server")
 # Graceful fallback: if module missing, order velocity checking is skipped
 # but a warning is logged on every place_order call.
 try:
-    from .trading_guardrails import get_guardrails, GuardrailTripped
+    from .trading_guardrails import get_guardrails, GuardrailTripped, GuardrailReason
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -5676,30 +5662,73 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                         )
 
                 # ── Live notional — NotionalValueGuard REQUIRES a real value ──
-                # Previously hardcoded to 0.0, disabling notional size checks.
-                # Compute from price * qty * contract_multiplier.
+                # Fail closed for market orders when no positive broker quote is
+                # available. Caller-supplied estimated_notional is intentionally
+                # not accepted as a substitute for live price discovery.
                 _notional = 0.0
                 _CONTRACT_MULTIPLIERS: dict[str, float] = {
                     "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0,
                     "MCL": 100.0, "CL": 1000.0, "MGC": 10.0, "GC": 100.0,
                 }
-                try:
-                    _price_hint = arguments.get("limit_price")
-                    if _price_hint:
+                _price_source = "unknown"
+                _quote_error: str | None = None
+                _price_hint = arguments.get("limit_price")
+                if _price_hint not in (None, ""):
+                    try:
                         _price = float(_price_hint)
-                    else:
-                        # Try live quote; fall back to estimated_notional arg if provided
+                        _price_source = "limit_price"
+                    except (TypeError, ValueError) as _price_err:
+                        raise GuardrailTripped(
+                            GuardrailReason.MARKET_PRICE_UNAVAILABLE,
+                            f"Invalid limit_price for {_symbol}: {_price_err}. "
+                            "Order aborted fail-closed before broker submission.",
+                        ) from _price_err
+                else:
+                    try:
                         _q = await conn.get_quote(_symbol)
-                        _price = float(getattr(_q, "last", 0) or getattr(_q, "bid", 0) or 0)
-                    _root = "".join(c for c in _symbol.upper() if c.isalpha())[:3]
-                    _mult = _CONTRACT_MULTIPLIERS.get(_root, 1.0)
-                    _notional = _price * _qty * _mult
-                    if _notional == 0.0:
-                        # Ultimate fallback: caller-supplied estimated_notional
-                        _notional = float(arguments.get("estimated_notional", 0))
-                except Exception as _not_err:
-                    _notional = float(arguments.get("estimated_notional", 0))
-                    logger.debug("Notional compute failed (%s), using arg fallback: %.2f", _not_err, _notional)
+                        _last = float(getattr(_q, "last", 0) or 0)
+                        _bid = float(getattr(_q, "bid", 0) or 0)
+                        _ask = float(getattr(_q, "ask", 0) or 0)
+                        if _last > 0:
+                            _price = _last
+                            _price_source = "quote.last"
+                        elif _bid > 0 and _ask > 0:
+                            _price = (_bid + _ask) / 2.0
+                            _price_source = "quote.mid"
+                        elif _bid > 0:
+                            _price = _bid
+                            _price_source = "quote.bid"
+                        elif _ask > 0:
+                            _price = _ask
+                            _price_source = "quote.ask"
+                        else:
+                            _price = 0.0
+                            _price_source = "quote.empty"
+                    except Exception as _quote_err:
+                        _quote_error = str(_quote_err)
+                        _price = 0.0
+                        _price_source = "quote.error"
+
+                if _price <= 0:
+                    raise GuardrailTripped(
+                        GuardrailReason.MARKET_PRICE_UNAVAILABLE,
+                        f"No live market price for {_symbol}: broker quote unavailable "
+                        f"or empty ({_price_source}; error={_quote_error or 'none'}). "
+                        "Order aborted fail-closed before broker submission.",
+                    )
+
+                _root = "".join(c for c in _symbol.upper() if c.isalpha())[:3]
+                _mult = _CONTRACT_MULTIPLIERS.get(_root, 1.0)
+                _notional = _price * _qty * _mult
+                logger.debug(
+                    "place_order guardrail: notional=%.2f symbol=%s qty=%s price=%.4f source=%s multiplier=%.2f",
+                    _notional,
+                    _symbol,
+                    _qty,
+                    _price,
+                    _price_source,
+                    _mult,
+                )
 
                 try:
                     _acct = await conn.get_account()
