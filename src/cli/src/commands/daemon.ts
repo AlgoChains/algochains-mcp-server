@@ -34,6 +34,7 @@ import {
   loadConfig,
 } from "../config.js";
 import { createMcpClient } from "../mcp_client.js";
+import { startTriggerLoop } from "../triggers/manager.js";
 
 const LAUNCHD_PLIST_PATH = join(homedir(), "Library", "LaunchAgents", "com.algochains.cli-daemon.plist");
 
@@ -163,6 +164,7 @@ export async function startDaemonServer(): Promise<void> {
   // Start polls
   const botHealthInterval = setInterval(pollBotHealth, 30_000);
   const regimeInterval = setInterval(pollRegime, config.repl.regime_refresh_interval_ms);
+  const triggerLoop = await startTriggerLoop();
 
   // Initial polls
   setTimeout(pollBotHealth, 2_000);
@@ -180,6 +182,7 @@ export async function startDaemonServer(): Promise<void> {
       log(`Daemon shutting down (${sig})`);
       clearInterval(botHealthInterval);
       clearInterval(regimeInterval);
+      triggerLoop.stop();
       for (const f of [DAEMON_PID_FILE, DAEMON_PORT_FILE, DAEMON_TOKEN_FILE]) {
         try { require("fs").unlinkSync(f); } catch { /* ignore */ }
       }

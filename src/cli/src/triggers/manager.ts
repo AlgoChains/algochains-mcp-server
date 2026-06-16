@@ -13,7 +13,7 @@
  */
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
-import { TRIGGERS_FILE } from "../config.js";
+import { ensureConfigDir, TRIGGERS_FILE } from "../config.js";
 import { getTier, isKillSwitchActive } from "../trust.js";
 
 export type TriggerType = "cron" | "watch" | "webhook" | "datetime";
@@ -31,6 +31,30 @@ export interface Trigger {
   last_run?: string;
   run_count: number;
   last_error?: string;
+  cron_retry_count?: number;
+  next_retry_at?: string;
+}
+
+export interface TriggerLoopHandle {
+  stop: () => void;
+}
+
+const DEFAULT_CRON_RETRY_BASE_MS = 60_000;
+const DEFAULT_CRON_RETRY_MAX_MS = 15 * 60_000;
+const DEFAULT_CRON_RETRY_POLL_MS = 30_000;
+
+function envInt(name: string, fallback: number): number {
+  const parsed = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function computeCronRetryDelayMs(
+  retryCount: number,
+  baseMs = envInt("ALGOCHAINS_CRON_RETRY_BASE_MS", DEFAULT_CRON_RETRY_BASE_MS),
+  maxMs = envInt("ALGOCHAINS_CRON_RETRY_MAX_MS", DEFAULT_CRON_RETRY_MAX_MS),
+): number {
+  const attempt = Math.max(1, retryCount);
+  return Math.min(baseMs * (2 ** (attempt - 1)), maxMs);
 }
 
 // ── Persistence ────────────────────────────────────────────────────────────────
@@ -40,6 +64,7 @@ function loadTriggers(): Trigger[] {
 }
 
 function saveTriggers(triggers: Trigger[]): void {
+  ensureConfigDir();
   writeFileSync(TRIGGERS_FILE, JSON.stringify(triggers, null, 2), { mode: 0o600 });
 }
 
@@ -115,42 +140,68 @@ export async function executeTrigger(trigger: Trigger): Promise<void> {
       triggers[idx].last_run = new Date().toISOString();
       triggers[idx].run_count = (triggers[idx].run_count ?? 0) + 1;
       delete triggers[idx].last_error;
+      delete triggers[idx].cron_retry_count;
+      delete triggers[idx].next_retry_at;
       saveTriggers(triggers);
     }
   } catch (e) {
     if (idx >= 0) {
+      const now = new Date();
       triggers[idx].last_error = String(e);
-      triggers[idx].last_run = new Date().toISOString();
+      triggers[idx].last_run = now.toISOString();
+      if (triggers[idx].type === "cron") {
+        const retryCount = (triggers[idx].cron_retry_count ?? 0) + 1;
+        triggers[idx].cron_retry_count = retryCount;
+        triggers[idx].next_retry_at = new Date(now.getTime() + computeCronRetryDelayMs(retryCount)).toISOString();
+      }
       saveTriggers(triggers);
     }
     throw e;
   }
 }
 
+export async function runDueCronRetries(now = new Date()): Promise<void> {
+  const nowMs = now.getTime();
+  const dueTriggers = loadTriggers().filter(trigger =>
+    trigger.enabled
+    && trigger.type === "cron"
+    && trigger.next_retry_at !== undefined
+    && new Date(trigger.next_retry_at).getTime() <= nowMs
+  );
+
+  for (const trigger of dueTriggers) {
+    console.log(`[trigger:${trigger.id}] Retrying failed cron: ${trigger.command}`);
+    await executeTrigger(trigger).catch(e => console.error(`[trigger:${trigger.id}] Retry error: ${e}`));
+  }
+}
+
 // ── Start all triggers (called by daemon) ─────────────────────────────────────
-export async function startTriggerLoop(): Promise<void> {
+export async function startTriggerLoop(): Promise<TriggerLoopHandle> {
   const { default: cron } = await import("node-cron");
   const { watch } = await import("chokidar");
 
   const triggers = loadTriggers().filter(t => t.enabled);
+  const stopCallbacks: Array<() => void> = [];
 
   for (const trigger of triggers) {
     switch (trigger.type) {
       case "cron": {
         if (!trigger.schedule) continue;
-        cron.schedule(trigger.schedule, async () => {
+        const task = cron.schedule(trigger.schedule, async () => {
           console.log(`[trigger:${trigger.id}] Running cron: ${trigger.command}`);
           await executeTrigger(trigger).catch(e => console.error(`[trigger:${trigger.id}] Error: ${e}`));
         });
+        stopCallbacks.push(() => task.stop());
         console.log(`  ✓ Cron trigger ${trigger.id}: ${trigger.schedule} → ${trigger.command}`);
         break;
       }
       case "watch": {
         if (!trigger.path) continue;
-        watch(trigger.path, { ignoreInitial: true }).on("change", async (path) => {
+        const watcher = watch(trigger.path, { ignoreInitial: true }).on("change", async (path) => {
           console.log(`[trigger:${trigger.id}] File changed: ${path} → ${trigger.command}`);
           await executeTrigger(trigger).catch(e => console.error(`[trigger:${trigger.id}] Error: ${e}`));
         });
+        stopCallbacks.push(() => { void watcher.close(); });
         console.log(`  ✓ Watch trigger ${trigger.id}: ${trigger.path} → ${trigger.command}`);
         break;
       }
@@ -179,6 +230,21 @@ export async function startTriggerLoop(): Promise<void> {
       }
     }
   }
+
+  const retryInterval = setInterval(() => {
+    void runDueCronRetries();
+  }, envInt("ALGOCHAINS_CRON_RETRY_POLL_MS", DEFAULT_CRON_RETRY_POLL_MS));
+  stopCallbacks.push(() => clearInterval(retryInterval));
+  const initialRetryTimeout = setTimeout(() => { void runDueCronRetries(); }, 1_000);
+  stopCallbacks.push(() => clearTimeout(initialRetryTimeout));
+
+  return {
+    stop: () => {
+      for (const stop of stopCallbacks) {
+        stop();
+      }
+    },
+  };
 }
 
 // ── Print triggers ─────────────────────────────────────────────────────────────
@@ -203,6 +269,7 @@ export function printTriggerList(): void {
     console.log(`          command:  ${t.command}`);
     if (t.last_run) console.log(`          last run: ${t.last_run} (×${t.run_count})`);
     if (t.last_error) console.log(`          error:    \x1b[31m${t.last_error.slice(0, 80)}\x1b[0m`);
+    if (t.next_retry_at) console.log(`          retry:    ${t.next_retry_at} (attempt ${t.cron_retry_count ?? 0})`);
     console.log("");
   }
 }
