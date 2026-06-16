@@ -263,3 +263,151 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_accepts_wrapped_market_data_payload_without_trade():
+    """Tradovate market data may be wrapped in d.quotes[] and omit Trade."""
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/contract/find":
+            return {"id": 101, "name": "MNQM6"}
+        if path == "/md/getQuote":
+            assert params == {"symbol": "MNQM6"}
+            return {
+                "e": "md",
+                "d": {
+                    "quotes": [
+                        {
+                            "timestamp": "2026-06-16T12:27:27.000Z",
+                            "contractId": 101,
+                            "entries": {
+                                "Bid": {"price": 28775.0, "size": 3},
+                                "Offer": {"price": 28775.5, "size": 4},
+                                "TotalTradeVolume": {"size": 42},
+                            },
+                        }
+                    ]
+                },
+            }
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.symbol == "MNQ"
+    assert quote.bid == 28775.0
+    assert quote.ask == 28775.5
+    assert quote.last == 28775.25
+    assert quote.volume == 42
+    assert quote.timestamp is not None
+
+
+def test_get_quote_fails_closed_when_payload_has_no_positive_price():
+    """Null/zero quote fields are missing live price evidence, not a valid quote."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/contract/find":
+            return {"id": 101, "name": "MNQM6"}
+        if path == "/md/getQuote":
+            return {"entries": {"Bid": {"price": None}, "Offer": {"price": 0}}}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="no live market price"):
+        asyncio.run(_run())
+
+
+def test_get_positions_derives_unrealized_pnl_from_quote_when_position_pnl_missing():
+    """Tradovate position rows may omit open P&L; derive it from real quote/product data."""
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/position/list":
+            return [
+                {
+                    "contractId": 101,
+                    "netPos": 1,
+                    "netPrice": 80.00,
+                    "openPnL": None,
+                }
+            ]
+        if path == "/contract/item":
+            assert params == {"id": 101}
+            return {"id": 101, "name": "CLM6", "productId": 55}
+        if path == "/product/item":
+            assert params == {"id": 55}
+            return {"id": 55, "valuePerPoint": 1000}
+        if path == "/contract/find":
+            assert params == {"name": "CLM6"}
+            return {"id": 101, "name": "CLM6"}
+        if path == "/md/getQuote":
+            assert params == {"symbol": "CLM6"}
+            return {"entries": {"Trade": {"price": 80.15}}}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_positions()
+
+    positions = asyncio.run(_run())
+    assert len(positions) == 1
+    assert positions[0].symbol == "CLM6"
+    assert positions[0].unrealized_pnl == 150.0
+
+
+def test_get_positions_preserves_numeric_zero_unrealized_pnl():
+    """A real zero P&L is valid and must not trigger quote/product fallback."""
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/position/list":
+            return [{"contractId": 101, "netPos": -1, "netPrice": 80.00, "openPnl": 0}]
+        if path == "/contract/item":
+            return {"id": 101, "name": "CLM6", "productId": 55}
+        if path in {"/product/item", "/md/getQuote"}:
+            raise AssertionError(f"{path} should not be called when P&L is numeric")
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_positions()
+
+    positions = asyncio.run(_run())
+    assert positions[0].unrealized_pnl == 0.0
+
+
+def test_get_positions_fails_closed_when_unrealized_pnl_cannot_be_derived():
+    """Missing quote/product evidence is degraded broker data, not zero drawdown."""
+    from algochains_mcp.errors import BrokerConnectionError
+
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/position/list":
+            return [{"contractId": 101, "netPos": 1, "netPrice": 80.00, "openPnL": None}]
+        if path == "/contract/item":
+            return {"id": 101, "name": "CLM6", "productId": 55}
+        if path == "/product/item":
+            return {"id": 55}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_positions()
+
+    with pytest.raises(BrokerConnectionError, match="valuePerPoint"):
+        asyncio.run(_run())

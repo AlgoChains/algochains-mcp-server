@@ -126,6 +126,75 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _positive_float(value: object) -> float | None:
+    parsed = _optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _contract_name(contract: dict | BaseException | None, fallback: object) -> str:
+    if isinstance(contract, dict):
+        name = contract.get("name")
+        if name:
+            return str(name)
+    return str(fallback)
+
+
+def _first_quote_payload(raw: object) -> dict | None:
+    """Return the first quote object from common Tradovate market-data envelopes."""
+    stack = [raw]
+    while stack:
+        item = stack.pop(0)
+        if isinstance(item, list):
+            stack.extend(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        entries = item.get("entries")
+        if isinstance(entries, dict):
+            return item
+        data = item.get("d")
+        if isinstance(data, dict):
+            stack.append(data)
+        quotes = item.get("quotes")
+        if isinstance(quotes, list):
+            stack.extend(quotes)
+        nested_data = item.get("data")
+        if isinstance(nested_data, list):
+            stack.extend(nested_data)
+    return None
+
+
+def _entry_price(entries: dict, *names: str) -> float | None:
+    for name in names:
+        entry = entries.get(name)
+        if isinstance(entry, dict):
+            price = _positive_float(entry.get("price"))
+            if price is not None:
+                return price
+    return None
+
+
+def _entry_size(entries: dict, *names: str) -> int:
+    for name in names:
+        entry = entries.get(name)
+        if isinstance(entry, dict):
+            size = _optional_float(entry.get("size"))
+            if size is not None and size >= 0:
+                return int(size)
+    return 0
+
+
+def _parse_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -477,7 +546,7 @@ class TradovateConnector(BrokerConnector):
         contract_tasks = [self._get("/contract/item", {"id": cid}) for cid in unique_ids]
         contract_results = await _asyncio.gather(*contract_tasks, return_exceptions=True)
         contract_map = {
-            cid: (res.get("name", str(cid)) if isinstance(res, dict) else str(cid))
+            cid: res if isinstance(res, dict) else {}
             for cid, res in zip(unique_ids, contract_results)
         }
 
@@ -485,9 +554,21 @@ class TradovateConnector(BrokerConnector):
         for pos in open_positions:
             net_qty = pos.get("netPos", 0)
             contract_id = pos.get("contractId", 0)
-            symbol = contract_map.get(contract_id, str(contract_id))
-            entry = pos.get("netPrice", 0.0)
-            pnl = pos.get("openPnL", 0.0)
+            contract = contract_map.get(contract_id, {})
+            symbol = _contract_name(contract, contract_id)
+            entry = _first_number(pos, ("netPrice", "prevPrice"))
+            if entry is None:
+                raise BrokerConnectionError(
+                    "Tradovate position did not include a numeric entry price",
+                    broker="tradovate",
+                    details={"contract_id": contract_id, "position_keys": sorted(pos.keys())},
+                )
+            pnl = _first_number(
+                pos,
+                ("openPnL", "openPnl", "unrealizedPnL", "unrealizedPnl", "unrealized_pnl"),
+            )
+            if pnl is None:
+                pnl = await self._calculate_unrealized_pnl(pos, contract, symbol)
             positions.append(Position(
                 broker="tradovate",
                 symbol=symbol,
@@ -501,6 +582,77 @@ class TradovateConnector(BrokerConnector):
                 raw=pos,
             ))
         return positions
+
+    async def _calculate_unrealized_pnl(
+        self,
+        position: dict,
+        contract: dict,
+        symbol: str,
+    ) -> float:
+        """Derive open P&L when Tradovate REST position rows omit it."""
+        entry = _first_number(position, ("netPrice", "prevPrice"))
+        net_qty = _optional_float(position.get("netPos"))
+        value_per_point = await self._product_value_per_point(contract)
+        market_price = await self._quote_market_price(symbol)
+
+        if entry is None or net_qty is None:
+            raise BrokerConnectionError(
+                "Tradovate position did not include numeric net price/quantity for unrealized P&L",
+                broker="tradovate",
+                details={
+                    "contract_id": position.get("contractId"),
+                    "position_keys": sorted(position.keys()),
+                },
+            )
+        if value_per_point is None:
+            raise BrokerConnectionError(
+                "Tradovate product metadata did not include valuePerPoint for unrealized P&L",
+                broker="tradovate",
+                details={
+                    "contract_id": position.get("contractId"),
+                    "symbol": symbol,
+                    "contract_keys": sorted(contract.keys()) if isinstance(contract, dict) else [],
+                },
+            )
+        if market_price is None:
+            raise BrokerConnectionError(
+                "Tradovate quote did not include a live market price for unrealized P&L",
+                broker="tradovate",
+                details={"contract_id": position.get("contractId"), "symbol": symbol},
+            )
+
+        return round((market_price - entry) * value_per_point * net_qty, 2)
+
+    async def _product_value_per_point(self, contract: dict) -> float | None:
+        product = contract.get("product")
+        if isinstance(product, dict):
+            value = _first_number(product, ("valuePerPoint", "pointValue"))
+            if value is not None:
+                return value
+
+        value = _first_number(contract, ("valuePerPoint", "pointValue"))
+        if value is not None:
+            return value
+
+        product_id = contract.get("productId")
+        if product_id is None:
+            return None
+        try:
+            product = await self._get("/product/item", {"id": product_id})
+        except Exception as exc:
+            logger.warning("tradovate product lookup failed for %s: %s", product_id, exc)
+            return None
+        if not isinstance(product, dict):
+            return None
+        return _first_number(product, ("valuePerPoint", "pointValue"))
+
+    async def _quote_market_price(self, symbol: str) -> float | None:
+        try:
+            quote = await self.get_quote(symbol)
+        except Exception as exc:
+            logger.warning("tradovate quote lookup failed for %s: %s", symbol, exc)
+            return None
+        return _positive_float(quote.last) or _positive_float(quote.bid) or _positive_float(quote.ask)
 
     async def get_orders(self, status: Optional[str] = None, limit: int = 200) -> list[Order]:
         """Get orders, optionally filtered by status.
@@ -742,27 +894,43 @@ class TradovateConnector(BrokerConnector):
                 f"Contract not found: {symbol}", broker="tradovate"
             )
         try:
-            quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
-            if isinstance(quotes, dict):
-                entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
-                return Quote(
-                    symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
-                )
+            raw_quote = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
+            raw_quote = None
 
-        # Return None-sentinel prices so callers can distinguish "API error"
-        # from "market genuinely at zero". Callers must check for float("nan").
+        payload = _first_quote_payload(raw_quote)
+        if payload:
+            entries = payload.get("entries", {})
+            bid = _entry_price(entries, "Bid")
+            ask = _entry_price(entries, "Offer", "Ask")
+            trade = _entry_price(entries, "Trade")
+            last = trade
+            if last is None and bid is not None and ask is not None:
+                last = (bid + ask) / 2.0
+            if last is None:
+                last = bid or ask or _entry_price(entries, "SettlementPrice", "OpeningPrice")
+            if bid is None:
+                bid = last
+            if ask is None:
+                ask = last
+            if last is not None and bid is not None and ask is not None:
+                return Quote(
+                    symbol=symbol,
+                    bid=bid,
+                    ask=ask,
+                    last=last,
+                    volume=_entry_size(entries, "Trade", "TotalTradeVolume"),
+                    timestamp=_parse_timestamp(payload.get("timestamp")),
+                )
+
         raise BrokerQuoteError(
-            f"Quote unavailable for {symbol} — API returned no data",
+            f"Quote unavailable for {symbol} — API returned no live market price",
             broker="tradovate",
+            details={
+                "contract": contract.get("name", symbol),
+                "quote_shape": type(raw_quote).__name__ if raw_quote is not None else None,
+            },
         )
 
     async def _find_contract(self, symbol: str) -> Optional[dict]:
