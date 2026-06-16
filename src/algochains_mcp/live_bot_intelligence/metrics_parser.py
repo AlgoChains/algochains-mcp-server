@@ -18,6 +18,7 @@ from typing import Optional
 # Resolve control tower path (works on Mac and Desktop WSL).
 # Uses the shared helper so ALGOCHAINS_CONTROL_TOWER env is honored everywhere.
 from algochains_mcp.paths import default_control_tower
+from .bot_registry import READ_ONLY_BOT_LOGS, is_actionable_error_line
 
 CONTROL_TOWER = default_control_tower()
 try:
@@ -27,11 +28,9 @@ except Exception:
     pass
 
 BOT_LOG_PATHS: dict[str, Path] = {
-    "mnq": CONTROL_TOWER / "logs" / "futures_bot_live.log",
-    "cl":  CONTROL_TOWER / "logs" / "cl_futures_live.log",
-    # mes_swing.log and nq_swing.log are stale backup files — use the live paths
-    "mes": CONTROL_TOWER / "logs" / "mes_swing_live.log",
-    "nq":  CONTROL_TOWER / "logs" / "nq_swing_live.log",
+    bot_id: CONTROL_TOWER / str(spec["log"])
+    for bot_id, spec in READ_ONLY_BOT_LOGS.items()
+    if bot_id != "kalshi"
 }
 
 BOT_META: dict[str, dict] = {
@@ -43,6 +42,17 @@ BOT_META: dict[str, dict] = {
         "strategy_type": "scalper",
         "asset_class": "futures",
         "timeframe": "5min",
+        "environment": "live",
+    },
+    "mnq_demo": {
+        "display_name": "MNQ Futures Scalper Demo (7-AI Ensemble)",
+        "script": "FUTURES_SCALPER_UPGRADED.py",
+        "symbol": "MNQ",
+        "broker": "Tradovate",
+        "strategy_type": "scalper",
+        "asset_class": "futures",
+        "timeframe": "5min",
+        "environment": "demo",
     },
     "cl": {
         "display_name": "CL Crude Oil Scalper (FinBERT Sentiment)",
@@ -52,6 +62,7 @@ BOT_META: dict[str, dict] = {
         "strategy_type": "sentiment_scalper",
         "asset_class": "futures",
         "timeframe": "5min",
+        "environment": "live",
     },
     "mes": {
         "display_name": "MES Swing (EMA Pullback)",
@@ -61,6 +72,7 @@ BOT_META: dict[str, dict] = {
         "strategy_type": "swing",
         "asset_class": "futures",
         "timeframe": "15min",
+        "environment": "live",
     },
     "nq": {
         "display_name": "NQ Swing (Trend Following + VIX Gate)",
@@ -70,6 +82,7 @@ BOT_META: dict[str, dict] = {
         "strategy_type": "swing",
         "asset_class": "futures",
         "timeframe": "15min",
+        "environment": "live",
     },
 }
 
@@ -207,7 +220,7 @@ def _parse_errors(lines: list[str]) -> tuple[str, int]:
     error_count = 0
     last_error = ""
     for line in lines:
-        if re.search(r'\bERROR\b|\bException\b|\bTraceback\b|\b401\b|\b422\b', line, re.IGNORECASE):
+        if is_actionable_error_line(line):
             line_ts = _line_epoch_seconds(line)
             if line_ts is not None and line_ts < one_hour_ago:
                 continue
@@ -261,6 +274,8 @@ def parse_bot_metrics_from_supabase(bot_id: str, sb_client=None) -> BotMetrics |
     """Parse authoritative bot metrics from trade_log/bracket_audit/bot_events."""
     bot_id = bot_id.lower()
     meta = BOT_META.get(bot_id, {})
+    if meta.get("environment") == "demo":
+        return None
     symbol = meta.get("symbol", bot_id.upper())
     sb = sb_client or _get_supabase_client()
     if sb is None:
@@ -416,5 +431,5 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
 
 
 def parse_all_bots() -> dict[str, BotMetrics]:
-    """Parse metrics for all 4 live bots. Returns dict keyed by bot_id."""
+    """Parse metrics for all configured futures bot logs. Returns dict keyed by bot_id."""
     return {bot_id: parse_bot_metrics(bot_id) for bot_id in BOT_LOG_PATHS}

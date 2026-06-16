@@ -2,7 +2,7 @@
 AlgoChains Live Bot Intelligence Module
 ========================================
 Provides real-time metrics, system heartbeat awareness, academic citations,
-and operational management (restart/flatten) for the 4 live Tradovate bots.
+and operational management (restart/flatten) for configured Tradovate bot logs.
 
 Read-only tools:
   - get_live_bot_metrics(bot_id)            → real P&L, WinRate, Sharpe from logs
@@ -13,7 +13,7 @@ Read-only tools:
   - get_position_state(bot_id)              → persisted position state (flat/qty/entry)
   - get_bracket_status(bot_id)              → bracket mode (live/oso_only/none/unknown)
   - get_ai_pipeline_health(bot_id)          → AI ensemble status, quota errors, shadow mode
-  - get_all_bot_ops_status()                → full ops snapshot for all 4 bots
+  - get_all_bot_ops_status()                → full ops snapshot for read-only bot logs
 
 Owner-gated tools (require OWNER_API_TOKEN):
   - restart_bot(bot_id, owner_token)        → kill + restart a bot process

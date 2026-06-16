@@ -132,3 +132,30 @@ def test_get_bot_health_returns_effective_resolved_sentinel(tmp_path, monkeypatc
     assert sentinel["raw_state"] == "warning"
     assert sentinel["raw_severity"] == "warning"
     assert sentinel["resolved_by"] == "reconcile_stale_signal"
+
+
+def test_get_bot_health_surfaces_demo_mnq_fail_closed_log(tmp_path, monkeypatch):
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    incident_line = (
+        "2026-06-16T12:31:00Z [DEMO] T4-FAIL-CLOSED - MNQ. "
+        "No live market price: REST price fetch failed AND md_quote_feed unavailable. "
+        "Order aborted (fail-closed)."
+    )
+    (logs_dir / "futures_bot_demo.log").write_text(f"heartbeat\n{incident_line}\n")
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+
+    import algochains_mcp.server as srv
+
+    result = asyncio.run(srv.call_tool("get_bot_health", {"bot": "mnq_demo"}))
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    payload = json.loads(text)
+
+    demo = payload["bots"]["mnq_demo"]
+    assert demo["symbol"] == "MNQ"
+    assert demo["environment"] == "demo"
+    assert demo["log_exists"] is True
+    assert demo["log_path"].endswith("logs/futures_bot_demo.log")
+    assert demo["error_count_last_100"] == 1
+    assert demo["safeguard_fail_closed_count_last_100"] == 1
+    assert "T4-FAIL-CLOSED" in demo["last_safeguard_abort"]

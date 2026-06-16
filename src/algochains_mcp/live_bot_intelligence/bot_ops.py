@@ -21,13 +21,14 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # ── Path resolution ──────────────────────────────────────────────────────────
 # Unified resolver honors ALGOCHAINS_CONTROL_TOWER first, then falls back to
 # the shared legacy list (Mac, /home/trrey, WSL). Behavior on the MacBook is
 # unchanged: env typically unset → first existing legacy path = Mac repo.
 from algochains_mcp.paths import default_control_tower
+from .bot_registry import READ_ONLY_BOT_LOGS, is_fail_closed_line
 
 CONTROL_TOWER = default_control_tower()
 
@@ -39,7 +40,20 @@ BOT_MAP = {
     "nq":  {"grep": "nq_swing_live",             "script": "nq_swing_live.py",             "log": "logs/nq_swing_live.log"},
 }
 
-SYMBOL_MAP = {"mnq": "MNQ", "cl": "CL", "mes": "MES", "nq": "NQ"}
+READ_ONLY_BOT_MAP = {
+    bot_id: {
+        "grep": str((spec.get("process_markers") or (bot_id,))[0]),
+        "script": str((spec.get("process_markers") or (bot_id,))[0]),
+        "log": str(spec["log"]),
+    }
+    for bot_id, spec in READ_ONLY_BOT_LOGS.items()
+    if bot_id != "kalshi"
+}
+
+SYMBOL_MAP = {"mnq": "MNQ", "mnq_demo": "MNQ", "cl": "CL", "mes": "MES", "nq": "NQ"}
+POSITION_STATE_FILES = {
+    "mnq_demo": "mnq_demo_position_state.json",
+}
 
 
 def _tail_jsonl(path: Path, limit: int = 200) -> list[dict[str, Any]]:
@@ -224,11 +238,12 @@ def _verify_owner(owner_token: str) -> tuple[bool, str]:
 
 def get_position_state(bot_id: str) -> dict:
     """Read the persisted position state file for a bot."""
-    if bot_id not in BOT_MAP:
-        return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(BOT_MAP)}"}
+    if bot_id not in READ_ONLY_BOT_MAP:
+        return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(READ_ONLY_BOT_MAP)}"}
 
     symbol = SYMBOL_MAP[bot_id]
-    state_path = CONTROL_TOWER / "logs" / f"{symbol.lower()}_position_state.json"
+    state_file = POSITION_STATE_FILES.get(bot_id, f"{symbol.lower()}_position_state.json")
+    state_path = CONTROL_TOWER / "logs" / state_file
     if not state_path.exists():
         return {"bot": bot_id, "symbol": symbol, "state": "no_state_file", "flat": True}
 
@@ -253,10 +268,10 @@ def get_bracket_status(bot_id: str) -> dict:
     Returns bracket mode, order IDs, and stop/target prices.
     Mode: live | oso_only | none | unknown
     """
-    if bot_id not in BOT_MAP:
-        return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(BOT_MAP)}"}
+    if bot_id not in READ_ONLY_BOT_MAP:
+        return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(READ_ONLY_BOT_MAP)}"}
 
-    cfg = BOT_MAP[bot_id]
+    cfg = READ_ONLY_BOT_MAP[bot_id]
     log_path = CONTROL_TOWER / cfg["log"]
 
     if not log_path.exists():
@@ -308,10 +323,10 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     Detect AI ensemble/pipeline health from bot logs.
     Checks for: Anthropic quota errors, Cerebras model errors, pipeline timeout events, shadow mode.
     """
-    if bot_id not in BOT_MAP:
-        return {"error": f"Unknown bot_id. Valid: {list(BOT_MAP)}"}
+    if bot_id not in READ_ONLY_BOT_MAP:
+        return {"error": f"Unknown bot_id. Valid: {list(READ_ONLY_BOT_MAP)}"}
 
-    cfg = BOT_MAP[bot_id]
+    cfg = READ_ONLY_BOT_MAP[bot_id]
     log_path = CONTROL_TOWER / cfg["log"]
     detail = None
 
@@ -339,6 +354,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     anthropic_error = bool(re.search(r"insufficient_quota|credit balance|overloaded_error|529", tail, re.I))
     cerebras_error  = bool(re.search(r"llama3\.3.*not found|model.*404|cerebras.*error", tail, re.I))
     timeout_event   = bool(re.search(r"Pipeline timed out|multi_agent_timeout", tail))
+    fail_closed_event = any(is_fail_closed_line(line) for line in tail.splitlines())
     shadow_mode     = bool(re.search(r"shadow.?mode|shadow_mode.*True", tail, re.I))
     ensemble_active = bool(re.search(r"AI APPROVED|Multi-agent APPROVED", tail))
     ensemble_reject = bool(re.search(r"AI REJECTED|advisory REJECTED", tail))
@@ -354,7 +370,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         mode = "shadow_timeout"
     elif ensemble_active:
         mode = "active"
-    elif anthropic_error or cerebras_error:
+    elif anthropic_error or cerebras_error or fail_closed_event:
         mode = "degraded"
 
     return {
@@ -366,6 +382,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         "cerebras_model_error": cerebras_error,
         "pipeline_timeout_detected": pipeline_timeout_detected,
         "pipeline_timeout_log_detected": timeout_event,
+        "safeguard_fail_closed_detected": fail_closed_event,
         "pipeline_timeout_event_rate": decision_timeout_rate,
         "multi_agent_p95_over_timeout": multi_agent_p95_over_timeout,
         "shadow_mode_active": shadow_mode,
@@ -380,6 +397,8 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         "note": (
             "Anthropic credits zero — top up console.anthropic.com to restore 7-AI voting"
             if anthropic_error else
+            "Trading safeguard fail-closed abort detected - inspect live price sources and quote-feed availability"
+            if fail_closed_event else
             "Pipeline timeout rate elevated — inspect decision_latency.multi_agent_ms and desktop_inference groups"
             if pipeline_timeout_detected else
             "Pipeline healthy" if mode == "active" else
@@ -389,19 +408,20 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
 
 
 def get_all_bot_ops_status() -> dict:
-    """Get bracket status, position state, and process status for all 4 bots."""
+    """Get bracket status, position state, and process status for read-only bot logs."""
     result = {}
-    import re as _re
     ps_output = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
-    for bot_id, cfg in BOT_MAP.items():
+    for bot_id, cfg in READ_ONLY_BOT_MAP.items():
         running = any(cfg["grep"] in line and "grep" not in line for line in ps_output.splitlines())
         pid = None
         for line in ps_output.splitlines():
             if cfg["grep"] in line and "grep" not in line:
                 parts = line.split()
                 if len(parts) > 1:
-                    try: pid = int(parts[1])
-                    except ValueError: pass
+                    try:
+                        pid = int(parts[1])
+                    except ValueError:
+                        pass
                 break
         result[bot_id] = {
             "running": running,
@@ -411,6 +431,7 @@ def get_all_bot_ops_status() -> dict:
             "bracket": get_bracket_status(bot_id),
         }
     result["pipeline_health"] = get_ai_pipeline_health("mnq")
+    result["demo_pipeline_health"] = get_ai_pipeline_health("mnq_demo")
     return result
 
 
@@ -581,7 +602,7 @@ def restart_bot(bot_id: str, owner_token: str) -> dict:
     # Restart
     log_path = CONTROL_TOWER / cfg["log"]
     log_handle = open(log_path, "a")
-    proc = subprocess.Popen(
+    subprocess.Popen(
         ["python3", "-B", "-u", cfg["script"]],
         cwd=str(CONTROL_TOWER),
         stdout=log_handle,
@@ -597,8 +618,10 @@ def restart_bot(bot_id: str, owner_token: str) -> dict:
         if cfg["grep"] in line and "grep" not in line:
             parts = line.split()
             if len(parts) > 1:
-                try: verified_pid = int(parts[1])
-                except ValueError: pass
+                try:
+                    verified_pid = int(parts[1])
+                except ValueError:
+                    pass
             break
 
     return {
@@ -699,7 +722,6 @@ def flatten_position_tradovate(symbol: str, owner_token: str) -> dict:
 
     if result:
         # Mark position state flat
-        bot_id = symbol.lower()[:3]
         state_path = CONTROL_TOWER / "logs" / f"{symbol.lower()}_position_state.json"
         try:
             with open(state_path, "w") as sf:

@@ -76,3 +76,21 @@ def test_ai_pipeline_health_reports_decision_and_desktop_telemetry(tmp_path, mon
     desktop_group = result["desktop_inference"]["groups"]["qwen3|ollama|validation"]
     assert desktop_group["failure_rate"] == 0.5
     assert desktop_group["fallback_reasons"] == ["timeout"]
+
+
+def test_ai_pipeline_health_reads_demo_fail_closed_log(tmp_path, monkeypatch):
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "futures_bot_demo.log").write_text(
+        "2026-06-16T12:31:00Z [DEMO] T4-FAIL-CLOSED - MNQ. "
+        "No live market price: REST price fetch failed AND md_quote_feed unavailable. "
+        "Order aborted (fail-closed).\n"
+    )
+    monkeypatch.setattr(bot_ops, "CONTROL_TOWER", tmp_path)
+
+    result = bot_ops.get_ai_pipeline_health("mnq_demo")
+
+    assert result["bot"] == "mnq_demo"
+    assert result["mode"] == "degraded"
+    assert result["safeguard_fail_closed_detected"] is True
+    assert "fail-closed" in result["note"]

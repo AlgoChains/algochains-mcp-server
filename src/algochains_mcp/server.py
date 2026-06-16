@@ -1617,7 +1617,7 @@ TOOLS = [
     Tool(
         name="get_bot_health",
         description=(
-            "Return a unified health snapshot for all four live futures bots (MNQ, CL, MES, NQ) "
+            "Return a unified health snapshot for futures bot logs (MNQ live + demo, CL, MES, NQ) "
             "and the Kalshi daemon. For each bot: process up? last log mtime, last signal ts, "
             "current regime, error count in last 100 log lines, token expiry (if Tradovate). "
             "Includes E2E sentinel lifecycle state for MNQ execution traceability. "
@@ -1628,7 +1628,7 @@ TOOLS = [
             "properties": {
                 "bot": {
                     "type": "string",
-                    "description": "Optional: filter to one bot (mnq|cl|mes|nq|kalshi|all). Default all.",
+                    "description": "Optional: filter to one bot (mnq|mnq_demo|cl|mes|nq|kalshi|all). Default all.",
                     "default": "all",
                 }
             },
@@ -3955,18 +3955,18 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════════════════════════
     Tool(name="get_bot_position_state",
          description="Read the persisted position state file for a bot. Returns direction (BUY/SELL/null), qty, entry_price, and flat status. This is the bot's internal tracking — compare to Tradovate get_positions() to detect drift.",
-         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "mnq_demo", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_bot_bracket_status",
          description="Parse the bot log to determine current bracket order status. Returns mode (live/oso_only/none/unknown), stop/target order IDs and prices, and whether the position is unprotected. Critical for detecting missing stops after an entry.",
-         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "mnq_demo", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_ai_pipeline_health",
          description="Check AI ensemble/debate pipeline health. Detects Anthropic quota errors, Cerebras model errors (llama3.1-8b), pipeline timeout events, and shadow mode. The pipeline is ADVISORY ONLY — primary confidence gate controls all trades regardless of pipeline state.",
-         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "cl", "mes", "nq"], "default": "mnq"}}, "required": []},
+         inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "enum": ["mnq", "mnq_demo", "cl", "mes", "nq"], "default": "mnq"}}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_all_bot_ops_status",
-         description="Full operational snapshot for all 4 bots: process status, PIDs, position states, bracket status, and AI pipeline health. Use to triage any bot integrity issue in one call.",
+         description="Full operational snapshot for futures bot read-only surfaces: process status, PIDs, position states, bracket status, and AI pipeline health. Use to triage any bot integrity issue in one call.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="restart_trading_bot",
@@ -5962,15 +5962,16 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         import time as _time
         from pathlib import Path as _Path
 
-        bot_filter = (arguments.get("bot") or "all").lower()
+        from .live_bot_intelligence.bot_registry import (
+            READ_ONLY_BOT_LOGS as _READ_ONLY_BOT_LOGS,
+            is_actionable_error_line as _is_actionable_error_line,
+            is_fail_closed_line as _is_fail_closed_line,
+            normalize_bot_id as _normalize_bot_id,
+        )
+
+        bot_filter = _normalize_bot_id(arguments.get("bot"))
         control_tower = _Path(_default_control_tower())
-        bots = {
-            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},
-            "cl":  {"script": "CL_FUTURES_SCALPER.py",       "log": "logs/cl_futures_live.log"},
-            "mes": {"script": "mes_swing_live.py",           "log": "logs/mes_swing_live.log"},
-            "nq":  {"script": "nq_swing_live.py",            "log": "logs/nq_swing_live.log"},
-            "kalshi": {"script": "kalshi_daemon.py",         "log": "logs/kalshi_bot.log"},
-        }
+        bots = _READ_ONLY_BOT_LOGS
         try:
             ps_out = _subp.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
         except Exception:
@@ -5982,10 +5983,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             if bot_filter not in ("all", key):
                 continue
             log_path = control_tower / meta["log"]
-            running = meta["script"] in ps_out
+            process_markers = tuple(str(marker) for marker in meta.get("process_markers", ()))
+            running = any(marker in ps_out for marker in process_markers)
             last_log_mtime = None
             error_count = 0
+            fail_closed_count = 0
             tail_preview = ""
+            last_safeguard_abort = ""
             if log_path.exists():
                 try:
                     last_log_mtime = int(now - log_path.stat().st_mtime)
@@ -5994,17 +5998,25 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                         ["tail", "-n", "100", str(log_path)],
                         capture_output=True, text=True, timeout=3,
                     ).stdout
-                    error_count = sum(
-                        1 for ln in tail.splitlines()
-                        if any(tok in ln for tok in ("ERROR", "Exception", "Traceback", " 401", " 422"))
-                    )
+                    tail_lines = tail.splitlines()
+                    error_count = sum(1 for ln in tail_lines if _is_actionable_error_line(ln))
+                    fail_closed_lines = [ln for ln in tail_lines if _is_fail_closed_line(ln)]
+                    fail_closed_count = len(fail_closed_lines)
+                    if fail_closed_lines:
+                        last_safeguard_abort = fail_closed_lines[-1].strip()[-400:]
                     tail_preview = tail.splitlines()[-1][:200] if tail.strip() else ""
                 except Exception:
                     pass
             results[key] = {
                 "running": running,
+                "symbol": meta.get("symbol"),
+                "environment": meta.get("environment"),
+                "log_path": str(log_path),
+                "log_exists": log_path.exists(),
                 "log_age_seconds": last_log_mtime,
                 "error_count_last_100": error_count,
+                "safeguard_fail_closed_count_last_100": fail_closed_count,
+                "last_safeguard_abort": last_safeguard_abort,
                 "last_line_preview": tail_preview,
             }
 

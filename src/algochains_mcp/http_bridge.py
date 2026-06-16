@@ -65,6 +65,7 @@ from .tool_policy import (
 )
 from .otel_tracing import redacted_argument_hash, trace_span
 from .paths import default_control_tower
+from .live_bot_intelligence.bot_registry import READ_ONLY_BOT_LOGS, is_fail_closed_line
 
 log = logging.getLogger(__name__)
 
@@ -1301,16 +1302,18 @@ def create_fastapi_app():
         interval = max(1.0, min(float(poll_interval), 30.0))
 
         LOG_PATHS = [
-            ("mnq", "logs/futures_bot_live.log"),
-            ("cl", "logs/cl_futures_live.log"),
-            ("mes", "logs/mes_swing_live.log"),
-            ("nq", "logs/nq_swing_live.log"),
+            (bot_id, str(spec["log"]))
+            for bot_id, spec in READ_ONLY_BOT_LOGS.items()
+            if bot_id != "kalshi"
         ]
         LOG_KEYWORDS = ("SIGNAL", "FILL", "EXIT", "ERROR", "Exception", "Traceback",
-                        "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2")
+                        "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2",
+                        "FAIL-CLOSED", "FAIL_CLOSED", "fail-closed")
 
         def _classify_line(line: str) -> str | None:
             lower_line = line.lower()
+            if is_fail_closed_line(line):
+                return "error"
             if any(keyword in lower_line for keyword in ("fill", "filled")):
                 return "fill"
             if any(keyword in lower_line for keyword in ("signal", "signal_fired", "confidence")):
