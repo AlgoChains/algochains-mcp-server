@@ -3922,6 +3922,10 @@ TOOLS = [
          description="Read adaptive_brain.py daemon liveness from bounded process, script, state, and log evidence. Read-only; does not restart or mutate daemon state.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_system_health",
+         description="Run the trading-system-health audit: bot process/log liveness (with legacy log alias resolution), disk space on control-tower and home volumes, and optional health_snapshot.json. Use to triage SEV1 trading-system-health watchdog alerts without false inactive signals from stale cl_bot_live.log.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_strategy_academic_citations",
          description="Get all academic citations, SSRN papers, and published works that provide the theoretical basis for a specific bot's strategy. Includes authors, year, venue, DOI/SSRN link, and relevance explanation. Bot IDs: mnq, cl, mes, nq.",
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
@@ -5049,6 +5053,7 @@ TIER1_TOOL_NAMES = {
     "get_live_bot_metrics",
     "get_all_bot_metrics",
     "get_system_heartbeat",
+    "get_system_health",
     "get_adaptive_brain_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
@@ -5964,12 +5969,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         bot_filter = (arguments.get("bot") or "all").lower()
         control_tower = _Path(_default_control_tower())
+        from algochains_mcp.bot_log_paths import resolve_bot_log
         bots = {
-            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},
-            "cl":  {"script": "CL_FUTURES_SCALPER.py",       "log": "logs/cl_futures_live.log"},
-            "mes": {"script": "mes_swing_live.py",           "log": "logs/mes_swing_live.log"},
-            "nq":  {"script": "nq_swing_live.py",            "log": "logs/nq_swing_live.log"},
-            "kalshi": {"script": "kalshi_daemon.py",         "log": "logs/kalshi_bot.log"},
+            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py"},
+            "cl":  {"script": "CL_FUTURES_SCALPER.py"},
+            "mes": {"script": "mes_swing_live.py"},
+            "nq":  {"script": "nq_swing_live.py"},
+            "kalshi": {"script": "kalshi_daemon.py"},
         }
         try:
             ps_out = _subp.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
@@ -5981,12 +5987,19 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         for key, meta in bots.items():
             if bot_filter not in ("all", key):
                 continue
-            log_path = control_tower / meta["log"]
+            log_path = None
+            log_candidates = []
+            legacy_stale_mismatch = False
+            log_resolution = resolve_bot_log(control_tower, key, now=now)
+            if log_resolution.get("path") is not None:
+                log_path = log_resolution["path"]
+            log_candidates = log_resolution.get("candidates") or []
+            legacy_stale_mismatch = bool(log_resolution.get("legacy_stale_mismatch"))
             running = meta["script"] in ps_out
             last_log_mtime = None
             error_count = 0
             tail_preview = ""
-            if log_path.exists():
+            if log_path is not None and log_path.exists():
                 try:
                     last_log_mtime = int(now - log_path.stat().st_mtime)
                     # Read last 100 lines with tail for speed
@@ -6006,6 +6019,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "log_age_seconds": last_log_mtime,
                 "error_count_last_100": error_count,
                 "last_line_preview": tail_preview,
+                "log_path": str(log_path) if log_path else None,
+                "log_candidates": log_candidates,
+                "legacy_stale_mismatch": legacy_stale_mismatch,
             }
 
         # Tradovate token expiry (best-effort)
@@ -9471,6 +9487,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(hb.to_dict())
         except Exception as exc:
             return _text({"error": f"Heartbeat read error: {exc}"})
+
+    elif name == "get_system_health":
+        try:
+            from .trading_system_health import get_system_health
+            return _text(get_system_health())
+        except Exception as exc:
+            return _text({"error": f"System health error: {exc}"})
 
     elif name == "get_adaptive_brain_status":
         try:
