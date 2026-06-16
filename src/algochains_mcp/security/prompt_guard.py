@@ -6,8 +6,8 @@ user/tool attempts to override operator-authored system instructions.
 Operator/system prompts often *describe* attack phrases (e.g. "never reveal
 system prompt") for defensive guidance. Scanning those trusted roles causes
 false positives that trip skill circuit breakers (adaptive-brain,
-crew-orchestrator, slack-command-listener, output-auditor, fat-finger-protection,
-crew-handoff-router).
+crew-orchestrator, risk-scorer, slack-command-listener, output-auditor,
+fat-finger-protection, crew-handoff-router).
 
 By default, trusted roles (system, system_prompt, developer) are NOT scanned.
 Set PROMPT_GUARD_SCAN_SYSTEM=1 to enforce scanning on every role.
@@ -166,6 +166,8 @@ def _is_defensive_catalog_context(text: str, match: re.Match[str]) -> bool:
         "no",
         "any",
         "block",
+        "blocks",
+        "blocked",
         "prevent",
         "avoid",
         "stop",
@@ -173,9 +175,13 @@ def _is_defensive_catalog_context(text: str, match: re.Match[str]) -> bool:
         "reject",
         "decline",
         "deny",
+        "resist",
         "against",
         "without",
         "unless",
+        "cannot",
+        "cant",
+        "can't",
         "dont",
         "don't",
         "include",
@@ -233,6 +239,10 @@ def _is_defensive_catalog_context(text: str, match: re.Match[str]) -> bool:
     } and last == "for":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "e" and last == "g":
+        return True
+    if last == "circumstances" and any(
+        token.lower() == "no" for token in tokens[-4:]
+    ):
         return True
     return False
 
