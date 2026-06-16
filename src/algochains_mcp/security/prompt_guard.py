@@ -5,8 +5,9 @@ user/tool attempts to override operator-authored system instructions.
 
 Operator/system prompts often *describe* attack phrases (e.g. "never reveal
 system prompt") for defensive guidance. Scanning those trusted roles causes
-false positives that trip skill circuit breakers (crew-orchestrator,
-slack-command-listener, output-auditor, fat-finger-protection, crew-handoff-router).
+false positives that trip skill circuit breakers (adaptive-brain,
+crew-orchestrator, slack-command-listener, output-auditor, fat-finger-protection,
+crew-handoff-router).
 
 By default, trusted roles (system, system_prompt, developer) are NOT scanned.
 Set PROMPT_GUARD_SCAN_SYSTEM=1 to enforce scanning on every role.
@@ -110,6 +111,27 @@ def _should_scan_role(role: str, *, scan_system: bool) -> bool:
 def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
     """True when *reveal system prompt* appears in operator defensive guidance."""
     prefix = text[: match.start()]
+    stripped_prefix = prefix.rstrip()
+    if stripped_prefix.endswith(("(", "[", "/")):
+        return True
+    if stripped_prefix.endswith(":"):
+        doc_tokens = re.findall(r"[A-Za-z']+", prefix)
+        if doc_tokens and doc_tokens[-1].lower() in {
+            "examples",
+            "example",
+            "injections",
+            "injection",
+            "patterns",
+            "pattern",
+            "attacks",
+            "attack",
+            "phrases",
+            "phrase",
+            "e",
+            "g",
+        }:
+            return True
+
     tokens = re.findall(r"[A-Za-z']+", prefix)
     if not tokens:
         return False
@@ -124,12 +146,28 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "avoid",
         "stop",
         "refuse",
+        "reject",
+        "decline",
         "deny",
         "against",
         "without",
         "unless",
         "dont",
         "don't",
+        "including",
+        "like",
+        "e",
+        "g",
+        "examples",
+        "example",
+        "injections",
+        "injection",
+        "patterns",
+        "pattern",
+        "attacks",
+        "attack",
+        "phrases",
+        "phrase",
     }:
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "do" and last == "not":
@@ -139,7 +177,23 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "request",
         "attempts",
         "attempt",
+        "tries",
+        "try",
+        "asks",
+        "ask",
     } and last == "to":
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() in {
+        "refuse",
+        "reject",
+        "decline",
+    } and last == "to":
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch"} and last == "as":
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() == "watch" and last == "for":
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() == "e" and last == "g":
         return True
     return False
 
