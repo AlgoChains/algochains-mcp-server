@@ -545,7 +545,23 @@ def format_bracket_integrity_line(result: dict[str, Any]) -> str:
     }.get(status, "[ERROR]")
     if status == "OK":
         count = int(result.get("checked_count", 0) or 0)
-        return f"{prefix} All non-MNQ positions have stop+target brackets ({count} checked)"
+        broker_verified = bool(result.get("broker_verified"))
+        env = result.get("environment")
+        env_suffix = f", {env}" if env else ""
+        if count == 0:
+            if broker_verified:
+                return (
+                    f"{prefix} Non-MNQ book flat — Tradovate verified "
+                    f"(0 positions checked{env_suffix})"
+                )
+            return (
+                f"{prefix} Non-MNQ positions appear flat but broker not verified "
+                f"(0 positions checked)"
+            )
+        return (
+            f"{prefix} All {count} non-MNQ position(s) have stop+target brackets "
+            f"({count} checked{env_suffix})"
+        )
     return f"{prefix} {result.get('message', 'bracket integrity check failed')}"
 
 
@@ -560,6 +576,7 @@ def bracket_integrity_check() -> dict[str, Any]:
     if book.get("status") in {"ERROR", "CONFIG_ERROR"}:
         payload = dict(book)
         payload["checked_count"] = 0
+        payload["broker_verified"] = False
         payload["formatted_line"] = format_bracket_integrity_line(payload)
         return payload
 
@@ -638,6 +655,7 @@ def bracket_integrity_check() -> dict[str, Any]:
         "working_orders_count": len(working_orders),
         "environment": book.get("environment"),
         "source": "live_broker",
+        "broker_verified": True,
     }
     payload["formatted_line"] = format_bracket_integrity_line(payload)
     return payload
@@ -740,19 +758,23 @@ def get_bracket_guardian_status() -> dict:
                 "status": "DEGRADED",
             }
 
-    positions_count = int(result.get("positions_count", 0) or 0)
-    if positions_count == 0 or not result.get("guardian_active"):
-        live = bracket_integrity_check()
-        result["live_check"] = live
-        result["checked_count"] = live.get("checked_count", 0)
-        result["formatted_line"] = live.get("formatted_line") or format_bracket_integrity_line(live)
-        live_status = str(live.get("status", "ERROR")).upper()
-        if live_status != "OK":
-            result["status"] = live_status
-            result["message"] = live.get("message")
-        elif result.get("status") != "ALERT":
-            result["status"] = "OK"
-            result["message"] = live.get("message")
+    live = bracket_integrity_check()
+    result["live_check"] = live
+    result["checked_count"] = live.get("checked_count", 0)
+    result["broker_verified"] = bool(live.get("broker_verified"))
+    result["formatted_line"] = live.get("formatted_line") or format_bracket_integrity_line(live)
+
+    live_status = str(live.get("status", "ERROR")).upper()
+    guardian_status = str(result.get("status", "OK")).upper()
+    severity = {"OK": 0, "ALERT": 2, "DEGRADED": 1, "ERROR": 3, "CONFIG_ERROR": 3}
+    if severity.get(live_status, 3) > severity.get(guardian_status, 0):
+        result["status"] = live_status
+        result["message"] = live.get("message")
+    elif guardian_status == "ALERT":
+        result["status"] = "ALERT"
+    elif live_status == "OK":
+        result["status"] = "OK"
+        result["message"] = live.get("message")
 
     return result
 
