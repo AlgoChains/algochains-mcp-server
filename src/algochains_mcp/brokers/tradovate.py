@@ -748,18 +748,37 @@ class TradovateConnector(BrokerConnector):
                 bid_entry = entries.get("Bid", {})
                 ask_entry = entries.get("Offer", {})
                 trade_entry = entries.get("Trade", {})
+                bid = _first_number(bid_entry, ("price", "Price", "p"))
+                ask = _first_number(ask_entry, ("price", "Price", "p"))
+                last = _first_number(trade_entry, ("price", "Price", "p"))
+                bid = bid if bid is not None and bid > 0 else None
+                ask = ask if ask is not None and ask > 0 else None
+                last = last if last is not None and last > 0 else None
+
+                if last is None:
+                    if bid is not None and ask is not None:
+                        last = (bid + ask) / 2
+                    else:
+                        last = bid if bid is not None else ask
+                if last is None:
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — API returned no price fields",
+                        broker="tradovate",
+                    )
+
+                size = _first_number(trade_entry, ("size", "Size", "s")) or 0
                 return Quote(
                     symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
+                    bid=bid or 0.0,
+                    ask=ask or 0.0,
+                    last=last,
+                    volume=int(size),
                 )
         except Exception as e:
+            if isinstance(e, BrokerQuoteError):
+                raise
             logger.warning("get_quote failed for %s: %s", symbol, e)
 
-        # Return None-sentinel prices so callers can distinguish "API error"
-        # from "market genuinely at zero". Callers must check for float("nan").
         raise BrokerQuoteError(
             f"Quote unavailable for {symbol} — API returned no data",
             broker="tradovate",
