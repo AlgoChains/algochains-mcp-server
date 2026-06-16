@@ -263,3 +263,63 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_uses_bid_ask_midpoint_when_trade_entry_missing():
+    """Bid/ask-only REST quotes are live enough for a positive price."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": f"{symbol}Z5"}
+
+    async def _mock_get(path, params=None):
+        if path == "/md/getQuote":
+            assert params == {"symbol": "MNQZ5"}
+            return {
+                "entries": {
+                    "Bid": {"price": "100.0"},
+                    "Offer": {"price": "101.0"},
+                }
+            }
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.bid == 100.0
+    assert quote.ask == 101.0
+    assert quote.last == 100.5
+
+
+def test_get_quote_fails_closed_when_quote_has_no_positive_price():
+    """REST quote payloads with missing/zero prices must not become valid quotes."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": f"{symbol}Z5"}
+
+    async def _mock_get(path, params=None):
+        if path == "/md/getQuote":
+            return {
+                "entries": {
+                    "Bid": {"price": 0},
+                    "Offer": {"price": None},
+                    "Trade": {"price": ""},
+                }
+            }
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="Quote unavailable"):
+        asyncio.run(_run())
