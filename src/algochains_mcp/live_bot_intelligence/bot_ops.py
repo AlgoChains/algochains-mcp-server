@@ -390,18 +390,26 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
 
 def get_all_bot_ops_status() -> dict:
     """Get bracket status, position state, and process status for all 4 bots."""
+    from .heartbeat import matching_bot_key, scan_running_bot_keys
+
+    def _command_from_ps_line(line: str) -> str:
+        parts = line.split(None, 10)
+        return parts[10] if len(parts) >= 11 else ""
+
     result = {}
-    import re as _re
     ps_output = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
+    running_bots = scan_running_bot_keys(ps_output)
     for bot_id, cfg in BOT_MAP.items():
-        running = any(cfg["grep"] in line and "grep" not in line for line in ps_output.splitlines())
+        running = bot_id in running_bots
         pid = None
         for line in ps_output.splitlines():
-            if cfg["grep"] in line and "grep" not in line:
+            if matching_bot_key(_command_from_ps_line(line)) == bot_id:
                 parts = line.split()
                 if len(parts) > 1:
-                    try: pid = int(parts[1])
-                    except ValueError: pass
+                    try:
+                        pid = int(parts[1])
+                    except ValueError:
+                        pass
                 break
         result[bot_id] = {
             "running": running,
