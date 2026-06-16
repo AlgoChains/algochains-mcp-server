@@ -4064,6 +4064,14 @@ TOOLS = [
          description="Read daily loss proximity guard status: today's P&L vs the $500 hard limit, utilization %, alert/block thresholds (80% alert, 95% block scalpers, MNQ swing exempt), and whether P&L evidence is verified. Returns DEGRADED when P&L source is unknown instead of fail-open OK.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_cron_retry_status",
+         description="Read pending cron trigger retries from ~/.algochains/cron_retries.json without executing them. Returns formatted_line for CRON-RETRY watchdog posts ([OK]/[WAIT]/[RETRY]) instead of bare SILENT when the queue is empty.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="run_cron_retries",
+         description="Process due cron trigger retries with exponential backoff (1s-60s, max 5 attempts) for connection failures. Writes ~/.algochains/cron_retries.json and returns formatted_line ([OK]/[WAIT]/[RETRY]/[FAILED]) for CRON-RETRY watchdog posts.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_WRITE_LOCAL),
     Tool(name="get_agent_loop_status",
          description="Check AI agent loop detection metrics: calls in last 60s, unique call signatures, max identical call count, and loop risk level (LOW/MEDIUM/HIGH). If loop risk is HIGH, a circuit breaker may trip on the next repeated call. Read-only — limits are hard-coded constants.",
          inputSchema={"type": "object", "properties": {}, "required": []},
@@ -5081,6 +5089,8 @@ TIER1_TOOL_NAMES = {
     # V22.1 — Guardrails status (always Tier 1 — safety awareness)
     "get_circuit_breaker_status",
     "get_daily_loss_proximity",
+    "get_cron_retry_status",
+    "run_cron_retries",
     "get_agent_loop_status",
     "get_latency_profile",
     # V22.2 — Onboarding (always Tier 1 — first thing new users see)
@@ -10462,6 +10472,23 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(get_daily_loss_proximity())
         except Exception as exc:
             return _text({"error": f"Daily loss proximity error: {exc}"})
+
+    elif name == "get_cron_retry_status":
+        try:
+            from .cron_retry import get_cron_retry_status
+            return _text(get_cron_retry_status())
+        except Exception as exc:
+            return _text({"error": f"Cron retry status error: {exc}"})
+
+    elif name == "run_cron_retries":
+        try:
+            from .cron_retry import run_cron_retries, run_cron_retries_via_cli
+            result = run_cron_retries_via_cli()
+            if result is None:
+                result = run_cron_retries()
+            return _text(result)
+        except Exception as exc:
+            return _text({"error": f"Cron retry execution error: {exc}"})
 
     elif name == "get_agent_loop_status":
         if not _GUARDRAILS_AVAILABLE:
