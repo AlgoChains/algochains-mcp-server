@@ -4052,6 +4052,10 @@ TOOLS = [
          description="Read current state of all hard-coded trading circuit breakers. Shows which brokers are OPEN/CLOSED/HALF_OPEN, trip reasons, cooldown timers, and current order velocity. These limits are code-level constants — the AI cannot modify them. Use to understand why orders are being blocked.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_daily_loss_proximity",
+         description="Read daily loss proximity guard status: today's P&L vs the $500 hard limit, utilization %, alert/block thresholds (80% alert, 95% block scalpers, MNQ swing exempt), and whether P&L evidence is verified. Returns DEGRADED when P&L source is unknown instead of fail-open OK.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_agent_loop_status",
          description="Check AI agent loop detection metrics: calls in last 60s, unique call signatures, max identical call count, and loop risk level (LOW/MEDIUM/HIGH). If loop risk is HIGH, a circuit breaker may trip on the next repeated call. Read-only — limits are hard-coded constants.",
          inputSchema={"type": "object", "properties": {}, "required": []},
@@ -5066,6 +5070,7 @@ TIER1_TOOL_NAMES = {
     "get_tower_job_status",
     # V22.1 — Guardrails status (always Tier 1 — safety awareness)
     "get_circuit_breaker_status",
+    "get_daily_loss_proximity",
     "get_agent_loop_status",
     "get_latency_profile",
     # V22.2 — Onboarding (always Tier 1 — first thing new users see)
@@ -10411,6 +10416,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(status)
         except Exception as exc:
             return _text({"error": f"Guardrail status error: {exc}"})
+
+    elif name == "get_daily_loss_proximity":
+        try:
+            from .daily_loss_proximity import get_daily_loss_proximity
+            return _text(get_daily_loss_proximity())
+        except Exception as exc:
+            return _text({"error": f"Daily loss proximity error: {exc}"})
 
     elif name == "get_agent_loop_status":
         if not _GUARDRAILS_AVAILABLE:
