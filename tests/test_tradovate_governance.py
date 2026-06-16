@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -262,4 +263,76 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
         return await conn.get_account()
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
+        asyncio.run(_run())
+
+
+def test_front_month_symbol_rolls_mnq_after_quarterly_index_roll_date():
+    """Base MNQ should resolve to the liquid quarterly contract after rollover."""
+    from algochains_mcp.brokers.tradovate import _front_month_symbol
+
+    assert _front_month_symbol("MNQ", datetime(2026, 6, 10, tzinfo=timezone.utc)) == "MNQM6"
+    assert _front_month_symbol("MNQ", datetime(2026, 6, 16, tzinfo=timezone.utc)) == "MNQU6"
+    assert _front_month_symbol("MNQ", datetime(2026, 12, 11, tzinfo=timezone.utc)) == "MNQH7"
+
+
+def test_front_month_symbol_keeps_monthly_contract_cycle_for_cl():
+    """Monthly futures such as CL should keep month-by-month contract selection."""
+    from algochains_mcp.brokers.tradovate import _front_month_symbol
+
+    assert _front_month_symbol("CL", datetime(2026, 6, 16, tzinfo=timezone.utc)) == "CLM6"
+
+
+def test_get_quote_uses_bid_ask_midpoint_when_trade_entry_missing():
+    """A live bid/offer quote is usable market-price evidence even without Trade."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"id": 101, "name": "MNQU6"}
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/md/getQuote":
+            assert params == {"symbol": "MNQU6"}
+            return {
+                "entries": {
+                    "Bid": {"price": 20005.00, "size": 4},
+                    "Offer": {"price": 20005.50, "size": 3},
+                }
+            }
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.symbol == "MNQ"
+    assert quote.bid == 20005.00
+    assert quote.ask == 20005.50
+    assert quote.last == 20005.25
+
+
+def test_get_quote_fails_closed_when_payload_has_no_finite_price():
+    """Empty REST quote payloads must still fail closed instead of returning zero."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"id": 101, "name": symbol}
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/md/getQuote":
+            return {"entries": {}}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="Quote unavailable"):
         asyncio.run(_run())

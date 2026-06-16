@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import calendar
 import time
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
@@ -38,6 +39,8 @@ logger = logging.getLogger("algochains_mcp.brokers.tradovate")
 # Tradovate contract month codes
 MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
                7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+QUARTERLY_INDEX_FUTURES = {"ES", "MES", "NQ", "MNQ", "YM", "MYM", "RTY", "M2K"}
+QUARTERLY_MONTHS = (3, 6, 9, 12)
 
 
 def _jwt_expiry_epoch(access_token: str) -> float | None:
@@ -74,11 +77,38 @@ def _jwt_expiry_epoch(access_token: str) -> float | None:
     return None
 
 
-def _front_month_symbol(base: str) -> str:
-    """Convert base symbol (MNQ) to front-month Tradovate symbol (MNQZ5)."""
-    now = datetime.now(timezone.utc)
-    month_code = MONTH_CODES.get(now.month, "Z")
-    year_digit = str(now.year)[-1]
+def _second_thursday(year: int, month: int) -> datetime:
+    month_calendar = calendar.monthcalendar(year, month)
+    thursdays = [week[calendar.THURSDAY] for week in month_calendar if week[calendar.THURSDAY]]
+    return datetime(year, month, thursdays[1], tzinfo=timezone.utc)
+
+
+def _active_quarterly_contract(now: datetime) -> tuple[int, int]:
+    """Return the active quarterly futures contract month/year.
+
+    Equity index futures typically roll on the second Thursday of the
+    contract month. Use that rollover boundary for base symbols like MNQ so
+    REST fallbacks follow the same liquid contract as the live bot feed.
+    """
+    as_of = now.astimezone(timezone.utc)
+    for month in QUARTERLY_MONTHS:
+        if as_of.month < month:
+            return month, as_of.year
+        if as_of.month == month and as_of < _second_thursday(as_of.year, month):
+            return month, as_of.year
+    return 3, as_of.year + 1
+
+
+def _front_month_symbol(base: str, now: datetime | None = None) -> str:
+    """Convert base symbol (MNQ) to an active Tradovate contract symbol."""
+    as_of = now or datetime.now(timezone.utc)
+    symbol = base.upper()
+    if symbol in QUARTERLY_INDEX_FUTURES:
+        month, year = _active_quarterly_contract(as_of)
+    else:
+        month, year = as_of.month, as_of.year
+    month_code = MONTH_CODES.get(month, "Z")
+    year_digit = str(year)[-1]
     return f"{base}{month_code}{year_digit}"
 
 
@@ -124,6 +154,55 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
         if value is not None:
             return value
     return None
+
+
+def _quote_entry(entries: object, names: tuple[str, ...]) -> dict:
+    if not isinstance(entries, dict):
+        return {}
+    lowered = {name.lower(): value for name, value in entries.items()}
+    for name in names:
+        value = lowered.get(name.lower())
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _quote_from_payload(symbol: str, payload: object) -> Quote | None:
+    if not isinstance(payload, dict):
+        return None
+
+    entries = payload.get("entries")
+    bid_entry = _quote_entry(entries, ("Bid", "BestBid"))
+    ask_entry = _quote_entry(entries, ("Offer", "Ask", "BestAsk"))
+    trade_entry = _quote_entry(entries, ("Trade", "Last"))
+
+    bid = _first_number(bid_entry, ("price", "Price"))
+    ask = _first_number(ask_entry, ("price", "Price"))
+    last = _first_number(trade_entry, ("price", "Price"))
+
+    if bid is None:
+        bid = _first_number(payload, ("bid", "bidPrice", "bestBid"))
+    if ask is None:
+        ask = _first_number(payload, ("ask", "askPrice", "offer", "offerPrice", "bestAsk"))
+    if last is None:
+        last = _first_number(payload, ("last", "lastPrice", "trade", "tradePrice", "price"))
+    if last is None and bid is not None and ask is not None:
+        last = (bid + ask) / 2.0
+    if last is None:
+        last = bid if bid is not None else ask
+    if last is None:
+        return None
+
+    volume = _first_number(trade_entry, ("size", "volume")) or _first_number(
+        payload, ("volume", "lastSize")
+    ) or 0.0
+    return Quote(
+        symbol=symbol,
+        bid=bid or 0.0,
+        ask=ask or 0.0,
+        last=last,
+        volume=int(volume),
+    )
 
 
 class TradovateConnector(BrokerConnector):
@@ -743,18 +822,9 @@ class TradovateConnector(BrokerConnector):
             )
         try:
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
-            if isinstance(quotes, dict):
-                entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
-                return Quote(
-                    symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
-                )
+            quote = _quote_from_payload(symbol, quotes)
+            if quote:
+                return quote
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 
