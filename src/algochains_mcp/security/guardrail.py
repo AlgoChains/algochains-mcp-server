@@ -37,6 +37,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from algochains_mcp.daily_loss_proximity import evaluate_daily_loss_proximity
+
 logger = logging.getLogger("algochains_mcp.guardrail")
 
 # ── Configurable thresholds ────────────────────────────────────────────────────
@@ -79,7 +81,13 @@ def _gate_vix(symbol: str, vix: float | None) -> tuple[bool, str]:
     return True, f"VIX {vix} < {_VIX_MAX} — ok"
 
 
-def _gate_daily_loss(daily_pnl: float | None) -> tuple[bool, str]:
+def _gate_daily_loss(
+    daily_pnl: float | None,
+    symbol: str,
+    strategy_type: str | None = None,
+    bot_name: str | None = None,
+    is_new_entry: bool = True,
+) -> tuple[bool, str]:
     """Block if today's realized loss has hit the hard limit."""
     if daily_pnl is None:
         try:
@@ -97,7 +105,22 @@ def _gate_daily_loss(daily_pnl: float | None) -> tuple[bool, str]:
     loss = -daily_pnl  # positive = loss
     if loss >= _DAILY_LOSS_MAX:
         return False, f"Daily loss ${loss:.2f} ≥ hard limit ${_DAILY_LOSS_MAX} — trading halted"
-    return True, f"Daily P&L ${daily_pnl:.2f} within limit"
+    proximity = evaluate_daily_loss_proximity(
+        daily_pnl,
+        _DAILY_LOSS_MAX,
+        symbol=symbol,
+        strategy_type=strategy_type,
+        bot_name=bot_name,
+        is_new_entry=is_new_entry,
+    )
+    if proximity.block_scalper_entry:
+        return False, proximity.message
+    if proximity.alert:
+        logger.warning(
+            "GUARDRAIL daily-loss proximity alert: %s symbol=%s strategy_type=%s bot_name=%s",
+            proximity.message, symbol, strategy_type, bot_name,
+        )
+    return True, proximity.message
 
 
 def _gate_stoploss_guard(symbol: str) -> tuple[bool, str]:
@@ -166,6 +189,9 @@ def run_guardrail(
     confidence: float | None = None,
     vix: float | None = None,
     daily_pnl: float | None = None,
+    strategy_type: str | None = None,
+    bot_name: str | None = None,
+    is_new_entry: bool = True,
     gates: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run the full GUARDRAIL chain. Returns approved=True only if all gates pass.
@@ -178,11 +204,20 @@ def run_guardrail(
         confidence:  Model confidence 0–1 (optional)
         vix:         Current VIX level (optional, reads env if not provided)
         daily_pnl:   Today's realized P&L (optional, reads env if not provided)
+        strategy_type: Optional strategy label used by daily-loss proximity policy
+        bot_name:    Optional bot label used by daily-loss proximity policy
+        is_new_entry: Whether this check is for a new entry vs. protective/exit flow
         gates:       List of gate names to run. Omit for all gates.
     """
     all_gates = {
         "vix": lambda: _gate_vix(symbol, vix),
-        "daily_loss": lambda: _gate_daily_loss(daily_pnl),
+        "daily_loss": lambda: _gate_daily_loss(
+            daily_pnl,
+            symbol,
+            strategy_type=strategy_type,
+            bot_name=bot_name,
+            is_new_entry=is_new_entry,
+        ),
         "stoploss_guard": lambda: _gate_stoploss_guard(symbol),
         "cooldown": lambda: _gate_cooldown(symbol),
         "confidence": lambda: _gate_confidence(confidence),

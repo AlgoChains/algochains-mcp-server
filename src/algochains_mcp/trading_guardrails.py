@@ -35,6 +35,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Deque, Dict, Optional
 
+from algochains_mcp.daily_loss_proximity import evaluate_daily_loss_proximity
+
 logger = logging.getLogger("algochains_mcp.guardrails")
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -520,7 +522,15 @@ class TradingGuardrails:
                 cooldown_sec=3600 - (self._velocity.orders_in_last_hour() * 60),
             )
 
-    def check_daily_loss(self, broker: str, current_daily_pnl: float) -> None:
+    def check_daily_loss(
+        self,
+        broker: str,
+        symbol: str,
+        current_daily_pnl: float,
+        strategy_type: str | None = None,
+        bot_name: str | None = None,
+        is_new_entry: bool = True,
+    ) -> None:
         if current_daily_pnl <= -MAX_DAILY_LOSS_USD:
             self._trip(broker, GuardrailReason.DAILY_LOSS,
                        f"Daily P&L: ${current_daily_pnl:.2f} (limit -${MAX_DAILY_LOSS_USD:.0f})",
@@ -531,6 +541,24 @@ class TradingGuardrails:
                 f"(hard limit: -${MAX_DAILY_LOSS_USD:.0f}). "
                 "No new orders until tomorrow's open.",
                 cooldown_sec=CB_DAILY_LOSS_COOLDOWN_SEC,
+            )
+        proximity = evaluate_daily_loss_proximity(
+            current_daily_pnl,
+            MAX_DAILY_LOSS_USD,
+            symbol=symbol,
+            strategy_type=strategy_type,
+            bot_name=bot_name,
+            is_new_entry=is_new_entry,
+        )
+        if proximity.block_scalper_entry:
+            raise GuardrailTripped(
+                GuardrailReason.DAILY_LOSS,
+                proximity.message,
+            )
+        if proximity.alert:
+            logger.warning(
+                "Daily-loss proximity alert broker=%s symbol=%s strategy_type=%s bot_name=%s | %s",
+                broker, symbol, strategy_type, bot_name, proximity.message,
             )
 
     def check_drawdown(self, broker: str, current_drawdown_pct: float) -> None:
@@ -608,6 +636,9 @@ class TradingGuardrails:
         consecutive_losses: int = 0,
         vix: float = 0.0,
         total_open_notional: float = 0.0,
+        strategy_type: str | None = None,
+        bot_name: str | None = None,
+        is_new_entry: bool = True,
     ) -> None:
         """
         Master pre-order gate. Raises GuardrailTripped if ANY hard limit is breached.
@@ -622,6 +653,9 @@ class TradingGuardrails:
             consecutive_losses: Count of losing trades in a row
             vix: Current VIX level (0.0 = skip check)
             total_open_notional: Total USD notional across all open positions
+            strategy_type: Optional strategy label for daily-loss proximity policy
+            bot_name: Optional bot label for daily-loss proximity policy
+            is_new_entry: Whether this check is for a new entry
         """
         # 1. Circuit breaker state (fastest — blocks if already OPEN)
         self._check_cb_state(broker)
@@ -632,7 +666,14 @@ class TradingGuardrails:
 
         # 3. Financial loss limits
         if current_daily_pnl != 0:
-            self.check_daily_loss(broker, current_daily_pnl)
+            self.check_daily_loss(
+                broker,
+                symbol,
+                current_daily_pnl,
+                strategy_type=strategy_type,
+                bot_name=bot_name,
+                is_new_entry=is_new_entry,
+            )
         if current_drawdown_pct > 0:
             self.check_drawdown(broker, current_drawdown_pct)
         if consecutive_losses > 0:

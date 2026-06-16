@@ -362,3 +362,80 @@ def test_legacy_monotonic_ai_loop_state_is_dropped_on_restart(
     assert status["all_clear"] is True
     assert status["broker_circuit_breakers"] == {}
     assert json.loads(state_path.read_text()) == {}
+
+
+def test_daily_loss_proximity_warns_at_eighty_percent_without_blocking(
+    isolated_guardrails, caplog
+):
+    guardrails = tg.TradingGuardrails()
+    caplog.set_level("WARNING", logger="algochains_mcp.guardrails")
+
+    guardrails.check_all(
+        broker="tradovate",
+        symbol="MNQ",
+        qty_contracts=1,
+        current_daily_pnl=-400.0,
+    )
+
+    assert "Daily-loss proximity alert" in caplog.text
+    assert guardrails.get_status()["all_clear"] is True
+
+
+def test_daily_loss_proximity_blocks_scalper_entry_without_opening_breaker(
+    isolated_guardrails,
+):
+    guardrails = tg.TradingGuardrails()
+
+    with pytest.raises(tg.GuardrailTripped) as excinfo:
+        guardrails.check_all(
+            broker="tradovate",
+            symbol="MNQ",
+            qty_contracts=1,
+            current_daily_pnl=-475.0,
+            strategy_type="scalper",
+            bot_name="MNQ_Upgraded_Scalper",
+        )
+
+    assert excinfo.value.reason == tg.GuardrailReason.DAILY_LOSS
+    assert excinfo.value.cooldown_sec == 0
+    assert "new scalper entries blocked" in str(excinfo.value)
+    status = guardrails.get_status()
+    assert status["broker_circuit_breakers"]["tradovate"]["state"] == "CLOSED"
+    assert status["all_clear"] is True
+
+
+def test_daily_loss_proximity_allows_mnq_swing_at_ninety_five_percent(
+    isolated_guardrails,
+):
+    guardrails = tg.TradingGuardrails()
+
+    guardrails.check_all(
+        broker="tradovate",
+        symbol="MNQ",
+        qty_contracts=1,
+        current_daily_pnl=-475.0,
+        strategy_type="swing",
+        bot_name="MNQ_EMA_Swing",
+    )
+
+    assert guardrails.get_status()["all_clear"] is True
+
+
+def test_hard_daily_loss_still_opens_daily_loss_breaker(isolated_guardrails):
+    guardrails = tg.TradingGuardrails()
+
+    with pytest.raises(tg.GuardrailTripped) as excinfo:
+        guardrails.check_all(
+            broker="tradovate",
+            symbol="MNQ",
+            qty_contracts=1,
+            current_daily_pnl=-500.0,
+            strategy_type="swing",
+            bot_name="MNQ_EMA_Swing",
+        )
+
+    assert excinfo.value.reason == tg.GuardrailReason.DAILY_LOSS
+    assert excinfo.value.cooldown_sec == tg.CB_DAILY_LOSS_COOLDOWN_SEC
+    status = guardrails.get_status()
+    assert status["broker_circuit_breakers"]["tradovate"]["state"] == "OPEN"
+    assert status["all_clear"] is False
