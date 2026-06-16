@@ -366,6 +366,8 @@ _TOOL_TIERS: dict[str, int] = {
     # financials. Keep them owner-gated until a creator-authenticated context exists.
     "create_creator_onboarding_link": TIER_ORDER_EXEC,
     "get_my_creator_earnings": TIER_ORDER_EXEC,
+    "run_creator_payouts": TIER_ORDER_EXEC,
+    "reconcile_creator_pnl": TIER_ORDER_EXEC,
 
     # ── Subscriber tools (HTTP bridge SUBSCRIBER_TOOLS surface) ──────────────
     # Read-only subscriber views
