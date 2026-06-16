@@ -263,3 +263,76 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_uses_bid_ask_midpoint_when_trade_missing():
+    """A live bid/ask quote is valid price evidence even when no last trade prints."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": f"{symbol}M6"}
+
+    async def _mock_get(path, params=None):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {
+            "entries": {
+                "Bid": {"price": 19500.25, "size": 3},
+                "Offer": {"price": 19500.75, "size": 2},
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    quote = asyncio.run(conn.get_quote("MNQ"))
+
+    assert quote.bid == 19500.25
+    assert quote.ask == 19500.75
+    assert quote.last == 19500.5
+    assert quote.volume == 0
+
+
+def test_get_quote_uses_one_sided_bid_when_trade_and_ask_missing():
+    """Use one positive side as a last-resort REST price instead of returning zero."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": f"{symbol}M6"}
+
+    async def _mock_get(path, params=None):
+        return {"entries": {"Bid": {"price": "19501.25"}}}
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    quote = asyncio.run(conn.get_quote("MNQ"))
+
+    assert quote.bid == 19501.25
+    assert quote.ask == 0.0
+    assert quote.last == 19501.25
+
+
+def test_get_quote_raises_when_no_positive_price_fields():
+    """Missing trade/bid/ask remains fail-closed; never fabricate a zero price."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": f"{symbol}M6"}
+
+    async def _mock_get(path, params=None):
+        return {
+            "entries": {
+                "Bid": {"price": 0},
+                "Offer": {"price": None},
+                "Trade": {"price": 0},
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    with pytest.raises(BrokerQuoteError, match="no positive bid, ask, or trade price"):
+        asyncio.run(conn.get_quote("MNQ"))
