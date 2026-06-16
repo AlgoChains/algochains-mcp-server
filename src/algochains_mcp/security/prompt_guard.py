@@ -6,8 +6,8 @@ user/tool attempts to override operator-authored system instructions.
 Operator/system prompts often *describe* attack phrases (e.g. "never reveal
 system prompt") for defensive guidance. Scanning those trusted roles causes
 false positives that trip skill circuit breakers (adaptive-brain,
-crew-orchestrator, slack-command-listener, output-auditor, fat-finger-protection,
-crew-handoff-router).
+agent-orchestrator-v2, crew-orchestrator, slack-command-listener, output-auditor,
+fat-finger-protection, crew-handoff-router).
 
 By default, trusted roles (system, system_prompt, developer) are NOT scanned.
 Set PROMPT_GUARD_SCAN_SYSTEM=1 to enforce scanning on every role.
@@ -67,6 +67,50 @@ def _compile_patterns() -> tuple[_InjectionPattern, ...]:
 
 INJECTION_PATTERNS: tuple[_InjectionPattern, ...] = _compile_patterns()
 
+# Suffix of text immediately before a "reveal system prompt" match — defensive guidance.
+_DEFENSIVE_REVEAL_PREFIX_TAIL = re.compile(
+    r"(?:"
+    r"\bif\s+(?:the\s+)?user\s+asks?\s+(?:you\s+)?to\s*$"
+    r"|\bwhen\s+users?\s+asks?\s+(?:you\s+)?to\s*$"
+    r"|\bif\s+asked\s+to\s*$"
+    r"|\basks?\s+(?:you\s+)?to\s*$"
+    r"|\b(?:cannot|can't|cant)\s*$"
+    r"|\bunder\s+no\s+circumstances\s*$"
+    r"|\b(?:monitor|watch)\s+for\s*$"
+    r"|\b(?:include|includes|including)\s*$"
+    r"|\bdo\s+not\s+comply\s+with\s*$"
+    r"|\b(?:must|should|will)\s+not\s*$"
+    r")",
+    re.IGNORECASE,
+)
+
+_COLON_CONTEXT_TOKENS = frozenset(
+    {
+        "examples",
+        "example",
+        "injections",
+        "injection",
+        "patterns",
+        "pattern",
+        "attacks",
+        "attack",
+        "phrases",
+        "phrase",
+        "policy",
+        "security",
+        "guard",
+        "guardrail",
+        "compliance",
+        "blocked",
+        "known",
+        "such",
+        "include",
+        "t094",
+        "e",
+        "g",
+    }
+)
+
 
 def scan_system_prompts_enabled() -> bool:
     """Return True when operator prompts should also be scanned."""
@@ -112,24 +156,19 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
     """True when *reveal system prompt* appears in operator defensive guidance."""
     prefix = text[: match.start()]
     stripped_prefix = prefix.rstrip()
+    suffix = text[match.end() :]
+
     if stripped_prefix.endswith(("(", "[", "/")):
+        return True
+    if stripped_prefix.endswith("`") or suffix.lstrip().startswith("`"):
+        return True
+    if re.search(r"[\-*•]\s*$", stripped_prefix):
+        return True
+    if _DEFENSIVE_REVEAL_PREFIX_TAIL.search(prefix):
         return True
     if stripped_prefix.endswith(":"):
         doc_tokens = re.findall(r"[A-Za-z']+", prefix)
-        if doc_tokens and doc_tokens[-1].lower() in {
-            "examples",
-            "example",
-            "injections",
-            "injection",
-            "patterns",
-            "pattern",
-            "attacks",
-            "attack",
-            "phrases",
-            "phrase",
-            "e",
-            "g",
-        }:
+        if doc_tokens and doc_tokens[-1].lower() in _COLON_CONTEXT_TOKENS:
             return True
 
     tokens = re.findall(r"[A-Za-z']+", prefix)
@@ -156,6 +195,7 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "don't",
         "including",
         "like",
+        "for",
         "e",
         "g",
         "examples",
@@ -168,6 +208,9 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "attack",
         "phrases",
         "phrase",
+        "cannot",
+        "cant",
+        "circumstances",
     }:
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "do" and last == "not":
@@ -181,6 +224,7 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "try",
         "asks",
         "ask",
+        "asked",
     } and last == "to":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() in {
@@ -189,11 +233,15 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "decline",
     } and last == "to":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch"} and last == "as":
+    if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch", "monitor"} and last == "as":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() == "watch" and last == "for":
+    if len(tokens) >= 2 and tokens[-2].lower() in {"watch", "monitor"} and last == "for":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "e" and last == "g":
+        return True
+    if len(tokens) >= 3 and tokens[-3].lower() in {"must", "should", "will"} and tokens[-2].lower() == "not":
+        return True
+    if "ask" in {t.lower() for t in tokens[-4:]} and last == "to":
         return True
     return False
 
