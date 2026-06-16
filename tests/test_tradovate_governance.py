@@ -263,3 +263,60 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_uses_bid_ask_midpoint_when_trade_price_missing():
+    """Bid/offer-only REST quotes still provide a usable live price."""
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/contract/find":
+            return {"name": "MNQM6"}
+        if path == "/md/getQuote":
+            assert params == {"symbol": "MNQM6"}
+            return {
+                "entries": {
+                    "Bid": {"price": "100.0"},
+                    "Offer": {"price": "101.0"},
+                }
+            }
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.symbol == "MNQ"
+    assert quote.bid == 100.0
+    assert quote.ask == 101.0
+    assert quote.last == 100.5
+
+
+def test_get_quote_fails_closed_when_no_positive_price_fields():
+    """Missing/zero quote prices must not be normalized into a fake zero price."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/contract/find":
+            return {"name": "MNQM6"}
+        if path == "/md/getQuote":
+            return {
+                "entries": {
+                    "Bid": {"price": 0},
+                    "Offer": {"price": None},
+                    "Trade": {},
+                }
+            }
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="no positive Bid/Offer/Trade price"):
+        asyncio.run(_run())
