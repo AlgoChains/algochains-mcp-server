@@ -126,6 +126,44 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _quote_entry_number(entries: object, field: str, *names: str) -> float | None:
+    """Read a numeric quote field from Tradovate's dict or list entry shapes."""
+    candidates = {name.lower() for name in names}
+    if isinstance(entries, dict):
+        for name in names:
+            entry = entries.get(name)
+            if isinstance(entry, dict):
+                value = _optional_float(entry.get(field))
+                if value is not None:
+                    return value
+            else:
+                value = _optional_float(entry)
+                if value is not None:
+                    return value
+
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_name = str(
+                entry.get("name")
+                or entry.get("type")
+                or entry.get("quoteType")
+                or entry.get("key")
+                or ""
+            ).lower()
+            if entry_name in candidates:
+                value = _optional_float(entry.get(field))
+                if value is not None:
+                    return value
+    return None
+
+
+def _quote_entry_price(entries: object, *names: str) -> float | None:
+    price = _quote_entry_number(entries, "price", *names)
+    return price if price is not None and price > 0 else None
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -745,21 +783,36 @@ class TradovateConnector(BrokerConnector):
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
             if isinstance(quotes, dict):
                 entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
+                bid = _quote_entry_price(entries, "Bid", "BestBid")
+                ask = _quote_entry_price(entries, "Offer", "Ask", "BestAsk")
+                trade = _quote_entry_price(entries, "Trade", "Last", "LastTrade")
+                if trade is not None:
+                    last = trade
+                elif bid is not None and ask is not None:
+                    last = (bid + ask) / 2.0
+                else:
+                    last = bid if bid is not None else ask
+                if last is None:
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — no positive bid/ask/trade price",
+                        broker="tradovate",
+                    )
+                volume = int(
+                    _quote_entry_number(entries, "size", "Trade", "Last", "LastTrade")
+                    or 0
+                )
                 return Quote(
                     symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
+                    bid=bid or 0.0,
+                    ask=ask or 0.0,
+                    last=last,
+                    volume=volume,
                 )
+        except BrokerQuoteError:
+            raise
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 
-        # Return None-sentinel prices so callers can distinguish "API error"
-        # from "market genuinely at zero". Callers must check for float("nan").
         raise BrokerQuoteError(
             f"Quote unavailable for {symbol} — API returned no data",
             broker="tradovate",

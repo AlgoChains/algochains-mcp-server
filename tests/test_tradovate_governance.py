@@ -263,3 +263,65 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_uses_bid_ask_midpoint_when_trade_entry_missing():
+    """Tradovate can return a live bid/offer before a Trade entry is present."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"name": "MNQU6"}
+
+    async def _mock_get(path, params=None):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQU6"}
+        return {
+            "entries": {
+                "Bid": {"price": "19750.25", "size": 3},
+                "Offer": {"price": "19750.75", "size": 2},
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.symbol == "MNQ"
+    assert quote.bid == 19750.25
+    assert quote.ask == 19750.75
+    assert quote.last == 19750.5
+
+
+def test_get_quote_fails_closed_when_quote_has_no_positive_price():
+    """Empty/zero quote payloads must not become a synthetic zero market price."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"name": "MNQU6"}
+
+    async def _mock_get(path, params=None):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQU6"}
+        return {
+            "entries": {
+                "Bid": {"price": 0},
+                "Offer": {"price": None},
+                "Trade": {"price": ""},
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="no positive bid/ask/trade"):
+        asyncio.run(_run())
