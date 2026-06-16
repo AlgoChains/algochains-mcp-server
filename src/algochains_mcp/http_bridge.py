@@ -1123,12 +1123,27 @@ def create_fastapi_app():
             reverse=True,
         )[:5]
 
-        bot_procs = {
-            "mnq": _bot_process_alive("FUTURES_SCALPER_UPGRADED"),
-            "cl": _bot_process_alive("CL_FUTURES_SCALPER"),
-            "mes": _bot_process_alive("mes_swing_live"),
-            "nq": _bot_process_alive("nq_swing_live"),
-        }
+        try:
+            from algochains_mcp.live_bot_intelligence.heartbeat import (
+                BOT_SCRIPT_NAMES,
+                EXPECTED_DESKTOP_BOT_COUNT,
+                scan_running_bot_keys,
+            )
+
+            running_bots = scan_running_bot_keys()
+            bot_procs = {
+                bot_key: bot_key in running_bots for bot_key in BOT_SCRIPT_NAMES
+            }
+            expected_bot_count = EXPECTED_DESKTOP_BOT_COUNT
+        except Exception:
+            bot_procs = {
+                "mnq": _bot_process_alive("FUTURES_SCALPER_UPGRADED"),
+                "cl": _bot_process_alive("CL_FUTURES_SCALPER"),
+                "mes": _bot_process_alive("mes_swing_live"),
+                "nq": _bot_process_alive("nq_swing_live"),
+                "kalshi": _bot_process_alive("kalshi_daemon"),
+            }
+            expected_bot_count = 5
 
         # E2E sentinel summary
         sentinel_summary = summarize_e2e_sentinel_state(sentinel)
@@ -1158,6 +1173,8 @@ def create_fastapi_app():
             "server": f"AlgoChains v{_SERVER_VERSION}",
             "ts": datetime.now(timezone.utc).isoformat(),
             "bots_alive": bot_procs,
+            "bots_running_count": sum(1 for alive in bot_procs.values() if alive),
+            "bots_expected_count": expected_bot_count,
             "all_bots_running": all(bot_procs.values()),
             "sentinel": sentinel_summary,
             "guardian": guardian_summary,

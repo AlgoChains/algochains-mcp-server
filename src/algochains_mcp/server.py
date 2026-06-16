@@ -3915,7 +3915,7 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_system_heartbeat",
-         description="Check whether this MCP server node is the primary trader (MacBook offline) or standby (MacBook alive). Reads the Mac heartbeat file to determine heartbeat age, Mac liveness, and which node is currently running the bots. Critical for dual-node failover awareness.",
+         description="Check whether this MCP server node is the primary trader (MacBook offline) or standby (MacBook alive). Reads the Mac heartbeat file to determine heartbeat age, Mac liveness, desktop bot process counts (expected 5: MNQ/CL/MES/NQ + Kalshi), and which node is currently running the bots. Critical for dual-node failover awareness.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_adaptive_brain_status",
@@ -5972,9 +5972,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             "kalshi": {"script": "kalshi_daemon.py",         "log": "logs/kalshi_bot.log"},
         }
         try:
+            from .live_bot_intelligence.heartbeat import scan_running_bot_keys
+
             ps_out = _subp.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
+            running_bots = scan_running_bot_keys(ps_out)
         except Exception:
             ps_out = ""
+            running_bots = set()
 
         now = _time.time()
         results = {}
@@ -5982,7 +5986,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             if bot_filter not in ("all", key):
                 continue
             log_path = control_tower / meta["log"]
-            running = meta["script"] in ps_out
+            running = key in running_bots
             last_log_mtime = None
             error_count = 0
             tail_preview = ""
