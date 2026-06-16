@@ -1302,12 +1302,14 @@ def create_fastapi_app():
 
         LOG_PATHS = [
             ("mnq", "logs/futures_bot_live.log"),
+            ("mnq", "logs/futures_bot_demo.log"),
             ("cl", "logs/cl_futures_live.log"),
             ("mes", "logs/mes_swing_live.log"),
             ("nq", "logs/nq_swing_live.log"),
         ]
         LOG_KEYWORDS = ("SIGNAL", "FILL", "EXIT", "ERROR", "Exception", "Traceback",
-                        "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2")
+                        "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2",
+                        "FAIL-CLOSED", "md_quote_feed", "No live market price", "Order aborted")
 
         def _classify_line(line: str) -> str | None:
             lower_line = line.lower()
@@ -1321,6 +1323,8 @@ def create_fastapi_app():
                 return "error"
             if any(keyword in lower_line for keyword in ("bracket", "stop_order", "target_order")):
                 return "bracket"
+            if any(keyword in lower_line for keyword in ("fail-closed", "no live market price", "md_quote_feed")):
+                return "error"
             return None
 
         # Track last-seen file offset per log
@@ -1352,7 +1356,8 @@ def create_fastapi_app():
                                     line = raw_line.strip()
                                     if not line:
                                         continue
-                                    if not any(kw in line for kw in LOG_KEYWORDS):
+                                    lower_line = line.lower()
+                                    if not any(kw.lower() in lower_line for kw in LOG_KEYWORDS):
                                         continue
                                     event_type = _classify_line(line)
                                     if event_type:

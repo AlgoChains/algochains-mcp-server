@@ -28,6 +28,7 @@ from typing import Any, Optional
 # the shared legacy list (Mac, /home/trrey, WSL). Behavior on the MacBook is
 # unchanged: env typically unset → first existing legacy path = Mac repo.
 from algochains_mcp.paths import default_control_tower
+from .log_sources import select_bot_log, summarize_price_source_health
 
 CONTROL_TOWER = default_control_tower()
 
@@ -256,8 +257,8 @@ def get_bracket_status(bot_id: str) -> dict:
     if bot_id not in BOT_MAP:
         return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(BOT_MAP)}"}
 
-    cfg = BOT_MAP[bot_id]
-    log_path = CONTROL_TOWER / cfg["log"]
+    log_source = select_bot_log(CONTROL_TOWER, bot_id)
+    log_path = log_source.path
 
     if not log_path.exists():
         return {"bot": bot_id, "mode": "unknown", "detail": "Log file not found"}
@@ -311,8 +312,8 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     if bot_id not in BOT_MAP:
         return {"error": f"Unknown bot_id. Valid: {list(BOT_MAP)}"}
 
-    cfg = BOT_MAP[bot_id]
-    log_path = CONTROL_TOWER / cfg["log"]
+    log_source = select_bot_log(CONTROL_TOWER, bot_id)
+    log_path = log_source.path
     detail = None
 
     try:
@@ -348,6 +349,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     )
     telemetry_timeout = decision_timeout_rate > 0.0 or multi_agent_p95_over_timeout
     pipeline_timeout_detected = timeout_event or telemetry_timeout
+    price_source_status = summarize_price_source_health(tail.splitlines()[-100:])
 
     mode = "unknown"
     if shadow_mode or pipeline_timeout_detected:
@@ -359,6 +361,8 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
 
     return {
         "bot": bot_id,
+        "log_path": str(log_path),
+        "log_variant": log_source.variant,
         "mode": mode,
         "advisory_only": True,
         "blocks_trades": False,
@@ -375,6 +379,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         "pipeline_timeout_config_source": timeout_source,
         "decision_latency": decision_latency,
         "desktop_inference": desktop_inference,
+        "price_source_status": price_source_status,
         "cerebras_model": "llama3.1-8b",
         "detail": detail,
         "note": (

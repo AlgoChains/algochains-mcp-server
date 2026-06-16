@@ -5957,19 +5957,25 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_bot_health":
         # Unified health snapshot across all live bots. Pure filesystem + ps read.
+        from collections import deque as _deque
         import os as _os
         import subprocess as _subp
         import time as _time
         from pathlib import Path as _Path
+        from .live_bot_intelligence.log_sources import (
+            bot_log_candidates as _bot_log_candidates,
+            select_bot_log as _select_bot_log,
+            summarize_price_source_health as _summarize_price_source_health,
+        )
 
         bot_filter = (arguments.get("bot") or "all").lower()
         control_tower = _Path(_default_control_tower())
         bots = {
-            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},
-            "cl":  {"script": "CL_FUTURES_SCALPER.py",       "log": "logs/cl_futures_live.log"},
-            "mes": {"script": "mes_swing_live.py",           "log": "logs/mes_swing_live.log"},
-            "nq":  {"script": "nq_swing_live.py",            "log": "logs/nq_swing_live.log"},
-            "kalshi": {"script": "kalshi_daemon.py",         "log": "logs/kalshi_bot.log"},
+            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py"},
+            "cl":  {"script": "CL_FUTURES_SCALPER.py"},
+            "mes": {"script": "mes_swing_live.py"},
+            "nq":  {"script": "nq_swing_live.py"},
+            "kalshi": {"script": "kalshi_daemon.py", "log": "logs/kalshi_bot.log"},
         }
         try:
             ps_out = _subp.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
@@ -5981,30 +5987,43 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         for key, meta in bots.items():
             if bot_filter not in ("all", key):
                 continue
-            log_path = control_tower / meta["log"]
+            if key == "kalshi":
+                log_path = control_tower / meta["log"]
+                log_variant = "live"
+                log_candidates = (("live", log_path),)
+            else:
+                log_source = _select_bot_log(control_tower, key)
+                log_path = log_source.path
+                log_variant = log_source.variant
+                log_candidates = _bot_log_candidates(control_tower, key)
             running = meta["script"] in ps_out
             last_log_mtime = None
             error_count = 0
             tail_preview = ""
+            tail_lines: list[str] = []
             if log_path.exists():
                 try:
                     last_log_mtime = int(now - log_path.stat().st_mtime)
-                    # Read last 100 lines with tail for speed
-                    tail = _subp.run(
-                        ["tail", "-n", "100", str(log_path)],
-                        capture_output=True, text=True, timeout=3,
-                    ).stdout
+                    with log_path.open("r", encoding="utf-8", errors="replace") as _log_handle:
+                        tail_lines = list(_deque(_log_handle, maxlen=100))
                     error_count = sum(
-                        1 for ln in tail.splitlines()
+                        1 for ln in tail_lines
                         if any(tok in ln for tok in ("ERROR", "Exception", "Traceback", " 401", " 422"))
                     )
-                    tail_preview = tail.splitlines()[-1][:200] if tail.strip() else ""
+                    tail_preview = tail_lines[-1].strip()[:200] if tail_lines else ""
                 except Exception:
                     pass
             results[key] = {
                 "running": running,
+                "log_path": str(log_path),
+                "log_variant": log_variant,
+                "alternate_log_paths": [
+                    {"variant": variant, "path": str(path), "exists": path.exists()}
+                    for variant, path in log_candidates
+                ],
                 "log_age_seconds": last_log_mtime,
                 "error_count_last_100": error_count,
+                "price_source_status": _summarize_price_source_health(tail_lines),
                 "last_line_preview": tail_preview,
             }
 

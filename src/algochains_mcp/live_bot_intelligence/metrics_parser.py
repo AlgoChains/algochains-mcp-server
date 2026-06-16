@@ -18,6 +18,11 @@ from typing import Optional
 # Resolve control tower path (works on Mac and Desktop WSL).
 # Uses the shared helper so ALGOCHAINS_CONTROL_TOWER env is honored everywhere.
 from algochains_mcp.paths import default_control_tower
+from .log_sources import (
+    BOT_PRIMARY_LOG_PATHS,
+    select_bot_log,
+    summarize_price_source_health,
+)
 
 CONTROL_TOWER = default_control_tower()
 try:
@@ -27,11 +32,8 @@ except Exception:
     pass
 
 BOT_LOG_PATHS: dict[str, Path] = {
-    "mnq": CONTROL_TOWER / "logs" / "futures_bot_live.log",
-    "cl":  CONTROL_TOWER / "logs" / "cl_futures_live.log",
-    # mes_swing.log and nq_swing.log are stale backup files — use the live paths
-    "mes": CONTROL_TOWER / "logs" / "mes_swing_live.log",
-    "nq":  CONTROL_TOWER / "logs" / "nq_swing_live.log",
+    bot_id: CONTROL_TOWER / rel_path
+    for bot_id, rel_path in BOT_PRIMARY_LOG_PATHS.items()
 }
 
 BOT_META: dict[str, dict] = {
@@ -107,6 +109,9 @@ class BotMetrics:
     # Error state
     last_error: str = ""
     error_count_1h: int = 0
+    log_path: str = ""
+    log_variant: str = ""
+    price_source_status: dict = field(default_factory=dict)
     # Timestamp
     parsed_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -340,10 +345,15 @@ def parse_bot_metrics_from_supabase(bot_id: str, sb_client=None) -> BotMetrics |
     metrics.avg_fill_deviation_ticks = _avg("fill_deviation_ticks")
     metrics.avg_exit_slippage_ticks = _avg("exit_slippage_ticks")
     try:
-        log_path = BOT_LOG_PATHS.get(bot_id)
-        if log_path and log_path.exists():
+        selected_log = select_bot_log(CONTROL_TOWER, bot_id)
+        log_path = selected_log.path
+        metrics.log_path = str(log_path)
+        metrics.log_variant = selected_log.variant
+        if selected_log.exists:
             metrics.last_log_age_sec = time.time() - log_path.stat().st_mtime
             metrics.is_running = metrics.last_log_age_sec < 300
+            lines = _get_log_tail(log_path, 100)
+            metrics.price_source_status = summarize_price_source_health(lines)
     except OSError:
         pass
     return metrics
@@ -355,17 +365,21 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
     """
     bot_id = bot_id.lower()
     meta = BOT_META.get(bot_id, {})
-    log_path = BOT_LOG_PATHS.get(bot_id)
+    selected_log = select_bot_log(CONTROL_TOWER, bot_id)
+    log_path = selected_log.path
 
     supabase_metrics = parse_bot_metrics_from_supabase(bot_id)
     if supabase_metrics is not None:
         # Still attach current log health/errors because Supabase is trade truth,
         # not process liveness truth.
-        if log_path and log_path.exists():
+        supabase_metrics.log_path = str(log_path)
+        supabase_metrics.log_variant = selected_log.variant
+        if selected_log.exists:
             lines = _get_log_tail(log_path, 100)
             last_error, error_count = _parse_errors(lines)
             supabase_metrics.last_error = last_error
             supabase_metrics.error_count_1h = error_count
+            supabase_metrics.price_source_status = summarize_price_source_health(lines)
         return supabase_metrics
 
     metrics = BotMetrics(
@@ -374,8 +388,10 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
         display_name=meta.get("display_name", bot_id),
         strategy_type=meta.get("strategy_type", "unknown"),
     )
+    metrics.log_path = str(log_path)
+    metrics.log_variant = selected_log.variant
 
-    if not log_path or not log_path.exists():
+    if not selected_log.exists:
         metrics.last_error = f"Log not found: {log_path}"
         return metrics
 
@@ -404,6 +420,7 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
     last_error, error_count = _parse_errors(lines[-100:])
     metrics.last_error = last_error
     metrics.error_count_1h = error_count
+    metrics.price_source_status = summarize_price_source_health(lines[-100:])
 
     # MCPT validated metrics
     sharpe, max_dd, wr, badge = _load_mcpt_metrics(bot_id)
