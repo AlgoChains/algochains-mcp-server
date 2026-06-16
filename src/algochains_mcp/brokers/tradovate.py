@@ -126,6 +126,89 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _entry_payload(entries: dict[str, Any], name: str) -> dict[str, Any]:
+    entry = entries.get(name)
+    if isinstance(entry, dict):
+        return entry
+
+    lowered = name.lower()
+    for key, value in entries.items():
+        if isinstance(value, dict) and str(key).lower() == lowered:
+            return value
+    return {}
+
+
+def _entry_number(entries: dict[str, Any], names: tuple[str, ...], field: str) -> float | None:
+    for name in names:
+        value = _optional_float(_entry_payload(entries, name).get(field))
+        if value is not None:
+            return value
+    return None
+
+
+def _iter_quote_candidates(payload: Any) -> list[dict[str, Any]]:
+    """Return quote objects from documented REST/WS envelope variants."""
+    if isinstance(payload, list):
+        candidates: list[dict[str, Any]] = []
+        for item in payload:
+            candidates.extend(_iter_quote_candidates(item))
+        return candidates
+
+    if not isinstance(payload, dict):
+        return []
+
+    candidates = [payload] if isinstance(payload.get("entries"), dict) else []
+    for key in ("quotes", "quote", "data"):
+        nested = payload.get(key)
+        if nested is not None:
+            candidates.extend(_iter_quote_candidates(nested))
+    d_payload = payload.get("d")
+    if d_payload is not None:
+        candidates.extend(_iter_quote_candidates(d_payload))
+    return candidates
+
+
+def _parse_tradovate_quote(symbol: str, payload: Any) -> Quote | None:
+    """Parse a Tradovate quote without treating missing live prices as zero."""
+    for candidate in _iter_quote_candidates(payload):
+        entries = candidate.get("entries")
+        if not isinstance(entries, dict):
+            continue
+
+        bid = _entry_number(entries, ("Bid",), "price")
+        ask = _entry_number(entries, ("Offer", "Ask"), "price")
+        trade = _entry_number(entries, ("Trade", "Last"), "price")
+
+        if trade is not None:
+            last = trade
+        elif bid is not None and ask is not None:
+            last = (bid + ask) / 2
+        else:
+            last = bid if bid is not None else ask
+
+        if last is None:
+            continue
+
+        volume = _entry_number(entries, ("TotalTradeVolume", "Trade"), "size") or 0.0
+        timestamp = None
+        raw_timestamp = candidate.get("timestamp")
+        if isinstance(raw_timestamp, str) and raw_timestamp:
+            try:
+                timestamp = datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+            except ValueError:
+                timestamp = None
+
+        return Quote(
+            symbol=symbol,
+            bid=bid or 0.0,
+            ask=ask or 0.0,
+            last=last,
+            volume=int(volume),
+            timestamp=timestamp,
+        )
+    return None
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -332,7 +415,8 @@ class TradovateConnector(BrokerConnector):
         import random
 
         await self._ensure_token()
-        url = f"{self.cfg.base_url}/v1{path}"
+        base_url = self.cfg.market_data_url if path.startswith("/md/") else self.cfg.base_url
+        url = f"{base_url}/v1{path}"
         headers = {"Authorization": f"Bearer {self._access_token}"}
         attempt = 0
         last_exc: Optional[Exception] = None
@@ -743,18 +827,9 @@ class TradovateConnector(BrokerConnector):
             )
         try:
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
-            if isinstance(quotes, dict):
-                entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
-                return Quote(
-                    symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
-                )
+            quote = _parse_tradovate_quote(symbol, quotes)
+            if quote:
+                return quote
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 

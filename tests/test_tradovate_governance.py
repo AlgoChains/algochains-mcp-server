@@ -263,3 +263,120 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_market_data_requests_use_tradovate_md_host():
+    """Quote REST calls must use Tradovate's market-data host, not account/order host."""
+    conn = _make_connector()
+    requested_urls: list[str] = []
+
+    async def _mock_ensure_token():
+        return None
+
+    async def _mock_get(url, *args, **kwargs):
+        from unittest.mock import MagicMock
+
+        requested_urls.append(url)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {}
+        return resp
+
+    conn._ensure_token = _mock_ensure_token  # type: ignore
+    conn._http.get = _mock_get  # type: ignore
+
+    async def _run():
+        await conn._get("/md/getQuote", {"symbol": "MNQZ6"})
+        await conn._get("/account/list")
+
+    asyncio.run(_run())
+    assert requested_urls == [
+        "https://md.tradovateapi.com/v1/md/getQuote",
+        "https://demo.tradovateapi.com/v1/account/list",
+    ]
+
+
+def test_get_quote_parses_wrapped_market_data_payload():
+    """REST/WS-style quote envelopes should produce a normalized Quote."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": "MNQZ6"}
+
+    async def _mock_get(path, params=None):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQZ6"}
+        return {
+            "d": {
+                "quotes": [
+                    {
+                        "timestamp": "2026-06-16T12:26:30.000Z",
+                        "contractId": 123,
+                        "entries": {
+                            "Bid": {"price": 19999.25, "size": 4},
+                            "Offer": {"price": 19999.75, "size": 2},
+                            "Trade": {"price": 19999.5, "size": 1},
+                            "TotalTradeVolume": {"size": 4118},
+                        },
+                    }
+                ]
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    quote = asyncio.run(conn.get_quote("MNQ"))
+    assert quote.bid == 19999.25
+    assert quote.ask == 19999.75
+    assert quote.last == 19999.5
+    assert quote.volume == 4118
+    assert quote.timestamp is not None
+
+
+def test_get_quote_uses_bid_ask_mid_when_trade_entry_missing():
+    """Missing Trade is common in quiet books; bid/ask still provides a live price."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": "MNQZ6"}
+
+    async def _mock_get(path, params=None):
+        return {
+            "entries": {
+                "Bid": {"price": 20100.0, "size": 3},
+                "Offer": {"price": 20100.5, "size": 5},
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    quote = asyncio.run(conn.get_quote("MNQ"))
+    assert quote.bid == 20100.0
+    assert quote.ask == 20100.5
+    assert quote.last == 20100.25
+
+
+def test_get_quote_raises_when_no_live_price_present():
+    """Settlement/high/low-only payloads are not a live executable market price."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": "MNQZ6"}
+
+    async def _mock_get(path, params=None):
+        return {
+            "entries": {
+                "SettlementPrice": {"price": 20000.0},
+                "TotalTradeVolume": {"size": 4118},
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    with pytest.raises(BrokerQuoteError, match="Quote unavailable"):
+        asyncio.run(conn.get_quote("MNQ"))

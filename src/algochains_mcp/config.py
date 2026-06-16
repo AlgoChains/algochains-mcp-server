@@ -80,6 +80,10 @@ class TradovateConfig:
             else "https://demo.tradovateapi.com"
 
     @property
+    def market_data_url(self) -> str:
+        return _env("TRADOVATE_MD_BASE_URL", "https://md.tradovateapi.com")
+
+    @property
     def ws_url(self) -> str:
         return "wss://live.tradovateapi.com/v1/websocket" if self.env == "live" \
             else "wss://demo.tradovateapi.com/v1/websocket"
