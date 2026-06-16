@@ -6,7 +6,7 @@ user/tool attempts to override operator-authored system instructions.
 Operator/system prompts often *describe* attack phrases (e.g. "never reveal
 system prompt") for defensive guidance. Scanning those trusted roles causes
 false positives that trip skill circuit breakers (crew-orchestrator,
-slack-command-listener, output-auditor, fat-finger-protection).
+slack-command-listener, output-auditor, fat-finger-protection, crew-handoff-router).
 
 By default, trusted roles (system, system_prompt, developer) are NOT scanned.
 Set PROMPT_GUARD_SCAN_SYSTEM=1 to enforce scanning on every role.
@@ -107,12 +107,53 @@ def _should_scan_role(role: str, *, scan_system: bool) -> bool:
     return True
 
 
+def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
+    """True when *reveal system prompt* appears in operator defensive guidance."""
+    prefix = text[: match.start()]
+    tokens = re.findall(r"[A-Za-z']+", prefix)
+    if not tokens:
+        return False
+
+    last = tokens[-1].lower()
+    if last in {
+        "never",
+        "not",
+        "no",
+        "block",
+        "prevent",
+        "avoid",
+        "stop",
+        "refuse",
+        "deny",
+        "against",
+        "without",
+        "unless",
+        "dont",
+        "don't",
+    }:
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() == "do" and last == "not":
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() in {
+        "requests",
+        "request",
+        "attempts",
+        "attempt",
+    } and last == "to":
+        return True
+    return False
+
+
 def find_injection_pattern(text: str) -> Optional[_InjectionPattern]:
     """Return the first injection pattern matched in *text*, if any."""
     if not text:
         return None
     for pattern in INJECTION_PATTERNS:
-        if pattern.regex.search(text):
+        for match in pattern.regex.finditer(text):
+            if pattern.name == "reveal system prompt" and _is_defensive_reveal_match(
+                text, match
+            ):
+                continue
             return pattern
     return None
 
