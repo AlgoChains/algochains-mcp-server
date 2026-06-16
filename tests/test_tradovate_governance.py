@@ -263,3 +263,89 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_derives_last_from_bid_offer_when_trade_missing():
+    """Bid/ask-only REST quotes are still a usable live market price."""
+    conn = _make_connector()
+
+    async def _find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"name": "MNQM6"}
+
+    async def _mock_get(path, params=None):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {
+            "entries": {
+                "Bid": {"price": "21450.25"},
+                "Offer": {"price": "21450.75"},
+            }
+        }
+
+    conn._find_contract = _find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.bid == 21450.25
+    assert quote.ask == 21450.75
+    assert quote.last == 21450.50
+
+
+def test_get_quote_accepts_list_entries_and_trade_price():
+    """Tradovate quote entry shape drift must not make REST price parsing fail."""
+    conn = _make_connector()
+
+    async def _find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"name": "MNQM6"}
+
+    async def _mock_get(path, params=None):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {
+            "entries": [
+                {"type": "Bid", "price": "21450.25"},
+                {"type": "Offer", "price": "21450.75"},
+                {"type": "Trade", "price": "21450.50"},
+            ]
+        }
+
+    conn._find_contract = _find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.bid == 21450.25
+    assert quote.ask == 21450.75
+    assert quote.last == 21450.50
+
+
+def test_get_quote_fails_closed_without_positive_price():
+    """A quote payload without a positive price must not produce a zero quote."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"name": "MNQM6"}
+
+    async def _mock_get(path, params=None):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {"entries": {"Bid": {"price": 0}, "Offer": {"price": None}}}
+
+    conn._find_contract = _find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="no positive price"):
+        asyncio.run(_run())
