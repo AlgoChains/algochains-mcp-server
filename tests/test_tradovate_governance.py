@@ -263,3 +263,69 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_raises_when_entries_are_empty():
+    """Missing REST market data must not be normalized into a zero quote."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"id": 12345, "name": "MNQM6"}
+
+    async def _mock_get(path, params):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {"entries": {}}
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="Quote unavailable"):
+        asyncio.run(_run())
+
+
+def test_get_quote_parses_wrapped_tradovate_quote_payload():
+    """Tradovate /md/getQuote may wrap entries under d.quotes[]."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"id": 12345, "name": "MNQM6"}
+
+    async def _mock_get(path, params):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {
+            "e": "md",
+            "d": {
+                "quotes": [
+                    {
+                        "contractId": 12345,
+                        "entries": {
+                            "Bid": {"price": "20125.25"},
+                            "Offer": {"price": "20125.75"},
+                            "Trade": {"price": "20125.50", "size": "7"},
+                        },
+                    }
+                ]
+            },
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.symbol == "MNQ"
+    assert quote.bid == 20125.25
+    assert quote.ask == 20125.75
+    assert quote.last == 20125.50
+    assert quote.volume == 7
