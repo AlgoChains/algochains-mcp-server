@@ -470,46 +470,9 @@ def _load_tradovate_env() -> None:
 
 def _fetch_tradovate_book() -> dict[str, Any]:
     """Authenticate to Tradovate and return open positions + working orders."""
-    _load_tradovate_env()
+    from ..tradovate_book import fetch_tradovate_book
 
-    try:
-        from tradovate_client import TradovateClient
-    except ImportError as e:
-        return {"error": f"Cannot import tradovate_client: {e}", "status": "ERROR"}
-
-    env = os.getenv("TRADOVATE_ENV")
-    if not env:
-        return {
-            "error": "TRADOVATE_ENV not set — cannot determine which account to check",
-            "status": "CONFIG_ERROR",
-            "action": "Set TRADOVATE_ENV=demo or TRADOVATE_ENV=live in .env",
-        }
-
-    try:
-        client = TradovateClient(
-            cid=os.getenv("TRADOVATE_CID"),
-            secret=os.getenv("TRADOVATE_SECRET"),
-            env=env,
-        )
-        client.authenticate()
-        positions = client.get_positions()
-        working_orders = client.get_working_orders()
-        if positions is None or working_orders is None:
-            return {
-                "error": "Tradovate API returned no data — positions or orders call failed",
-                "status": "ERROR",
-                "positions_ok": positions is not None,
-                "orders_ok": working_orders is not None,
-            }
-    except Exception as e:
-        return {"error": f"Tradovate connection failed: {e}", "status": "ERROR"}
-
-    return {
-        "status": "OK",
-        "positions": positions,
-        "working_orders": working_orders,
-        "environment": env.upper(),
-    }
+    return fetch_tradovate_book(CONTROL_TOWER)
 
 
 def _local_non_mnq_exposure() -> list[dict[str, Any]]:
@@ -573,10 +536,16 @@ def bracket_integrity_check() -> dict[str, Any]:
     Returns status: OK | ALERT | DEGRADED | ERROR | CONFIG_ERROR
     """
     book = _fetch_tradovate_book()
-    if book.get("status") in {"ERROR", "CONFIG_ERROR"}:
+    if book.get("status") in {"ERROR", "CONFIG_ERROR", "DEGRADED"}:
         payload = dict(book)
         payload["checked_count"] = 0
         payload["broker_verified"] = False
+        if not book.get("broker_verified") and payload.get("status") != "CONFIG_ERROR":
+            payload["status"] = "DEGRADED"
+            payload["message"] = (
+                "Broker bracket verification unavailable — cannot confirm non-MNQ positions "
+                f"({payload.get('error') or 'auth failed'})"
+            )
         payload["formatted_line"] = format_bracket_integrity_line(payload)
         return payload
 
@@ -589,7 +558,7 @@ def bracket_integrity_check() -> dict[str, Any]:
         cid = _order_contract_id(order)
         if cid is None:
             continue
-        order_type = order.get("orderType", "")
+        order_type = order.get("orderType") or order.get("ordType") or ""
         if order_type in _STOP_ORDER_TYPES:
             stops_by_contract.setdefault(cid, []).append(order)
         elif order_type in _TARGET_ORDER_TYPES:
@@ -628,11 +597,18 @@ def bracket_integrity_check() -> dict[str, Any]:
 
     local_exposure = _local_non_mnq_exposure()
     checked_count = len(checked)
+    broker_verified = bool(book.get("broker_verified"))
     status = "OK"
     if missing_brackets:
         status = "ALERT"
         message = (
             f"{len(missing_brackets)} non-MNQ position(s) missing stop and/or target brackets"
+        )
+    elif not broker_verified:
+        status = "DEGRADED"
+        message = (
+            "Broker bracket verification unavailable — cannot confirm non-MNQ positions "
+            f"({book.get('error') or 'auth failed'})"
         )
     elif local_exposure and checked_count == 0:
         status = "DEGRADED"
@@ -655,7 +631,8 @@ def bracket_integrity_check() -> dict[str, Any]:
         "working_orders_count": len(working_orders),
         "environment": book.get("environment"),
         "source": "live_broker",
-        "broker_verified": True,
+        "broker_verified": broker_verified,
+        "token_source": book.get("token_source"),
     }
     payload["formatted_line"] = format_bracket_integrity_line(payload)
     return payload

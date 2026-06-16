@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from algochains_mcp.live_bot_intelligence import bot_ops
+from algochains_mcp import tradovate_book
 
 
 def _write_position_state(tmp_path, symbol: str, *, flat: bool, qty: int = 0) -> None:
@@ -22,6 +23,13 @@ def _write_position_state(tmp_path, symbol: str, *, flat: bool, qty: int = 0) ->
     (logs / f"{symbol.lower()}_position_state.json").write_text(json.dumps(payload))
 
 
+def test_resolve_tradovate_access_token_prefers_live_file(tmp_path):
+    (tmp_path / "tradovate_token_live.txt").write_text("Bearer live-token-123\n")
+    token, source = tradovate_book.resolve_tradovate_access_token(tmp_path)
+    assert token == "live-token-123"
+    assert source == "tradovate_token_live.txt"
+
+
 def test_bracket_integrity_check_ok_when_flat(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_ops, "CONTROL_TOWER", tmp_path)
     monkeypatch.setattr(
@@ -32,6 +40,8 @@ def test_bracket_integrity_check_ok_when_flat(tmp_path, monkeypatch):
             "positions": [{"contractId": 1, "contractName": "CLQ6", "netPos": 0}],
             "working_orders": [],
             "environment": "LIVE",
+            "broker_verified": True,
+            "token_source": "tradovate_token_live.txt",
         },
     )
 
@@ -45,6 +55,26 @@ def test_bracket_integrity_check_ok_when_flat(tmp_path, monkeypatch):
     )
 
 
+def test_bracket_integrity_check_degraded_when_broker_unverified(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot_ops, "CONTROL_TOWER", tmp_path)
+    monkeypatch.setattr(
+        bot_ops,
+        "_fetch_tradovate_book",
+        lambda: {
+            "status": "ERROR",
+            "error": "Tradovate authentication failed",
+            "broker_verified": False,
+            "token_source": "env:TRADOVATE_ACCESS_TOKEN",
+        },
+    )
+
+    result = bot_ops.bracket_integrity_check()
+
+    assert result["status"] == "DEGRADED"
+    assert result["checked_count"] == 0
+    assert result["formatted_line"].startswith("[DEGRADED]")
+
+
 def test_bracket_integrity_check_alert_when_missing_target(tmp_path, monkeypatch):
     monkeypatch.setattr(bot_ops, "CONTROL_TOWER", tmp_path)
     monkeypatch.setattr(
@@ -55,6 +85,7 @@ def test_bracket_integrity_check_alert_when_missing_target(tmp_path, monkeypatch
             "positions": [{"contractId": 10, "contractName": "CLQ6", "netPos": 1, "netPrice": 75.0}],
             "working_orders": [{"contractId": 10, "orderType": "Stop", "id": 100}],
             "environment": "LIVE",
+            "broker_verified": True,
         },
     )
 
@@ -63,6 +94,30 @@ def test_bracket_integrity_check_alert_when_missing_target(tmp_path, monkeypatch
     assert result["status"] == "ALERT"
     assert result["checked_count"] == 1
     assert result["missing_brackets"][0]["missing_target"] is True
+
+
+def test_bracket_integrity_check_matches_ordtype_stop(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot_ops, "CONTROL_TOWER", tmp_path)
+    monkeypatch.setattr(
+        bot_ops,
+        "_fetch_tradovate_book",
+        lambda: {
+            "status": "OK",
+            "positions": [{"contractId": 10, "contractName": "MESM6", "netPos": 1, "netPrice": 5800.0}],
+            "working_orders": [
+                {"contractId": 10, "ordType": "Stop", "id": 100},
+                {"contractId": 10, "ordType": "Limit", "id": 101},
+            ],
+            "environment": "LIVE",
+            "broker_verified": True,
+        },
+    )
+
+    result = bot_ops.bracket_integrity_check()
+
+    assert result["status"] == "OK"
+    assert result["checked_count"] == 1
+    assert result["missing_brackets"] == []
 
 
 def test_bracket_integrity_check_skips_mnq(tmp_path, monkeypatch):
@@ -75,6 +130,7 @@ def test_bracket_integrity_check_skips_mnq(tmp_path, monkeypatch):
             "positions": [{"contractId": 20, "contractName": "MNQH6", "netPos": 2, "netPrice": 21000.0}],
             "working_orders": [],
             "environment": "LIVE",
+            "broker_verified": True,
         },
     )
 
@@ -97,6 +153,7 @@ def test_bracket_integrity_check_degraded_when_local_state_open_but_broker_flat(
             "positions": [],
             "working_orders": [],
             "environment": "LIVE",
+            "broker_verified": True,
         },
     )
 
@@ -142,6 +199,35 @@ def test_get_bracket_guardian_status_runs_live_check_when_zero_positions(
     assert result["live_check"] == live_payload
     assert result["formatted_line"] == live_payload["formatted_line"]
     assert result["status"] == "OK"
+
+
+def test_get_bracket_guardian_status_runs_live_check_when_guardian_has_positions(
+    tmp_path, monkeypatch
+):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "bracket_guardian_state.json").write_text(
+        json.dumps({"positions_count": 2, "working_orders_count": 4, "unprotected_since": {}})
+    )
+    monkeypatch.setattr(bot_ops, "CONTROL_TOWER", tmp_path)
+
+    calls = {"count": 0}
+
+    def _live_check():
+        calls["count"] += 1
+        return {
+            "status": "OK",
+            "checked_count": 2,
+            "formatted_line": "[OK] All non-MNQ positions have stop+target brackets (2 checked)",
+        }
+
+    monkeypatch.setattr(bot_ops, "bracket_integrity_check", _live_check)
+
+    result = bot_ops.get_bracket_guardian_status()
+
+    assert calls["count"] == 1
+    assert result["checked_count"] == 2
+    assert "2 checked" in result["formatted_line"]
 
 
 def test_get_bracket_guardian_status_surfaces_degraded_live_check(tmp_path, monkeypatch):
