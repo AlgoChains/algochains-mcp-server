@@ -3981,6 +3981,28 @@ TOOLS = [
          description="Cross-check ALL open Tradovate positions vs working orders to identify unprotected exposure (position open, no stop/target orders). Returns status OK | UNPROTECTED_EXPOSURE. Run before any P&L report or after any bot restart. Prevents repeat of Apr 14 2026 -$4.9k incident.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="check_orphan_bracket_orders",
+         description="Read-only scan for Tradovate bracket/protective working orders that have no matching open position on the same contract. Use before cancel_orphan_bracket_orders; returns dry-run cancel candidates only.",
+         inputSchema={"type": "object", "properties": {
+             "broker": {"type": "string", "default": "tradovate"},
+             "symbol": {"type": "string", "default": "MNQ"},
+             "include_unlinked_limit_orders": {"type": "boolean", "description": "Include unlinked Limit orders as orphan candidates. Default false avoids cancelling pending entry limits.", "default": False},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="cancel_orphan_bracket_orders",
+         description="Owner-gated safety action: cancel Tradovate bracket/protective working orders with no matching open position. Requires owner_token, confirm=true, gate=PROCEED, swing=true, and SYMBOL_SWING_PROTECT=YES. Defaults to market-hours-only.",
+         inputSchema={"type": "object", "properties": {
+             "broker": {"type": "string", "default": "tradovate"},
+             "symbol": {"type": "string", "default": "MNQ"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+             "confirm": {"type": "boolean", "description": "Required true for execute_dynamic_tool ORDER_EXEC authorization."},
+             "gate": {"type": "string", "description": "Must be PROCEED."},
+             "swing": {"type": "boolean", "description": "Must be true for swing-protect cancellation."},
+             "market_hours_only": {"type": "boolean", "default": True},
+             "include_unlinked_limit_orders": {"type": "boolean", "description": "Include unlinked Limit orders as orphan candidates. Default false avoids cancelling pending entry limits.", "default": False},
+             "max_cancel": {"type": "integer", "description": "Maximum orphan orders to cancel in one run.", "default": 4},
+         }, "required": ["owner_token", "confirm", "gate", "swing"]},
+         annotations=ANNOT_TRADE_EXEC),
     Tool(name="get_bracket_guardian_status",
          description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. Guardian runs every 5 min via launchd (com.algochains.bracket-guardian).",
          inputSchema={"type": "object", "properties": {}, "required": []},
@@ -5060,6 +5082,7 @@ TIER1_TOOL_NAMES = {
     "get_all_bot_ops_status",
     # V26.1 — Bracket integrity (always Tier 1 — safety critical)
     "check_unprotected_positions",
+    "check_orphan_bracket_orders",
     "get_bracket_guardian_status",
     # V22.4 — Desktop tower ML visibility
     "get_tower_health",
@@ -9599,6 +9622,109 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(check_unprotected_positions())
         except Exception as exc:
             return _text({"error": str(exc)})
+
+    elif name == "check_orphan_bracket_orders":
+        try:
+            from .live_bot_intelligence.bot_ops import (
+                classify_orphan_bracket_orders,
+                futures_market_is_open,
+            )
+
+            broker_name = args.get("broker", "tradovate")
+            conn = _require_broker(registry, broker_name)
+            positions = await conn.get_positions()
+            orders = await conn.get_orders("open")
+            result = classify_orphan_bracket_orders(
+                positions,
+                orders,
+                symbol=args.get("symbol", "MNQ"),
+                include_unlinked_limit_orders=bool(args.get("include_unlinked_limit_orders", False)),
+            )
+            result.update({
+                "broker": broker_name,
+                "market_hours_open": futures_market_is_open(),
+                "dry_run": True,
+                "action": "No broker API writes made. Use cancel_orphan_bracket_orders with owner gate to cancel candidates.",
+            })
+            return _text(result)
+        except Exception as exc:
+            return _text({"error": str(exc), "status": "ERROR"})
+
+    elif name == "cancel_orphan_bracket_orders":
+        try:
+            from .live_bot_intelligence.bot_ops import (
+                _verify_owner,
+                classify_orphan_bracket_orders,
+                futures_market_is_open,
+                swing_protect_gate_status,
+            )
+
+            symbol = str(args.get("symbol", "MNQ") or "MNQ").upper()
+            if bool(args.get("market_hours_only", True)) and not futures_market_is_open():
+                return _text({
+                    "status": "SKIPPED_OUTSIDE_MARKET_HOURS",
+                    "symbol": symbol,
+                    "market_hours_open": False,
+                    "cancelled": [],
+                    "failed": [],
+                })
+
+            authorized, auth_error = _verify_owner(args.get("owner_token", ""))
+            if not authorized:
+                return _text({"status": "BLOCKED", "error": auth_error, "authorized": False})
+
+            gate_status = swing_protect_gate_status(
+                symbol,
+                gate=str(args.get("gate", "")),
+                swing=bool(args.get("swing", False)),
+            )
+            if not gate_status["passed"]:
+                return _text({
+                    "status": "BLOCKED",
+                    "reason": gate_status["reason"],
+                    "gate": gate_status,
+                    "cancelled": [],
+                    "failed": [],
+                })
+
+            broker_name = args.get("broker", "tradovate")
+            conn = _require_broker(registry, broker_name)
+            positions = await conn.get_positions()
+            orders = await conn.get_orders("open")
+            scan = classify_orphan_bracket_orders(
+                positions,
+                orders,
+                symbol=symbol,
+                include_unlinked_limit_orders=bool(args.get("include_unlinked_limit_orders", False)),
+            )
+
+            max_cancel = max(0, min(int(args.get("max_cancel", 4)), 20))
+            cancelled: list[dict[str, Any]] = []
+            failed: list[dict[str, Any]] = []
+            for orphan in scan["orphans"][:max_cancel]:
+                order_id = orphan.get("order_id")
+                if not order_id:
+                    failed.append({**orphan, "cancelled": False, "error": "missing_order_id"})
+                    continue
+                ok = await conn.cancel_order(str(order_id))
+                entry = {**orphan, "cancelled": bool(ok)}
+                if ok:
+                    cancelled.append(entry)
+                else:
+                    failed.append({**entry, "error": "broker_cancel_failed"})
+
+            return _text({
+                **scan,
+                "broker": broker_name,
+                "market_hours_open": futures_market_is_open(),
+                "gate": gate_status,
+                "max_cancel": max_cancel,
+                "cancelled": cancelled,
+                "failed": failed,
+                "status": "CANCELLED_ORPHANS" if cancelled and not failed else "CANCEL_PARTIAL" if cancelled else scan["status"],
+            })
+        except Exception as exc:
+            return _text({"error": str(exc), "status": "ERROR"})
 
     elif name == "get_bracket_guardian_status":
         try:

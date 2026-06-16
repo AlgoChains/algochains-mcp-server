@@ -22,6 +22,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 # ── Path resolution ──────────────────────────────────────────────────────────
 # Unified resolver honors ALGOCHAINS_CONTROL_TOWER first, then falls back to
@@ -40,6 +41,17 @@ BOT_MAP = {
 }
 
 SYMBOL_MAP = {"mnq": "MNQ", "cl": "CL", "mes": "MES", "nq": "NQ"}
+
+_PROTECTIVE_ORDER_TYPES = {"stop", "stop_limit", "trailing_stop", "stoplimit", "trailingstop"}
+_WORKING_ORDER_STATUSES = {"accepted", "pending", "working", "pendingnew", "pendingcancel"}
+_BRACKET_LINK_KEYS = (
+    "parentId",
+    "ocoId",
+    "bracketId",
+    "linkedOrderId",
+    "orderStrategyId",
+    "orderStrategyType",
+)
 
 
 def _tail_jsonl(path: Path, limit: int = 200) -> list[dict[str, Any]]:
@@ -89,6 +101,208 @@ def _read_env_file_value(env_file: Path, key: str) -> str | None:
     except Exception:
         return None
     return None
+
+
+def _value(obj: Any, attr: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(attr, default)
+    return getattr(obj, attr, default)
+
+
+def _enum_value(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw or "").strip()
+
+
+def _raw_dict(obj: Any) -> dict[str, Any]:
+    raw = _value(obj, "raw", {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def _contract_key_from_raw(raw: dict[str, Any]) -> str | None:
+    contract_id = raw.get("contractId") or (raw.get("contract") or {}).get("id")
+    if contract_id is not None:
+        return f"contract:{contract_id}"
+    contract_name = raw.get("contractName") or raw.get("symbol")
+    if contract_name:
+        return f"symbol:{str(contract_name).upper()}"
+    return None
+
+
+def _position_contract_key(position: Any) -> str | None:
+    raw_key = _contract_key_from_raw(_raw_dict(position))
+    if raw_key:
+        return raw_key
+    symbol = _value(position, "symbol")
+    return f"symbol:{str(symbol).upper()}" if symbol else None
+
+
+def _order_contract_key(order: Any) -> str | None:
+    raw_key = _contract_key_from_raw(_raw_dict(order))
+    if raw_key:
+        return raw_key
+    symbol = _value(order, "symbol")
+    return f"symbol:{str(symbol).upper()}" if symbol else None
+
+
+def _position_qty(position: Any) -> float:
+    raw = _raw_dict(position)
+    qty = raw.get("netPos", _value(position, "qty", 0))
+    try:
+        return float(qty or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _order_status(order: Any) -> str:
+    raw = _raw_dict(order)
+    return (_enum_value(raw.get("ordStatus") or _value(order, "status")).replace("_", "")).lower()
+
+
+def _order_type(order: Any) -> str:
+    raw = _raw_dict(order)
+    return (_enum_value(raw.get("ordType") or raw.get("orderType") or _value(order, "order_type")).replace("_", "")).lower()
+
+
+def _order_matches_symbol(order: Any, symbol: str) -> bool:
+    root = symbol.strip().upper()
+    if not root:
+        return True
+    raw = _raw_dict(order)
+    candidates = (
+        _value(order, "symbol"),
+        raw.get("contractName"),
+        raw.get("symbol"),
+        raw.get("name"),
+    )
+    return any(str(candidate or "").upper().startswith(root) for candidate in candidates)
+
+
+def _is_bracket_like_order(order: Any, *, include_unlinked_limit_orders: bool) -> bool:
+    order_type = _order_type(order)
+    if order_type in _PROTECTIVE_ORDER_TYPES:
+        return True
+    if order_type != "limit":
+        return False
+    raw = _raw_dict(order)
+    has_linkage = any(raw.get(key) not in (None, "", 0) for key in _BRACKET_LINK_KEYS)
+    return include_unlinked_limit_orders or has_linkage
+
+
+def _order_summary(order: Any, reason: str) -> dict[str, Any]:
+    raw = _raw_dict(order)
+    return {
+        "order_id": str(_value(order, "id", raw.get("id", ""))),
+        "symbol": _value(order, "symbol", raw.get("contractName") or raw.get("symbol")),
+        "contractId": raw.get("contractId") or (raw.get("contract") or {}).get("id"),
+        "side": _enum_value(_value(order, "side", raw.get("action"))),
+        "order_type": _enum_value(_value(order, "order_type", raw.get("ordType") or raw.get("orderType"))),
+        "status": _enum_value(_value(order, "status", raw.get("ordStatus"))),
+        "qty": _value(order, "qty", raw.get("qty") or raw.get("orderQty")),
+        "limit_price": _value(order, "limit_price", raw.get("price")),
+        "stop_price": _value(order, "stop_price", raw.get("stopPrice")),
+        "reason": reason,
+    }
+
+
+def futures_market_is_open(now_utc: datetime | None = None) -> bool:
+    """Return True during the regular CME futures session, excluding daily break."""
+    now = now_utc or datetime.now(timezone.utc)
+    eastern = now.astimezone(ZoneInfo("America/New_York"))
+    weekday = eastern.weekday()
+    seconds = eastern.hour * 3600 + eastern.minute * 60 + eastern.second
+    daily_close = 17 * 3600
+    reopen = 18 * 3600
+
+    if weekday == 5:
+        return False
+    if weekday == 6:
+        return seconds >= reopen
+    if weekday == 4 and seconds >= daily_close:
+        return False
+    if daily_close <= seconds < reopen:
+        return False
+    return True
+
+
+def classify_orphan_bracket_orders(
+    positions: list[Any],
+    working_orders: list[Any],
+    *,
+    symbol: str = "MNQ",
+    include_unlinked_limit_orders: bool = False,
+) -> dict[str, Any]:
+    """
+    Find bracket/protective working orders that have no non-flat position on
+    the same contract. These are safe-cancel candidates after broker-flat exits.
+    """
+    open_contracts = {
+        key
+        for position in positions
+        if _position_qty(position) != 0
+        for key in [_position_contract_key(position)]
+        if key
+    }
+
+    candidates: list[dict[str, Any]] = []
+    ignored: list[dict[str, Any]] = []
+    for order in working_orders:
+        status = _order_status(order)
+        if status and status not in _WORKING_ORDER_STATUSES:
+            ignored.append(_order_summary(order, f"status_not_working:{status}"))
+            continue
+        if not _order_matches_symbol(order, symbol):
+            ignored.append(_order_summary(order, f"symbol_not_{symbol.upper()}"))
+            continue
+        if not _is_bracket_like_order(order, include_unlinked_limit_orders=include_unlinked_limit_orders):
+            ignored.append(_order_summary(order, "not_bracket_like"))
+            continue
+        contract_key = _order_contract_key(order)
+        if contract_key and contract_key in open_contracts:
+            ignored.append(_order_summary(order, "matching_open_position"))
+            continue
+        candidates.append(_order_summary(order, "no_matching_open_position"))
+
+    return {
+        "symbol": symbol.upper(),
+        "orphan_count": len(candidates),
+        "orphans": candidates,
+        "ignored_count": len(ignored),
+        "ignored": ignored,
+        "open_position_contracts": sorted(open_contracts),
+        "positions_count": len([p for p in positions if _position_qty(p) != 0]),
+        "working_orders_count": len(working_orders),
+        "status": "ORPHAN_WORKING_ORDERS" if candidates else "OK",
+        "all_flat": not open_contracts,
+    }
+
+
+def swing_protect_gate_status(symbol: str, *, gate: str = "", swing: bool = False) -> dict[str, Any]:
+    env_key = f"{symbol.strip().upper()}_SWING_PROTECT"
+    env_ok = os.getenv(env_key, "").strip().upper() == "YES"
+    gate_ok = gate.strip().upper() == "PROCEED"
+    swing_ok = bool(swing)
+    passed = env_ok and gate_ok and swing_ok
+    return {
+        "passed": passed,
+        "env_key": env_key,
+        "env_value": os.getenv(env_key, ""),
+        "gate": gate,
+        "swing": swing_ok,
+        "reason": (
+            "swing_protect_gate_passed"
+            if passed
+            else "requires " + ", ".join(
+                part
+                for part, ok in (
+                    (f"{env_key}=YES", env_ok),
+                    ("gate=PROCEED", gate_ok),
+                    ("swing=true", swing_ok),
+                )
+                if not ok
+            )
+        ),
+    }
 
 
 def _pipeline_timeout_config(control_tower: Path) -> tuple[float, str]:

@@ -212,6 +212,7 @@ _TOOL_TIERS: dict[str, int] = {
     # Account protection (read paths)
     "get_protection_config": TIER_READ_ONLY,
     "check_order_safety": TIER_READ_ONLY,
+    "check_orphan_bracket_orders": TIER_READ_ONLY,
     "check_circuit_breaker": TIER_READ_ONLY,
     # Marketplace (read paths)
     "get_marketplace_listings": TIER_READ_ONLY,
@@ -302,6 +303,7 @@ _TOOL_TIERS: dict[str, int] = {
     "flatten_bot_position": TIER_ORDER_EXEC,
     "modify_order": TIER_ORDER_EXEC,
     "cancel_order": TIER_ORDER_EXEC,
+    "cancel_orphan_bracket_orders": TIER_ORDER_EXEC,
     "close_position": TIER_ORDER_EXEC,
     "smart_route_order": TIER_ORDER_EXEC,
     "route_order": TIER_ORDER_EXEC,
