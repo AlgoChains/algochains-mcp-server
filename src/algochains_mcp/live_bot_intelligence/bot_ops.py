@@ -698,6 +698,85 @@ def check_unprotected_positions() -> dict:
     }
 
 
+def format_orphan_bracket_line(result: dict[str, Any]) -> str:
+    """Single-line summary for orphan bracket order checks."""
+    status = str(result.get("status", "ERROR")).upper()
+    prefix = {
+        "OK": "[OK]",
+        "ORPHAN_ORDERS": "[ORPHAN_ORDERS]",
+        "ERROR": "[ERROR]",
+        "CONFIG_ERROR": "[ERROR]",
+    }.get(status, "[ERROR]")
+    if status == "OK":
+        return f"{prefix} No orphan working orders on flat contracts"
+    if status == "ORPHAN_ORDERS":
+        count = int(result.get("orphan_order_count", 0) or 0)
+        return f"{prefix} {count} orphan working order(s) on flat contracts"
+    return f"{prefix} {result.get('message', 'orphan bracket check failed')}"
+
+
+def check_orphan_bracket_orders() -> dict[str, Any]:
+    """
+    Cross-check working orders vs open positions to detect orphan bracket legs.
+
+    Orphan orders (working stop/target/limit on a flat contract) are the inverse
+    of unprotected exposure. The control-tower ORPHAN-BRACKET-SCANNER auto-cancels
+    these every 10 minutes during market hours.
+    """
+    book = _fetch_tradovate_book()
+    if book.get("status") in {"ERROR", "CONFIG_ERROR"}:
+        payload = dict(book)
+        payload["formatted_line"] = format_orphan_bracket_line(payload)
+        return payload
+
+    positions = book["positions"]
+    working_orders = book["working_orders"]
+
+    open_contracts: set[int | str] = set()
+    for position in positions:
+        if position.get("netPos", 0) == 0:
+            continue
+        cid = _position_contract_id(position)
+        if cid is not None:
+            open_contracts.add(cid)
+
+    orphan_orders: list[dict[str, Any]] = []
+    matched_orders: list[dict[str, Any]] = []
+    for order in working_orders:
+        cid = _order_contract_id(order)
+        entry = {
+            "orderId": order.get("id") or order.get("orderId"),
+            "contractId": order.get("contractId") or (order.get("contract") or {}).get("id"),
+            "contractName": order.get("contractName") or (order.get("contract") or {}).get("name"),
+            "orderType": order.get("orderType"),
+            "action": order.get("action"),
+            "orderQty": order.get("orderQty") or order.get("qty"),
+            "stopPrice": order.get("stopPrice"),
+            "price": order.get("price"),
+        }
+        if cid is None or cid not in open_contracts:
+            orphan_orders.append(entry)
+        else:
+            matched_orders.append(entry)
+
+    payload = {
+        "orphan_orders": orphan_orders,
+        "matched_orders": matched_orders,
+        "open_position_contracts": sorted(open_contracts, key=str),
+        "working_orders_count": len(working_orders),
+        "orphan_order_count": len(orphan_orders),
+        "status": "ORPHAN_ORDERS" if orphan_orders else "OK",
+        "message": (
+            f"{len(orphan_orders)} orphan working order(s) on flat contracts"
+            if orphan_orders
+            else "No orphan working orders detected"
+        ),
+        "environment": book.get("environment"),
+    }
+    payload["formatted_line"] = format_orphan_bracket_line(payload)
+    return payload
+
+
 def get_bracket_guardian_status() -> dict:
     """
     Read the bracket integrity guardian state file.
@@ -723,6 +802,10 @@ def get_bracket_guardian_status() -> dict:
         try:
             data = json.loads(state_path.read_text())
             unprotected_since = data.get("unprotected_since", {})
+            unknown_flat_orders = data.get("unknown_flat_orders") or []
+            if not isinstance(unknown_flat_orders, list):
+                unknown_flat_orders = []
+            has_alerts = bool(unprotected_since or unknown_flat_orders)
             result = {
                 "guardian_active": True,
                 "last_check": data.get("last_check", "unknown"),
@@ -730,7 +813,12 @@ def get_bracket_guardian_status() -> dict:
                 "working_orders_count": data.get("working_orders_count", 0),
                 "currently_unprotected": list(unprotected_since.keys()),
                 "unprotected_since": unprotected_since,
-                "status": "ALERT" if unprotected_since else "OK",
+                "unknown_flat_orders": unknown_flat_orders,
+                "unknown_flat_order_count": len(unknown_flat_orders),
+                "mnq_swing_protect": data.get("mnq_swing_protect") or data.get("MNQ_SWING_PROTECT"),
+                "gate": data.get("gate") or data.get("GATE"),
+                "swing": data.get("swing") or data.get("SWING"),
+                "status": "ALERT" if has_alerts else "OK",
             }
         except Exception as e:
             result = {

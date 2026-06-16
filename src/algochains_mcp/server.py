@@ -3990,7 +3990,15 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_bracket_guardian_status",
-         description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. When guardian positions_count is 0 (or guardian inactive), also runs live bracket_integrity_check against Tradovate so watchdogs cannot report OK with 0 checked without broker verification.",
+         description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, unknown_flat_orders (orphan bracket legs on flat contracts), and whether auto-flatten has fired. When guardian positions_count is 0 (or guardian inactive), also runs live bracket_integrity_check against Tradovate so watchdogs cannot report OK with 0 checked without broker verification.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="check_orphan_bracket_orders",
+         description="Cross-check ALL working Tradovate orders vs open positions to identify orphan bracket legs (working stop/target/limit on flat contracts). Inverse of check_unprotected_positions. Returns status OK | ORPHAN_ORDERS with formatted_line for ORPHAN-BRACKET-SCANNER Slack posts.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_orphan_bracket_scanner_status",
+         description="Read ORPHAN-BRACKET-SCANNER daemon liveness and last scan state (gate/swing flags, unknown_flat_orders, auto-cancel counts). Read-only; does not cancel orders. Returns formatted_line for watchdog Slack posts.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
 
@@ -5074,7 +5082,9 @@ TIER1_TOOL_NAMES = {
     # V26.1 — Bracket integrity (always Tier 1 — safety critical)
     "check_unprotected_positions",
     "bracket_integrity_check",
+    "check_orphan_bracket_orders",
     "get_bracket_guardian_status",
+    "get_orphan_bracket_scanner_status",
     # V22.4 — Desktop tower ML visibility
     "get_tower_health",
     "get_tower_job_status",
@@ -9648,6 +9658,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .live_bot_intelligence.bot_ops import get_bracket_guardian_status
             return _text(get_bracket_guardian_status())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "check_orphan_bracket_orders":
+        try:
+            from .live_bot_intelligence.bot_ops import check_orphan_bracket_orders
+            return _text(check_orphan_bracket_orders())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_orphan_bracket_scanner_status":
+        try:
+            from .orphan_bracket_scanner_status import get_orphan_bracket_scanner_status
+            return _text(get_orphan_bracket_scanner_status())
         except Exception as exc:
             return _text({"error": str(exc)})
 

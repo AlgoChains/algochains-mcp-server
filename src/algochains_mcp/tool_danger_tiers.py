@@ -126,6 +126,10 @@ _TOOL_TIERS: dict[str, int] = {
     "check_vix_gate": TIER_READ_ONLY,
     "get_daily_loss_proximity": TIER_READ_ONLY,
     "bracket_integrity_check": TIER_READ_ONLY,
+    "check_orphan_bracket_orders": TIER_READ_ONLY,
+    "get_orphan_bracket_scanner_status": TIER_READ_ONLY,
+    "check_unprotected_positions": TIER_READ_ONLY,
+    "get_bracket_guardian_status": TIER_READ_ONLY,
     "event_risk_check": TIER_READ_ONLY,
     # Strategy research (read only)
     "run_backtest": TIER_READ_ONLY,
