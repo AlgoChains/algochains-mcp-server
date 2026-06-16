@@ -87,13 +87,13 @@ def evaluate_daily_loss_proximity(
     buffer_usd = max(0.0, limit - loss)
     if block_scalper_entry:
         message = (
-            f"Daily loss proximity {pct:.0f}% (${loss:.2f}/${limit:.0f}) — "
+            f"Daily loss proximity {pct:.0f}% (${loss:.2f}/${limit:.0f}) - "
             "new scalper entries blocked until daily P&L recovers"
         )
     elif alert:
         if mnq_swing_exempt and fraction >= DAILY_LOSS_SCALPER_BLOCK_FRACTION:
             message = (
-                f"Daily loss proximity {pct:.0f}% (${loss:.2f}/${limit:.0f}) — "
+                f"Daily loss proximity {pct:.0f}% (${loss:.2f}/${limit:.0f}) - "
                 "MNQ swing exempt from scalper-entry block"
             )
         else:
