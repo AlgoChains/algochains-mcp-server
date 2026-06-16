@@ -134,6 +134,31 @@ def _contract_name(contract: dict | BaseException | None, fallback: object) -> s
     return str(fallback)
 
 
+def _positive_price(value: object) -> float | None:
+    parsed = _optional_float(value)
+    return parsed if parsed is not None and parsed > 0 else None
+
+
+def _quote_market_price(entries: dict) -> float | None:
+    """Return usable live price evidence from Tradovate quote entries."""
+    trade_entry = entries.get("Trade", {})
+    trade_price = (
+        _positive_price(trade_entry.get("price"))
+        if isinstance(trade_entry, dict)
+        else None
+    )
+    if trade_price is not None:
+        return trade_price
+
+    bid_entry = entries.get("Bid", {})
+    ask_entry = entries.get("Offer", {})
+    bid = _positive_price(bid_entry.get("price")) if isinstance(bid_entry, dict) else None
+    ask = _positive_price(ask_entry.get("price")) if isinstance(ask_entry, dict) else None
+    if bid is not None and ask is not None:
+        return round((bid + ask) / 2.0, 10)
+    return bid if bid is not None else ask
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -537,7 +562,7 @@ class TradovateConnector(BrokerConnector):
         entry = _first_number(position, ("netPrice", "prevPrice"))
         net_qty = _optional_float(position.get("netPos"))
         value_per_point = await self._product_value_per_point(contract)
-        last_price = await self._quote_trade_price(symbol)
+        last_price = await self._quote_live_price(symbol)
 
         if entry is None or net_qty is None:
             raise BrokerConnectionError(
@@ -560,7 +585,7 @@ class TradovateConnector(BrokerConnector):
             )
         if last_price is None:
             raise BrokerConnectionError(
-                "Tradovate quote did not include a trade price for unrealized P&L",
+                "Tradovate quote did not include a live price for unrealized P&L",
                 broker="tradovate",
                 details={"contract_id": position.get("contractId"), "symbol": symbol},
             )
@@ -590,7 +615,7 @@ class TradovateConnector(BrokerConnector):
             return None
         return _first_number(product, ("valuePerPoint", "pointValue"))
 
-    async def _quote_trade_price(self, symbol: str) -> float | None:
+    async def _quote_live_price(self, symbol: str) -> float | None:
         try:
             quotes = await self._get("/md/getQuote", {"symbol": symbol})
         except Exception as exc:
@@ -601,10 +626,7 @@ class TradovateConnector(BrokerConnector):
         entries = quotes.get("entries", {})
         if not isinstance(entries, dict):
             return None
-        trade_entry = entries.get("Trade", {})
-        if not isinstance(trade_entry, dict):
-            return None
-        return _optional_float(trade_entry.get("price"))
+        return _quote_market_price(entries)
 
     async def get_orders(self, status: Optional[str] = None, limit: int = 200) -> list[Order]:
         """Get orders, optionally filtered by status.
@@ -849,21 +871,32 @@ class TradovateConnector(BrokerConnector):
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
             if isinstance(quotes, dict):
                 entries = quotes.get("entries", {})
+                if not isinstance(entries, dict):
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — API returned no entries",
+                        broker="tradovate",
+                    )
                 bid_entry = entries.get("Bid", {})
                 ask_entry = entries.get("Offer", {})
                 trade_entry = entries.get("Trade", {})
+                bid = _positive_price(bid_entry.get("price")) if isinstance(bid_entry, dict) else None
+                ask = _positive_price(ask_entry.get("price")) if isinstance(ask_entry, dict) else None
+                last = _quote_market_price(entries)
+                if last is None:
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — API returned no live price",
+                        broker="tradovate",
+                    )
                 return Quote(
                     symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
+                    bid=bid or 0.0,
+                    ask=ask or 0.0,
+                    last=last,
+                    volume=int(trade_entry.get("size", 0)) if isinstance(trade_entry, dict) else 0,
                 )
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 
-        # Return None-sentinel prices so callers can distinguish "API error"
-        # from "market genuinely at zero". Callers must check for float("nan").
         raise BrokerQuoteError(
             f"Quote unavailable for {symbol} — API returned no data",
             broker="tradovate",
