@@ -58,6 +58,7 @@ import sys
 from pathlib import Path as _PathGlobal
 
 from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
+from .tradovate_token_status import summarize_tradovate_token_state
 
 
 def _default_control_tower() -> str:
@@ -3926,6 +3927,10 @@ TOOLS = [
          description="Run the trading-system-health audit: bot process/log liveness (with legacy log alias resolution), disk space on control-tower and home volumes, and optional health_snapshot.json. Use to triage SEV1 trading-system-health watchdog alerts without false inactive signals from stale cl_bot_live.log.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_latency_monitor_status",
+         description="Run the LATENCY-MONITOR audit: Tradovate /account/list probe latency + HTTP status, scheduler state, and MNQ/CL log ages. Probes tradovate_token_live.txt before env tokens to avoid false 401s while bots are healthy. Use to triage LATENCY-MONITOR Slack alerts.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_strategy_academic_citations",
          description="Get all academic citations, SSRN papers, and published works that provide the theoretical basis for a specific bot's strategy. Includes authors, year, venue, DOI/SSRN link, and relevance explanation. Bot IDs: mnq, cl, mes, nq.",
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
@@ -5062,6 +5067,7 @@ TIER1_TOOL_NAMES = {
     "get_all_bot_metrics",
     "get_system_heartbeat",
     "get_system_health",
+    "get_latency_monitor_status",
     "get_adaptive_brain_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
@@ -6038,22 +6044,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "legacy_stale_mismatch": legacy_stale_mismatch,
             }
 
-        # Tradovate token expiry (best-effort)
-        token_file = control_tower / "tradovate_token_live.txt"
-        token_info = {"present": token_file.exists()}
-        if token_file.exists():
-            try:
-                content = token_file.read_text().splitlines()
-                jwt = content[0].replace("Bearer ", "").strip() if content else ""
-                if jwt.count(".") == 2:
-                    import base64 as _b64, json as _json
-                    pad = lambda s: s + "=" * (-len(s) % 4)  # noqa: E731
-                    payload = _json.loads(_b64.urlsafe_b64decode(pad(jwt.split(".")[1])))
-                    exp = payload.get("exp")
-                    if exp:
-                        token_info["expires_in_seconds"] = int(exp - now)
-            except Exception:
-                pass
+        # Tradovate token expiry + guardian state (secret-free, best-effort).
+        token_info = summarize_tradovate_token_state(control_tower, now=now)
 
         # ── signal_health.json slice (bounded operational telemetry) ──
         # Provides MCP clients one-stop visibility into bot params, validated
@@ -9508,6 +9500,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(get_system_health())
         except Exception as exc:
             return _text({"error": f"System health error: {exc}"})
+
+    elif name == "get_latency_monitor_status":
+        try:
+            from .latency_monitor_status import get_latency_monitor_status
+            return _text(get_latency_monitor_status())
+        except Exception as exc:
+            return _text({"error": f"Latency monitor status error: {exc}"})
 
     elif name == "get_adaptive_brain_status":
         try:
