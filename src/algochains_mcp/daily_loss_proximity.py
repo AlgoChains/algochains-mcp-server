@@ -28,6 +28,8 @@ _PNL_KEYS = (
     "daily_realized_pnl",
 )
 
+_VERIFIED_SOURCES = frozenset({"broker", "tradovate", "fills", "cash_balance", "rithmic"})
+
 
 def _first_existing(root: Path, candidates: tuple[Path, ...]) -> Path | None:
     for relative in candidates:
@@ -62,6 +64,11 @@ def _state_pnl_verified(container: dict[str, Any]) -> bool:
         return bool(container.get("pnl_verified"))
     if "source_verified" in container:
         return bool(container.get("source_verified"))
+    if "verified" in container:
+        return bool(container.get("verified"))
+    source = str(container.get("source") or container.get("pnl_source") or "").strip().lower()
+    if source in _VERIFIED_SOURCES:
+        return True
     return False
 
 
@@ -90,6 +97,44 @@ def _resolve_daily_pnl(
                     return pnl, f"state:daily.{key}", _state_pnl_verified(nested)
 
     return None, "unknown", False
+
+
+def _reconcile_bot_daily_pnl(
+    root: Path,
+) -> tuple[float | None, str, bool, dict[str, Any]]:
+    """Aggregate today's P&L from live bot metrics when state/env is missing."""
+    try:
+        from .live_bot_intelligence.metrics_parser import parse_all_bots
+    except Exception:
+        return None, "unknown", False, {}
+
+    try:
+        bots = parse_all_bots()
+    except Exception:
+        return None, "unknown", False, {}
+
+    if not bots:
+        return None, "unknown", False, {}
+
+    total_pnl = 0.0
+    fresh_bots: list[str] = []
+    per_bot: dict[str, Any] = {}
+    for bot_id, metrics in bots.items():
+        per_bot[bot_id] = {
+            "daily_pnl_usd": metrics.daily_pnl,
+            "daily_trades": metrics.daily_trades,
+            "is_running": metrics.is_running,
+            "last_log_age_sec": metrics.last_log_age_sec,
+        }
+        total_pnl += float(metrics.daily_pnl or 0.0)
+        if metrics.is_running:
+            fresh_bots.append(bot_id)
+
+    details = {"bot_breakdown": per_bot, "fresh_bots": fresh_bots}
+    if not fresh_bots:
+        return None, "bots:stale", False, details
+
+    return round(total_pnl, 2), "bots:aggregate", True, details
 
 
 def _resolve_limit_usd(state: dict[str, Any]) -> float:
@@ -128,6 +173,71 @@ def _summary_line(status: str, daily_pnl: float, utilization_pct: float, buffer_
     )
 
 
+def _build_payload(
+    *,
+    status: str,
+    summary: str,
+    daily_pnl: float | None,
+    limit_usd: float,
+    pnl_source: str,
+    pnl_verified: bool,
+    root: Path,
+    state_path: Path | None,
+    state: dict[str, Any],
+    reconciliation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    loss_usd = round(max(0.0, -daily_pnl), 2) if daily_pnl is not None else None
+    utilization_pct = (
+        round((loss_usd / limit_usd) * 100, 1)
+        if daily_pnl is not None and limit_usd > 0
+        else None
+    )
+    buffer_usd = (
+        round(max(0.0, limit_usd - loss_usd), 2)
+        if loss_usd is not None
+        else None
+    )
+    payload: dict[str, Any] = {
+        "status": status,
+        "summary": summary,
+        "formatted_line": summary,
+        "daily_pnl_usd": round(daily_pnl, 2) if daily_pnl is not None else None,
+        "daily_loss_limit_usd": limit_usd,
+        "loss_usd": loss_usd,
+        "utilization_pct": utilization_pct,
+        "buffer_usd": buffer_usd,
+        "alert_threshold_pct": ALERT_THRESHOLD_PCT,
+        "block_scalper_threshold_pct": BLOCK_SCALPER_THRESHOLD_PCT,
+        "mnq_swing_exempt": MNQ_SWING_EXEMPT,
+        "pnl_source": pnl_source,
+        "pnl_verified": pnl_verified,
+        "control_tower": str(root),
+        "state_path": str(state_path) if state_path else None,
+        "state_exists": state_path is not None,
+        "policy": (
+            "Alert at 80% of daily loss limit; block new scalper entries at 95%; "
+            "MNQ swing exempt"
+        ),
+        "checked_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+    if daily_pnl is not None and pnl_verified:
+        payload["alert_at_loss_usd"] = round(limit_usd * ALERT_THRESHOLD_PCT / 100, 2)
+        payload["block_scalper_at_loss_usd"] = round(
+            limit_usd * BLOCK_SCALPER_THRESHOLD_PCT / 100, 2
+        )
+        payload["block_new_scalper_entries"] = status == "BLOCK"
+    if state:
+        payload["state"] = state
+    if reconciliation:
+        payload["reconciliation"] = reconciliation
+    if status == "DEGRADED" and daily_pnl is None:
+        payload["action"] = (
+            "Set TODAY_REALIZED_PNL, write state/daily_loss_proximity_state.json with "
+            "pnl_verified=true, or ensure live bot logs are fresh before trusting OK status."
+        )
+    return payload
+
+
 def get_daily_loss_proximity(
     *,
     control_tower: Path | None = None,
@@ -139,64 +249,46 @@ def get_daily_loss_proximity(
 
     daily_pnl, pnl_source, pnl_verified = _resolve_daily_pnl(state)
     limit_usd = _resolve_limit_usd(state)
+    reconciliation: dict[str, Any] | None = None
+
+    if daily_pnl is None or not pnl_verified:
+        bot_pnl, bot_source, bot_verified, bot_details = _reconcile_bot_daily_pnl(root)
+        if bot_pnl is not None and bot_verified:
+            daily_pnl = bot_pnl
+            pnl_source = bot_source
+            pnl_verified = True
+            reconciliation = bot_details
 
     if daily_pnl is None:
-        return {
-            "status": "DEGRADED",
-            "summary": "[DEGRADED] Daily P&L unavailable — proximity guard unverified",
-            "daily_pnl_usd": None,
-            "daily_loss_limit_usd": limit_usd,
-            "loss_usd": None,
-            "utilization_pct": None,
-            "buffer_usd": None,
-            "alert_threshold_pct": ALERT_THRESHOLD_PCT,
-            "block_scalper_threshold_pct": BLOCK_SCALPER_THRESHOLD_PCT,
-            "mnq_swing_exempt": MNQ_SWING_EXEMPT,
-            "pnl_source": pnl_source,
-            "pnl_verified": False,
-            "control_tower": str(root),
-            "state_path": str(state_path) if state_path else None,
-            "state_exists": state_path is not None,
-            "policy": (
-                "Alert at 80% of daily loss limit; block new scalper entries at 95%; "
-                "MNQ swing exempt"
-            ),
-            "action": (
-                "Set TODAY_REALIZED_PNL or write state/daily_loss_proximity_state.json "
-                "from the control-tower watchdog before trusting OK status."
-            ),
-            "checked_at": datetime.now(tz=timezone.utc).isoformat(),
-        }
+        summary = "[DEGRADED] Daily P&L unavailable — proximity guard unverified"
+        return _build_payload(
+            status="DEGRADED",
+            summary=summary,
+            daily_pnl=None,
+            limit_usd=limit_usd,
+            pnl_source=pnl_source,
+            pnl_verified=False,
+            root=root,
+            state_path=state_path,
+            state=state,
+            reconciliation=reconciliation,
+        )
 
     loss_usd = max(0.0, -daily_pnl)
     utilization_pct = round((loss_usd / limit_usd) * 100, 1) if limit_usd > 0 else 0.0
-    buffer_usd = round(max(0.0, limit_usd - loss_usd), 2)
     status = _classify(utilization_pct, verified=pnl_verified)
+    buffer_usd = round(max(0.0, limit_usd - loss_usd), 2)
+    summary = _summary_line(status, daily_pnl, utilization_pct, buffer_usd)
 
-    block_scalpers = status == "BLOCK"
-    return {
-        "status": status,
-        "summary": _summary_line(status, daily_pnl, utilization_pct, buffer_usd),
-        "daily_pnl_usd": round(daily_pnl, 2),
-        "daily_loss_limit_usd": limit_usd,
-        "loss_usd": round(loss_usd, 2),
-        "utilization_pct": utilization_pct,
-        "buffer_usd": buffer_usd,
-        "alert_threshold_pct": ALERT_THRESHOLD_PCT,
-        "block_scalper_threshold_pct": BLOCK_SCALPER_THRESHOLD_PCT,
-        "alert_at_loss_usd": round(limit_usd * ALERT_THRESHOLD_PCT / 100, 2),
-        "block_scalper_at_loss_usd": round(limit_usd * BLOCK_SCALPER_THRESHOLD_PCT / 100, 2),
-        "block_new_scalper_entries": block_scalpers,
-        "mnq_swing_exempt": MNQ_SWING_EXEMPT,
-        "pnl_source": pnl_source,
-        "pnl_verified": pnl_verified,
-        "control_tower": str(root),
-        "state_path": str(state_path) if state_path else None,
-        "state_exists": state_path is not None,
-        "state": state,
-        "policy": (
-            "Alert at 80% of daily loss limit; block new scalper entries at 95%; "
-            "MNQ swing exempt"
-        ),
-        "checked_at": datetime.now(tz=timezone.utc).isoformat(),
-    }
+    return _build_payload(
+        status=status,
+        summary=summary,
+        daily_pnl=daily_pnl,
+        limit_usd=limit_usd,
+        pnl_source=pnl_source,
+        pnl_verified=pnl_verified,
+        root=root,
+        state_path=state_path,
+        state=state,
+        reconciliation=reconciliation,
+    )
