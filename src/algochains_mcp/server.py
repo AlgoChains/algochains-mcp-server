@@ -5965,11 +5965,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         bot_filter = (arguments.get("bot") or "all").lower()
         control_tower = _Path(_default_control_tower())
         bots = {
-            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},
-            "cl":  {"script": "CL_FUTURES_SCALPER.py",       "log": "logs/cl_futures_live.log"},
-            "mes": {"script": "mes_swing_live.py",           "log": "logs/mes_swing_live.log"},
-            "nq":  {"script": "nq_swing_live.py",            "log": "logs/nq_swing_live.log"},
-            "kalshi": {"script": "kalshi_daemon.py",         "log": "logs/kalshi_bot.log"},
+            "mnq": {
+                "script": "FUTURES_SCALPER_UPGRADED.py",
+                "logs": ("logs/futures_bot_live.log", "logs/futures_bot_demo.log"),
+            },
+            "cl":  {"script": "CL_FUTURES_SCALPER.py",       "logs": ("logs/cl_futures_live.log",)},
+            "mes": {"script": "mes_swing_live.py",           "logs": ("logs/mes_swing_live.log",)},
+            "nq":  {"script": "nq_swing_live.py",            "logs": ("logs/nq_swing_live.log",)},
+            "kalshi": {"script": "kalshi_daemon.py",         "logs": ("logs/kalshi_bot.log",)},
         }
         try:
             ps_out = _subp.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
@@ -5981,13 +5984,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         for key, meta in bots.items():
             if bot_filter not in ("all", key):
                 continue
-            log_path = control_tower / meta["log"]
+            log_candidates = tuple(meta.get("logs") or ())
+            existing_log_paths = [
+                control_tower / rel_path
+                for rel_path in log_candidates
+                if (control_tower / rel_path).exists()
+            ]
+            if existing_log_paths:
+                log_path = max(existing_log_paths, key=lambda path: path.stat().st_mtime)
+            elif log_candidates:
+                log_path = control_tower / log_candidates[0]
+            else:
+                log_path = control_tower / "logs" / f"{key}.log"
             running = meta["script"] in ps_out
             last_log_mtime = None
             error_count = 0
             tail_preview = ""
+            active_log = None
             if log_path.exists():
                 try:
+                    active_log = str(log_path.relative_to(control_tower))
                     last_log_mtime = int(now - log_path.stat().st_mtime)
                     # Read last 100 lines with tail for speed
                     tail = _subp.run(
@@ -6003,6 +6019,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     pass
             results[key] = {
                 "running": running,
+                "active_log": active_log,
+                "log_candidates": list(log_candidates),
                 "log_age_seconds": last_log_mtime,
                 "error_count_last_100": error_count,
                 "last_line_preview": tail_preview,

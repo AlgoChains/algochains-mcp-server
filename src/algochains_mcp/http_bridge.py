@@ -1302,6 +1302,7 @@ def create_fastapi_app():
 
         LOG_PATHS = [
             ("mnq", "logs/futures_bot_live.log"),
+            ("mnq", "logs/futures_bot_demo.log"),
             ("cl", "logs/cl_futures_live.log"),
             ("mes", "logs/mes_swing_live.log"),
             ("nq", "logs/nq_swing_live.log"),
