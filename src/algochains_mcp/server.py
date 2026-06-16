@@ -3926,6 +3926,24 @@ TOOLS = [
          description="Run the trading-system-health audit: bot process/log liveness (with legacy log alias resolution), disk space on control-tower and home volumes, and optional health_snapshot.json. Use to triage SEV1 trading-system-health watchdog alerts without false inactive signals from stale cl_bot_live.log.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_incident_report",
+         description="Read the latest control-tower critical-path incident timeline from logs/incidents/incident_*.json. Returns bounded issue summaries, bot process counts, recent deploy metadata, and active alert counts for Slack incident triage.",
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "incident_id": {
+                     "type": "string",
+                     "description": "Optional incident filename or stem, e.g. incident_20260616_124514.json.",
+                 },
+                 "limit": {
+                     "type": "number",
+                     "description": "Max incident files to return (default 1, max 5).",
+                     "default": 1,
+                 },
+             },
+             "required": [],
+         },
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_strategy_academic_citations",
          description="Get all academic citations, SSRN papers, and published works that provide the theoretical basis for a specific bot's strategy. Includes authors, year, venue, DOI/SSRN link, and relevance explanation. Bot IDs: mnq, cl, mes, nq.",
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
@@ -5062,6 +5080,7 @@ TIER1_TOOL_NAMES = {
     "get_all_bot_metrics",
     "get_system_heartbeat",
     "get_system_health",
+    "get_incident_report",
     "get_adaptive_brain_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
@@ -6222,9 +6241,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         desktop_inference_slo = _summarize_desktop_inference_log(control_tower)
         decision_latency_slo = _summarize_decision_latency_log(control_tower)
 
+        from .live_bot_intelligence.heartbeat import (
+            BOT_SCRIPT_NAMES as _HB_BOT_SCRIPT_NAMES,
+            EXPECTED_DESKTOP_BOT_COUNT,
+        )
+
+        bot_processes = {
+            "running_count": len(running_bots),
+            "expected_count": EXPECTED_DESKTOP_BOT_COUNT,
+            "all_running": len(running_bots) >= EXPECTED_DESKTOP_BOT_COUNT
+            and all(key in running_bots for key in _HB_BOT_SCRIPT_NAMES),
+            "processes": {
+                bot_key: bot_key in running_bots for bot_key in _HB_BOT_SCRIPT_NAMES
+            },
+            "mismatch": len(running_bots) != EXPECTED_DESKTOP_BOT_COUNT,
+        }
+
         return _text({
             "control_tower": str(control_tower),
             "bots": results,
+            "bot_processes": bot_processes,
             "signal_health": signal_health_slice,
             "ml_env_flags": ml_env_flags,
             "cc_health": cc_health,
@@ -9508,6 +9544,19 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(get_system_health())
         except Exception as exc:
             return _text({"error": f"System health error: {exc}"})
+
+    elif name == "get_incident_report":
+        try:
+            from .incident_report import get_incident_report
+
+            return _text(
+                get_incident_report(
+                    incident_id=arguments.get("incident_id"),
+                    limit=int(arguments.get("limit") or 1),
+                )
+            )
+        except Exception as exc:
+            return _text({"error": f"Incident report error: {exc}"})
 
     elif name == "get_adaptive_brain_status":
         try:
