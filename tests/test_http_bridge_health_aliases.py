@@ -49,6 +49,31 @@ def test_api_bots_exposes_list_and_count_aliases():
     )
 
 
+def test_api_system_health_exposes_trading_system_health_audit():
+    client = _client()
+    audit = {
+        "component": "trading-system-health",
+        "status": "degraded",
+        "formatted_line": "[DEGRADED] Trading system health audit: 1 warning(s)",
+        "summary": "CL inactive alert is a legacy log false positive",
+        "bots": {"cl": {"active": True}},
+    }
+    with patch("algochains_mcp.http_bridge.handle_mcp_request", new_callable=AsyncMock) as mock_handle:
+        mock_handle.return_value = audit
+        resp = client.get("/api/system-health", headers={"X-Api-Key": OWNER_KEY})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["component"] == "trading-system-health"
+    assert data["formatted_line"].startswith("[DEGRADED]")
+    mock_handle.assert_awaited_once_with(
+        "get_system_health",
+        {},
+        is_owner=True,
+        caller_scope=None,
+    )
+
+
 def test_api_system_alias_wraps_heartbeat_payload():
     client = _client()
     heartbeat = {

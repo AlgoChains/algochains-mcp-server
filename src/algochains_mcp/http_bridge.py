@@ -1044,6 +1044,22 @@ def create_fastapi_app():
         heartbeat = await handle_mcp_request("get_system_heartbeat", {}, is_owner=True, caller_scope=caller_scope)
         return _with_system_aliases(heartbeat)
 
+    @app_http.get("/api/system-health")
+    async def trading_system_health(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+        x_algochains_caller_scope: str | None = Header(default=None),
+    ):
+        """Trading-system-health audit with legacy CL log alias resolution."""
+        key_valid, is_owner, subscriber, developer, caller_scope = _resolve_auth(
+            x_api_key,
+            authorization,
+            caller_scope=x_algochains_caller_scope,
+        )
+        if not key_valid or subscriber is not None or not is_owner:
+            raise HTTPException(status_code=401, detail="Owner API key required")
+        return await handle_mcp_request("get_system_health", {}, is_owner=True, caller_scope=caller_scope)
+
     @app_http.get("/api/guardrails")
     async def guardrail_status(
         x_api_key: str | None = Header(default=None),

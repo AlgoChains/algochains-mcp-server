@@ -54,6 +54,102 @@ def _read_health_snapshot(control_tower: Path) -> dict[str, Any]:
     }
 
 
+def _snapshot_issue_strings(snapshot: dict[str, Any]) -> list[str]:
+    payload = snapshot.get("payload")
+    if not isinstance(payload, dict):
+        return []
+    collected: list[str] = []
+    for key in ("critical_issues", "issues", "critical", "warnings"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            collected.append(value)
+        elif isinstance(value, list):
+            collected.extend(str(item) for item in value if item)
+    return collected
+
+
+def _is_cl_legacy_inactive_false_positive(issue: str, cl_bot: dict[str, Any]) -> bool:
+    lowered = issue.lower()
+    if "cl_bot_live.log" not in lowered or "inactive" not in lowered:
+        return False
+    return bool(cl_bot.get("active")) and bool(
+        cl_bot.get("legacy_stale_mismatch") or cl_bot.get("log_fresh")
+    )
+
+
+def reconcile_health_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    bots: dict[str, Any],
+) -> dict[str, Any]:
+    """Separate watchdog snapshot issues from MCP-verified false positives."""
+    cl_bot = bots.get("cl") or {}
+    snapshot_issues = _snapshot_issue_strings(snapshot)
+    false_positives: list[str] = []
+    effective_critical: list[str] = []
+
+    for issue in snapshot_issues:
+        if _is_cl_legacy_inactive_false_positive(issue, cl_bot):
+            false_positives.append(issue)
+        elif any(
+            marker in issue.lower()
+            for marker in ("critical", "inactive", "failed", "down", "error")
+        ):
+            effective_critical.append(issue)
+        else:
+            effective_critical.append(issue)
+
+    return {
+        "snapshot_issue_count": len(snapshot_issues),
+        "false_positive_issues": false_positives,
+        "effective_critical_issues": effective_critical,
+        "cl_legacy_inactive_false_positive": bool(false_positives),
+    }
+
+
+def format_trading_system_health(payload: dict[str, Any]) -> dict[str, Any]:
+    """Compact summary for watchdog/Slack surfaces."""
+    status = payload.get("status", "unknown")
+    critical = list(payload.get("effective_critical_issues") or payload.get("critical_issues") or [])
+    issues = list(payload.get("issues") or [])
+    false_positives = list(payload.get("false_positive_issues") or [])
+    reconciliation = payload.get("snapshot_reconciliation") or {}
+    if reconciliation.get("cl_legacy_inactive_false_positive"):
+        false_positives = list(
+            dict.fromkeys(
+                false_positives + list(reconciliation.get("false_positive_issues") or [])
+            )
+        )
+
+    if status == "ok":
+        formatted_line = "[OK] Trading system health audit passed"
+    elif critical:
+        formatted_line = (
+            f"[FAILED] Trading system health audit: {len(critical)} critical issue(s)"
+        )
+    else:
+        formatted_line = (
+            f"[DEGRADED] Trading system health audit: {len(issues)} warning(s)"
+        )
+
+    summary_parts: list[str] = []
+    if false_positives:
+        summary_parts.append(
+            "CL inactive alert is a legacy log false positive "
+            f"({payload.get('bots', {}).get('cl', {}).get('log_path', 'cl_futures_live.log')})"
+        )
+    if critical:
+        summary_parts.append("; ".join(critical[:3]))
+    summary = ". ".join(summary_parts) if summary_parts else formatted_line
+
+    return {
+        "summary": summary,
+        "formatted_line": formatted_line,
+        "sev1_eligible": bool(critical),
+        "false_positive_count": len(false_positives),
+    }
+
+
 def get_system_health(
     *,
     control_tower: Path | None = None,
@@ -151,13 +247,29 @@ def get_system_health(
                 f"Disk space warn on {label}: {disk.get('free_percent')}% free ({disk.get('path')})"
             )
 
+    false_positive_issues: list[str] = []
+    for bot_id, bot_payload in bots.items():
+        if bot_id == "cl" and bot_payload.get("legacy_stale_mismatch") and bot_payload.get("active"):
+            false_positive_issues.append(
+                "Bot appears inactive in cl_bot_live.log (legacy path stale; "
+                f"active on {bot_payload.get('log_path')})"
+            )
+
+    effective_critical = list(critical_issues)
+    for fp in false_positive_issues:
+        if fp in effective_critical:
+            effective_critical.remove(fp)
+
     status = "ok"
-    if critical_issues:
+    if effective_critical:
         status = "failed"
     elif issues:
         status = "degraded"
 
-    return {
+    health_snapshot = _read_health_snapshot(root)
+    snapshot_reconciliation = reconcile_health_snapshot(health_snapshot, bots=bots)
+
+    payload = {
         "component": "trading-system-health",
         "status": status,
         "stale_log_threshold_seconds": STALE_LOG_SECONDS,
@@ -167,6 +279,11 @@ def get_system_health(
         "disk": {"control_tower": disk_root, "home": disk_home},
         "issues": issues,
         "critical_issues": critical_issues,
-        "health_snapshot": _read_health_snapshot(root),
+        "effective_critical_issues": effective_critical,
+        "false_positive_issues": false_positive_issues,
+        "health_snapshot": health_snapshot,
+        "snapshot_reconciliation": snapshot_reconciliation,
         "checked_at_unix": int(current_time),
     }
+    payload.update(format_trading_system_health(payload))
+    return payload
