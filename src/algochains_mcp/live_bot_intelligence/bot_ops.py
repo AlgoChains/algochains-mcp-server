@@ -416,20 +416,30 @@ def get_all_bot_ops_status() -> dict:
 
 # ── V2: Bracket integrity tools ───────────────────────────────────────────────
 
-def check_unprotected_positions() -> dict:
-    """
-    Cross-check open positions vs working orders to detect unprotected exposure.
-    An unprotected position (open, no stop/target orders) caused the Apr 14 2026
-    -$4,917 incident. Run this before any P&L report or status check.
+def _contract_id(value: Any) -> int | str | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
 
-    Returns status: OK | UNPROTECTED_EXPOSURE | ERROR
-    """
+
+def _order_contract_id(order: dict[str, Any]) -> int | str | None:
+    raw = order.get("contractId") or (order.get("contract") or {}).get("id")
+    return _contract_id(raw)
+
+
+def _fetch_tradovate_book() -> dict[str, Any]:
+    """Load positions + working orders from Tradovate; shared by bracket integrity checks."""
     import sys
+
     ct = str(CONTROL_TOWER)
     if ct not in sys.path:
         sys.path.insert(0, ct)
     try:
         from dotenv import load_dotenv
+
         load_dotenv(CONTROL_TOWER / ".env")
     except ImportError:
         pass
@@ -439,8 +449,6 @@ def check_unprotected_positions() -> dict:
     except ImportError as e:
         return {"error": f"Cannot import tradovate_client: {e}", "status": "ERROR"}
 
-    # BUG-05 FIX: Never silently default to "demo" — wrong environment means silently
-    # checking the wrong book and reporting "OK" when live is exposed.
     _env = os.getenv("TRADOVATE_ENV")
     if not _env:
         return {
@@ -468,6 +476,28 @@ def check_unprotected_positions() -> dict:
     except Exception as e:
         return {"error": f"Tradovate connection failed: {e}", "status": "ERROR"}
 
+    return {
+        "positions": positions,
+        "working_orders": working_orders,
+        "environment": os.getenv("TRADOVATE_ENV", "demo").upper(),
+    }
+
+
+def check_unprotected_positions() -> dict:
+    """
+    Cross-check open positions vs working orders to detect unprotected exposure.
+    An unprotected position (open, no stop/target orders) caused the Apr 14 2026
+    -$4,917 incident. Run this before any P&L report or status check.
+
+    Returns status: OK | UNPROTECTED_EXPOSURE | ERROR
+    """
+    book = _fetch_tradovate_book()
+    if book.get("status") in {"ERROR", "CONFIG_ERROR"}:
+        return book
+
+    positions = book["positions"]
+    working_orders = book["working_orders"]
+
     # Only stop-type orders actually protect a position
     _STOP_TYPES = {"Stop", "StopLimit", "TrailingStop", "MIT"}
     covered = set()
@@ -487,12 +517,8 @@ def check_unprotected_positions() -> dict:
         net = p.get("netPos", 0)
         if net == 0:
             continue
-        raw_cid = p.get("contractId")
-        try:
-            cid = int(raw_cid) if raw_cid is not None else None
-        except (TypeError, ValueError):
-            cid = raw_cid
-        entry = {"contractId": raw_cid, "contractName": p.get("contractName"), "netPos": net, "netPrice": p.get("netPrice")}
+        cid = _contract_id(p.get("contractId"))
+        entry = {"contractId": p.get("contractId"), "contractName": p.get("contractName"), "netPos": net, "netPrice": p.get("netPrice")}
         if cid in covered:
             protected.append(entry)
         else:
@@ -509,7 +535,65 @@ def check_unprotected_positions() -> dict:
             else "All positions protected" if protected
             else "Account is flat"
         ),
-        "environment": os.getenv("TRADOVATE_ENV", "demo").upper(),
+        "environment": book["environment"],
+    }
+
+
+def check_orphan_bracket_orders() -> dict:
+    """
+    Cross-check working orders vs open positions to detect orphan bracket legs.
+
+    Orphan orders (working stop/target/limit on a flat contract) are the inverse
+    of unprotected exposure. The control-tower ORPHAN-BRACKET-SCANNER auto-cancels
+    these every 10 minutes during market hours.
+    """
+    book = _fetch_tradovate_book()
+    if book.get("status") in {"ERROR", "CONFIG_ERROR"}:
+        return book
+
+    positions = book["positions"]
+    working_orders = book["working_orders"]
+
+    open_contracts: set[int | str] = set()
+    for position in positions:
+        if position.get("netPos", 0) == 0:
+            continue
+        cid = _contract_id(position.get("contractId"))
+        if cid is not None:
+            open_contracts.add(cid)
+
+    orphan_orders: list[dict[str, Any]] = []
+    matched_orders: list[dict[str, Any]] = []
+    for order in working_orders:
+        cid = _order_contract_id(order)
+        entry = {
+            "orderId": order.get("id") or order.get("orderId"),
+            "contractId": order.get("contractId") or (order.get("contract") or {}).get("id"),
+            "contractName": order.get("contractName") or (order.get("contract") or {}).get("name"),
+            "orderType": order.get("orderType"),
+            "action": order.get("action"),
+            "orderQty": order.get("orderQty") or order.get("qty"),
+            "stopPrice": order.get("stopPrice"),
+            "price": order.get("price"),
+        }
+        if cid is None or cid not in open_contracts:
+            orphan_orders.append(entry)
+        else:
+            matched_orders.append(entry)
+
+    return {
+        "orphan_orders": orphan_orders,
+        "matched_orders": matched_orders,
+        "open_position_contracts": sorted(open_contracts, key=str),
+        "working_orders_count": len(working_orders),
+        "orphan_order_count": len(orphan_orders),
+        "status": "ORPHAN_ORDERS" if orphan_orders else "OK",
+        "message": (
+            f"{len(orphan_orders)} orphan working order(s) on flat contracts"
+            if orphan_orders
+            else "No orphan working orders detected"
+        ),
+        "environment": book["environment"],
     }
 
 
@@ -529,7 +613,11 @@ def get_bracket_guardian_status() -> dict:
     try:
         data = json.loads(state_path.read_text())
         unprotected_since = data.get("unprotected_since", {})
+        unknown_flat_orders = data.get("unknown_flat_orders") or []
+        if not isinstance(unknown_flat_orders, list):
+            unknown_flat_orders = []
         last_check = data.get("last_check", "unknown")
+        has_alerts = bool(unprotected_since or unknown_flat_orders)
         return {
             "guardian_active": True,
             "last_check": last_check,
@@ -537,7 +625,12 @@ def get_bracket_guardian_status() -> dict:
             "working_orders_count": data.get("working_orders_count", 0),
             "currently_unprotected": list(unprotected_since.keys()),
             "unprotected_since": unprotected_since,
-            "status": "ALERT" if unprotected_since else "OK",
+            "unknown_flat_orders": unknown_flat_orders,
+            "unknown_flat_order_count": len(unknown_flat_orders),
+            "mnq_swing_protect": data.get("mnq_swing_protect") or data.get("MNQ_SWING_PROTECT"),
+            "gate": data.get("gate") or data.get("GATE"),
+            "swing": data.get("swing") or data.get("SWING"),
+            "status": "ALERT" if has_alerts else "OK",
         }
     except Exception as e:
         return {"guardian_active": False, "error": str(e)}
