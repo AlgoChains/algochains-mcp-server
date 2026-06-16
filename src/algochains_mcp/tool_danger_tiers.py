@@ -193,6 +193,7 @@ _TOOL_TIERS: dict[str, int] = {
     "get_bot_dashboard": TIER_READ_ONLY,
     "get_system_heartbeat": TIER_READ_ONLY,
     "get_system_health": TIER_READ_ONLY,
+    "get_latency_monitor_status": TIER_READ_ONLY,
     "get_incident_report": TIER_READ_ONLY,
     "get_adaptive_brain_status": TIER_READ_ONLY,
     "get_evolution_status": TIER_READ_ONLY,
