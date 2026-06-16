@@ -277,7 +277,7 @@ def _run_rithmic_status(params: dict) -> dict:
 
 def _run_security_posture(params: dict) -> dict:
     try:
-        from algochains_mcp.security.replay_guard import _NONCE_STORE  # check guard is loaded
+        from algochains_mcp.security.replay_guard import _GLOBAL_GUARD  # check guard is loaded
         from algochains_mcp.security.per_tool_rate_limiter import get_rate_limit_status
         from algochains_mcp.security.prompt_guard import check_llm_prompt
         rate_status = get_rate_limit_status()
@@ -290,6 +290,7 @@ def _run_security_posture(params: dict) -> dict:
             "audit_date": datetime.now(tz=timezone.utc).date().isoformat(),
             "cosai_coverage": {"total": 12, "covered": 7, "partial": 2, "open": 3, "score_pct": 58.3},
             "replay_guard": "active",
+            "replay_guard_nonce_count": _GLOBAL_GUARD.nonce_count,
             "rate_limiter": "active",
             "prompt_guard": "active" if prompt_guard_probe.allowed else "blocked_trusted_context",
             "rate_limit_status": rate_status,
