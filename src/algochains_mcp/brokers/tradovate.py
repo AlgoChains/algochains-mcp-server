@@ -126,6 +126,91 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _positive_float(value: object) -> float | None:
+    parsed = _optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _quote_rows(payload: object) -> list[dict]:
+    """Extract quote objects from REST/WebSocket-shaped Tradovate payloads."""
+    rows: list[dict] = []
+
+    def _collect(value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                _collect(item)
+            return
+        if not isinstance(value, dict):
+            return
+        if isinstance(value.get("entries"), dict):
+            rows.append(value)
+        for key in ("d", "quotes", "data"):
+            nested = value.get(key)
+            if isinstance(nested, (dict, list)):
+                _collect(nested)
+
+    _collect(payload)
+    return rows
+
+
+def _quote_entry_price(entries: dict, name: str) -> float | None:
+    entry = entries.get(name)
+    if not isinstance(entry, dict):
+        return None
+    return _positive_float(entry.get("price"))
+
+
+def _quote_entry_size(entries: dict, name: str) -> int | None:
+    entry = entries.get(name)
+    if not isinstance(entry, dict):
+        return None
+    size = _optional_float(entry.get("size"))
+    if size is None or size < 0:
+        return None
+    return int(size)
+
+
+def _quote_timestamp(row: dict) -> datetime | None:
+    timestamp = row.get("timestamp")
+    if not isinstance(timestamp, str) or not timestamp:
+        return None
+    try:
+        return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _parse_tradovate_quote(symbol: str, payload: object) -> Quote | None:
+    for row in _quote_rows(payload):
+        entries = row.get("entries")
+        if not isinstance(entries, dict):
+            continue
+        bid = _quote_entry_price(entries, "Bid")
+        ask = _quote_entry_price(entries, "Offer")
+        trade = _quote_entry_price(entries, "Trade")
+        if trade is not None:
+            last = trade
+        elif bid is not None and ask is not None:
+            last = (bid + ask) / 2
+        else:
+            last = bid or ask
+        if last is None:
+            continue
+        return Quote(
+            symbol=symbol,
+            bid=bid or last,
+            ask=ask or last,
+            last=last,
+            volume=_quote_entry_size(entries, "Trade")
+            or _quote_entry_size(entries, "TotalTradeVolume")
+            or 0,
+            timestamp=_quote_timestamp(row),
+        )
+    return None
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -743,23 +828,14 @@ class TradovateConnector(BrokerConnector):
             )
         try:
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
-            if isinstance(quotes, dict):
-                entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
-                return Quote(
-                    symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
-                )
+            quote = _parse_tradovate_quote(symbol, quotes)
+            if quote is not None:
+                return quote
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 
-        # Return None-sentinel prices so callers can distinguish "API error"
-        # from "market genuinely at zero". Callers must check for float("nan").
+        # Fail closed when REST does not provide a usable live price. Do not
+        # collapse missing/null quote fields to 0.0; futures cannot trade at 0.
         raise BrokerQuoteError(
             f"Quote unavailable for {symbol} — API returned no data",
             broker="tradovate",
