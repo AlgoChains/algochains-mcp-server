@@ -748,12 +748,25 @@ class TradovateConnector(BrokerConnector):
                 bid_entry = entries.get("Bid", {})
                 ask_entry = entries.get("Offer", {})
                 trade_entry = entries.get("Trade", {})
+                bid = _first_number(bid_entry, ("price", "Price"))
+                ask = _first_number(ask_entry, ("price", "Price"))
+                trade = _first_number(trade_entry, ("price", "Price"))
+                last = trade
+                if last is None and bid is not None and ask is not None and bid > 0 and ask > 0:
+                    last = (bid + ask) / 2.0
+                if last is None or last <= 0:
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — REST quote had no usable price",
+                        broker="tradovate",
+                    )
+
+                volume_raw = _first_number(trade_entry, ("size", "Size"))
                 return Quote(
                     symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
+                    bid=bid or 0.0,
+                    ask=ask or 0.0,
+                    last=last,
+                    volume=int(volume_raw or 0),
                 )
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
