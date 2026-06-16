@@ -108,11 +108,16 @@ def _should_scan_role(role: str, *, scan_system: bool) -> bool:
     return True
 
 
-def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
-    """True when *reveal system prompt* appears in operator defensive guidance."""
+def _is_defensive_catalog_context(text: str, match: re.Match[str]) -> bool:
+    """True when matched injection text appears in operator catalog/guidance."""
     prefix = text[: match.start()]
+    suffix = text[match.end() :]
     stripped_prefix = prefix.rstrip()
     if stripped_prefix.endswith(("(", "[", "/")):
+        return True
+    if stripped_prefix.endswith(("-", "*", "•", "·")) or re.search(
+        r"[\n\r]\s*[-*•·]\s*$", prefix
+    ):
         return True
     if stripped_prefix.endswith(":"):
         doc_tokens = re.findall(r"[A-Za-z']+", prefix)
@@ -127,10 +132,28 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
             "attack",
             "phrases",
             "phrase",
+            "prohibited",
+            "blocked",
+            "catalog",
+            "policy",
+            "t094",
             "e",
             "g",
         }:
             return True
+
+    if re.match(
+        r"(?i)\s*(?:is|are)\s+(?:prohibited|blocked|forbidden|banned|not\s+allowed)\b",
+        suffix,
+    ):
+        return True
+    if re.match(
+        r"(?i)\s*(?:attempts|attacks|patterns|injections|requests)\b",
+        suffix,
+    ):
+        return True
+    if re.match(r"(?i)\s*[,)]", suffix):
+        return True
 
     tokens = re.findall(r"[A-Za-z']+", prefix)
     if not tokens:
@@ -141,6 +164,7 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "never",
         "not",
         "no",
+        "any",
         "block",
         "prevent",
         "avoid",
@@ -154,8 +178,14 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "unless",
         "dont",
         "don't",
+        "include",
         "including",
         "like",
+        "treat",
+        "flag",
+        "scan",
+        "monitor",
+        "detect",
         "e",
         "g",
         "examples",
@@ -181,7 +211,12 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "try",
         "asks",
         "ask",
+        "asked",
     } and last == "to":
+        return True
+    if len(tokens) >= 3 and tokens[-3].lower() in {"asks", "ask", "asked"} and tokens[
+        -2
+    ].lower() == "you" and last == "to":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() in {
         "refuse",
@@ -191,22 +226,33 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         return True
     if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch"} and last == "as":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() == "watch" and last == "for":
+    if len(tokens) >= 2 and tokens[-2].lower() in {
+        "watch",
+        "monitor",
+        "scan",
+    } and last == "for":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "e" and last == "g":
         return True
     return False
 
 
-def find_injection_pattern(text: str) -> Optional[_InjectionPattern]:
+def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
+    """True when *reveal system prompt* appears in operator defensive guidance."""
+    return _is_defensive_catalog_context(text, match)
+
+
+def find_injection_pattern(
+    text: str,
+    *,
+    allow_defensive_catalog: bool = False,
+) -> Optional[_InjectionPattern]:
     """Return the first injection pattern matched in *text*, if any."""
     if not text:
         return None
     for pattern in INJECTION_PATTERNS:
         for match in pattern.regex.finditer(text):
-            if pattern.name == "reveal system prompt" and _is_defensive_reveal_match(
-                text, match
-            ):
+            if allow_defensive_catalog and _is_defensive_catalog_context(text, match):
                 continue
             return pattern
     return None
@@ -226,7 +272,11 @@ def check_prompt_text(
         return None
 
     body = _normalize_content(content)
-    matched = find_injection_pattern(body)
+    allow_defensive_catalog = normalized_role in TRUSTED_ROLES and scan_system
+    matched = find_injection_pattern(
+        body,
+        allow_defensive_catalog=allow_defensive_catalog,
+    )
     if matched is None:
         return None
 
