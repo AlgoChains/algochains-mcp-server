@@ -10,10 +10,10 @@ Symbology: Use continuous contract format (e.g. MNQZ5 for front-month)
 from __future__ import annotations
 
 import asyncio
+from datetime import date, datetime, timedelta, timezone
 import logging
 import math
 import time
-from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
 import httpx
@@ -38,6 +38,7 @@ logger = logging.getLogger("algochains_mcp.brokers.tradovate")
 # Tradovate contract month codes
 MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
                7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
+QUARTERLY_INDEX_ROOTS = {"MNQ", "NQ", "MES", "ES", "M2K", "RTY", "MYM", "YM"}
 
 
 def _jwt_expiry_epoch(access_token: str) -> float | None:
@@ -77,9 +78,36 @@ def _jwt_expiry_epoch(access_token: str) -> float | None:
 def _front_month_symbol(base: str) -> str:
     """Convert base symbol (MNQ) to front-month Tradovate symbol (MNQZ5)."""
     now = datetime.now(timezone.utc)
+    root = base.upper()
+    if root in QUARTERLY_INDEX_ROOTS:
+        quarterly_months = (3, 6, 9, 12)
+        contract_year = now.year
+        contract_month = 3
+        today = now.date()
+
+        for month in quarterly_months:
+            if month < now.month:
+                continue
+            if month == now.month and today > _third_friday(now.year, month):
+                continue
+            contract_month = month
+            break
+        else:
+            contract_year = now.year + 1
+
+        month_code = MONTH_CODES[contract_month]
+        year_digit = str(contract_year)[-1]
+        return f"{root}{month_code}{year_digit}"
+
     month_code = MONTH_CODES.get(now.month, "Z")
     year_digit = str(now.year)[-1]
     return f"{base}{month_code}{year_digit}"
+
+
+def _third_friday(year: int, month: int) -> date:
+    first_day = date(year, month, 1)
+    days_until_friday = (4 - first_day.weekday()) % 7
+    return first_day + timedelta(days=days_until_friday + 14)
 
 
 def _map_order_status(status: str) -> OrderStatus:
@@ -124,6 +152,44 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
         if value is not None:
             return value
     return None
+
+
+def _contract_from_result(result: object, preferred_name: str) -> dict | None:
+    """Normalize Tradovate contract lookup responses to one concrete contract."""
+    if isinstance(result, dict):
+        return result if result.get("name") or result.get("id") else None
+
+    if not isinstance(result, list):
+        return None
+
+    preferred_upper = preferred_name.upper()
+    for row in result:
+        if isinstance(row, dict) and str(row.get("name", "")).upper() == preferred_upper:
+            return row
+    return None
+
+
+def _quote_entry_map(entries: object) -> dict[str, object]:
+    if isinstance(entries, dict):
+        return {str(key).lower(): value for key, value in entries.items()}
+
+    if isinstance(entries, list):
+        mapped: dict[str, object] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key = entry.get("name") or entry.get("type") or entry.get("entryType")
+            if key:
+                mapped[str(key).lower()] = entry
+        return mapped
+
+    return {}
+
+
+def _entry_number(entry: object, keys: tuple[str, ...]) -> float | None:
+    if isinstance(entry, dict):
+        return _first_number(entry, keys)
+    return _optional_float(entry)
 
 
 class TradovateConnector(BrokerConnector):
@@ -741,19 +807,44 @@ class TradovateConnector(BrokerConnector):
             raise BrokerQuoteError(
                 f"Contract not found: {symbol}", broker="tradovate"
             )
+        contract_name = str(contract.get("name") or symbol)
         try:
-            quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
+            quotes = await self._get("/md/getQuote", {"symbol": contract_name})
             if isinstance(quotes, dict):
-                entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
+                entries = _quote_entry_map(quotes.get("entries", {}))
+                bid = _entry_number(entries.get("bid"), ("price", "Price", "value", "Value"))
+                ask = _entry_number(entries.get("offer"), ("price", "Price", "value", "Value"))
+                trade = _entry_number(entries.get("trade"), ("price", "Price", "value", "Value"))
+                settlement = _entry_number(
+                    entries.get("settlement"),
+                    ("price", "Price", "value", "Value"),
+                )
+                last = _first_number(
+                    quotes,
+                    ("last", "lastPrice", "Last", "LastPrice", "price", "Price"),
+                )
+                if last is None:
+                    last = trade if trade is not None else settlement
+                if last is None and bid is not None and ask is not None:
+                    last = (bid + ask) / 2.0
+                if last is None:
+                    last = bid if bid is not None else ask
+                if last is None:
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — no live price entries",
+                        broker="tradovate",
+                    )
+
+                resolved_bid = bid if bid is not None else last
+                resolved_ask = ask if ask is not None else last
+                trade_entry = entries.get("trade")
+                volume = int(_entry_number(trade_entry, ("size", "Size", "volume", "Volume")) or 0)
                 return Quote(
                     symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
+                    bid=resolved_bid,
+                    ask=resolved_ask,
+                    last=last,
+                    volume=volume,
                 )
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
@@ -779,18 +870,20 @@ class TradovateConnector(BrokerConnector):
 
         try:
             result = await self._get("/contract/find", {"name": symbol})
-            if result:
-                self._contract_cache[symbol] = (now + self._contract_cache_ttl, result)
-                return result
+            contract = _contract_from_result(result, symbol)
+            if contract:
+                self._contract_cache[symbol] = (now + self._contract_cache_ttl, contract)
+                return contract
         except Exception as e:
             logger.warning("tradovate _find_contract(%s) direct lookup failed: %s", symbol, e)
 
         front = _front_month_symbol(symbol)
         try:
             result = await self._get("/contract/find", {"name": front})
-            if result:
-                self._contract_cache[symbol] = (now + self._contract_cache_ttl, result)
-                return result
+            contract = _contract_from_result(result, front)
+            if contract:
+                self._contract_cache[symbol] = (now + self._contract_cache_ttl, contract)
+                return contract
         except Exception as e:
             logger.warning("tradovate _find_contract(%s) front-month(%s) lookup failed: %s", symbol, front, e)
 

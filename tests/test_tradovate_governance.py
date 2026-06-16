@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime, timezone
 import json
 import os
 import sys
@@ -197,6 +198,110 @@ def test_connect_falls_back_for_opaque_preexisting_token(monkeypatch):
 
     before, after = asyncio.run(_run())
     assert before + 3600 <= conn._token_expires_at <= after + 3600
+
+
+def test_tradovate_config_honors_documented_env_aliases(monkeypatch):
+    """The documented demo env vars must configure the REST connector correctly."""
+    monkeypatch.delenv("TRADOVATE_ENV", raising=False)
+    monkeypatch.delenv("TRADOVATE_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("TRADOVATE_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.setenv("TRADOVATE_ENVIRONMENT", "demo")
+    monkeypatch.setenv("TRADOVATE_CID", "12345")
+    monkeypatch.setenv("TRADOVATE_SECRET", "oauth-secret")
+
+    from algochains_mcp.config import TradovateConfig
+
+    cfg = TradovateConfig()
+
+    assert cfg.env == "demo"
+    assert cfg.base_url == "https://demo.tradovateapi.com"
+    assert cfg.oauth_cid == "12345"
+    assert cfg.oauth_sec == "oauth-secret"
+    assert cfg.is_configured is True
+
+
+def test_tradovate_registry_allows_guardian_token_only():
+    """A Guardian access token is enough to register the Tradovate REST connector."""
+    from algochains_mcp.brokers.registry import BrokerRegistry
+    from algochains_mcp.config import ServerConfig, TradovateConfig
+
+    cfg = ServerConfig(tradovate=TradovateConfig(access_token="guardian-token"))
+    registry = BrokerRegistry(cfg)
+
+    assert "tradovate" in registry._build_connectors()
+    assert "tradovate" in cfg.available_brokers()
+
+
+def test_front_month_symbol_uses_quarterly_month_for_mnq(monkeypatch):
+    """MNQ is quarterly; April should resolve to June, not the invalid April code."""
+    from algochains_mcp.brokers import tradovate
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 4, 1, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(tradovate, "datetime", FakeDateTime)
+
+    assert tradovate._front_month_symbol("MNQ") == "MNQM6"
+
+
+def test_get_quote_skips_root_contract_list_and_uses_bid_ask_midpoint():
+    """Root-symbol contract lists should not block concrete front-month quote lookup."""
+    conn = _make_connector()
+    calls: list[tuple[str, str]] = []
+
+    async def _mock_get(path, params=None):
+        name = (params or {}).get("name") or (params or {}).get("symbol")
+        calls.append((path, name))
+        if path == "/contract/find" and name == "MNQ":
+            return [{"id": 1, "name": "MNQH6"}]
+        if path == "/contract/find":
+            return {"id": 2, "name": name}
+        if path == "/md/getQuote":
+            assert name != "MNQ"
+            return {
+                "entries": {
+                    "Bid": {"price": 20250.0},
+                    "Offer": {"price": 20251.0},
+                }
+            }
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+
+    assert quote.bid == 20250.0
+    assert quote.ask == 20251.0
+    assert quote.last == 20250.5
+    assert calls[0] == ("/contract/find", "MNQ")
+    assert calls[-1][0] == "/md/getQuote"
+
+
+def test_get_quote_fails_closed_without_live_price_entries():
+    """Missing price evidence must raise instead of returning a zero quote."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None):
+        if path == "/contract/find":
+            return {"id": 2, "name": (params or {}).get("name")}
+        if path == "/md/getQuote":
+            return {"entries": {"Bid": {"price": None}, "Offer": {"price": None}}}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="Quote unavailable"):
+        asyncio.run(_run())
 
 
 def test_no_ws_import_in_connector():

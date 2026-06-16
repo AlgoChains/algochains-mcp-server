@@ -16,6 +16,15 @@ def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default)
 
 
+def _env_any(*keys: str, default: str = "") -> str:
+    """Return the first non-empty env var among aliases."""
+    for key in keys:
+        value = os.environ.get(key)
+        if value:
+            return value
+    return default
+
+
 @dataclass
 class AlpacaConfig:
     api_key: str = field(default_factory=lambda: _env("ALPACA_API_KEY"))
@@ -55,15 +64,21 @@ class QuantConnectConfig:
 class TradovateConfig:
     cid: str = field(default_factory=lambda: _env("TRADOVATE_CID"))
     secret: str = field(default_factory=lambda: _env("TRADOVATE_SECRET"))
-    env: str = field(default_factory=lambda: _env("TRADOVATE_ENV", "live"))
+    env: str = field(
+        default_factory=lambda: _env_any(
+            "TRADOVATE_ENV",
+            "TRADOVATE_ENVIRONMENT",
+            default="live",
+        )
+    )
     device_id: str = field(default_factory=lambda: _env("TRADOVATE_DEVICE_ID", ""))
     # Full-credential auth (used by live bots via tradovate_client.py).
     # The MCP connector will use these when present — matching the auth format the
     # broker actually expects: {"name": username, "password": password, "cid": oauth_cid, "sec": oauth_sec}.
     username: str = field(default_factory=lambda: _env("TRADOVATE_USERNAME", ""))
     password: str = field(default_factory=lambda: _env("TRADOVATE_PASSWORD", ""))
-    oauth_cid: str = field(default_factory=lambda: _env("TRADOVATE_OAUTH_CLIENT_ID", ""))
-    oauth_sec: str = field(default_factory=lambda: _env("TRADOVATE_OAUTH_CLIENT_SECRET", ""))
+    oauth_cid: str = field(default_factory=lambda: _env_any("TRADOVATE_OAUTH_CLIENT_ID", "TRADOVATE_CID"))
+    oauth_sec: str = field(default_factory=lambda: _env_any("TRADOVATE_OAUTH_CLIENT_SECRET", "TRADOVATE_SECRET"))
     # Pre-existing access token (written by tradovate_token_guardian.py).
     # If set and not expired, connector skips re-auth and uses it directly.
     access_token: str = field(default_factory=lambda: (
@@ -76,13 +91,21 @@ class TradovateConfig:
 
     @property
     def base_url(self) -> str:
-        return "https://live.tradovateapi.com" if self.env == "live" \
+        return "https://live.tradovateapi.com" if self.env.lower() == "live" \
             else "https://demo.tradovateapi.com"
 
     @property
     def ws_url(self) -> str:
-        return "wss://live.tradovateapi.com/v1/websocket" if self.env == "live" \
+        return "wss://live.tradovateapi.com/v1/websocket" if self.env.lower() == "live" \
             else "wss://demo.tradovateapi.com/v1/websocket"
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(
+            self.access_token
+            or self.cid
+            or (self.username and self.password and self.oauth_cid)
+        )
 
 
 @dataclass
@@ -199,7 +222,7 @@ class ServerConfig:
             brokers.append("traderspost")
         if self.quantconnect.api_token:
             brokers.append("quantconnect")
-        if self.tradovate.cid:
+        if self.tradovate.is_configured:
             brokers.append("tradovate")
         if self.schwab.client_id or self.schwab.access_token:
             brokers.append("schwab")
