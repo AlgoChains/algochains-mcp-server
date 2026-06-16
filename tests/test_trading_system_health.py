@@ -7,7 +7,11 @@ import time
 from types import SimpleNamespace
 
 from algochains_mcp.bot_log_paths import resolve_bot_log
-from algochains_mcp.trading_system_health import get_system_health
+from algochains_mcp.trading_system_health import (
+    format_trading_system_health_line,
+    get_system_health,
+    is_cl_legacy_inactive_false_positive,
+)
 
 
 def _ps_line(pid: int, command: str) -> str:
@@ -116,3 +120,65 @@ def test_get_system_health_registered_and_callable(monkeypatch, tmp_path):
 
     assert payload["component"] == "trading-system-health"
     assert "bots" in payload
+    assert "formatted_line" in payload
+
+
+def test_is_cl_legacy_inactive_false_positive_matches_watchdog_wording():
+    cl_bot = {"active": True, "legacy_stale_mismatch": True}
+    issue = "Bot appears inactive in cl_bot_live.log"
+    assert is_cl_legacy_inactive_false_positive(issue, cl_bot) is True
+    assert is_cl_legacy_inactive_false_positive(issue, {"active": False}) is False
+
+
+def test_system_health_reconciles_snapshot_false_positive_with_real_disk(tmp_path, monkeypatch):
+    root = tmp_path / "tower"
+    logs = root / "logs"
+    logs.mkdir(parents=True)
+    canonical = logs / "cl_futures_live.log"
+    legacy = logs / "cl_bot_live.log"
+    canonical.write_text("CL heartbeat\n", encoding="utf-8")
+    legacy.write_text("old\n", encoding="utf-8")
+
+    now = time.time()
+    canonical.touch()
+    stale_time = now - 600
+    os.utime(legacy, (stale_time, stale_time))
+
+    snapshot = {
+        "critical_issues": [
+            "Bot appears inactive in cl_bot_live.log",
+            "Disk space critical: 1% free",
+        ]
+    }
+    (logs / "health_snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+
+    class _Usage:
+        total = 100
+        used = 99
+        free = 1
+
+    monkeypatch.setattr(
+        "algochains_mcp.trading_system_health.shutil.disk_usage",
+        lambda _p: _Usage(),
+    )
+
+    ps_output = "\n".join(
+        [
+            "USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND",
+            _ps_line(999, "/usr/bin/python3 CL_FUTURES_SCALPER.py"),
+        ]
+    )
+
+    payload = get_system_health(control_tower=root, ps_output=ps_output, now=now)
+
+    assert payload["bots"]["cl"]["active"] is True
+    assert any("Bot appears inactive in cl_bot_live.log" in item for item in payload["false_positive_issues"])
+    assert payload["effective_status"] == "failed"
+    assert any("Disk space critical" in item for item in payload["effective_critical_issues"])
+    assert "watchdog false positive" in payload["formatted_line"]
+    assert "Disk space critical" in payload["formatted_line"]
+
+
+def test_format_trading_system_health_line_ok():
+    line = format_trading_system_health_line({"status": "ok", "effective_status": "ok"})
+    assert line == "[OK] Trading system health audit passed"

@@ -11,6 +11,70 @@ from typing import Any
 from .bot_log_paths import BOT_SCRIPT_NAMES, STALE_LOG_SECONDS, resolve_bot_log
 from .paths import default_control_tower
 
+# Watchdog snapshot text when CL writes to cl_futures_live.log but legacy path is stale.
+_CL_LEGACY_INACTIVE_MARKERS = ("cl_bot_live.log", "cl_bot_live")
+
+
+def is_cl_legacy_inactive_false_positive(issue: str, cl_bot: dict[str, Any]) -> bool:
+    """True when watchdog flagged stale legacy CL log but canonical/process evidence is live."""
+    text = issue.lower()
+    if "inactive" not in text:
+        return False
+    if not any(marker in issue for marker in _CL_LEGACY_INACTIVE_MARKERS):
+        return False
+    return bool(cl_bot.get("active")) and bool(cl_bot.get("legacy_stale_mismatch"))
+
+
+def _extract_snapshot_issue_strings(snapshot_info: dict[str, Any]) -> list[str]:
+    payload = snapshot_info.get("payload")
+    if not isinstance(payload, dict):
+        return []
+    collected: list[str] = []
+    for key in ("critical_issues", "issues", "critical", "failures", "detail"):
+        raw = payload.get(key)
+        if isinstance(raw, list):
+            collected.extend(str(item) for item in raw)
+        elif isinstance(raw, str) and raw.strip():
+            collected.append(raw.strip())
+    return collected
+
+
+def format_trading_system_health_line(payload: dict[str, Any]) -> str:
+    """Single-line summary for trading-system-health Slack / watchdog posts."""
+    status = str(payload.get("effective_status") or payload.get("status", "unknown")).upper()
+    prefix = {
+        "OK": "[OK]",
+        "DEGRADED": "[DEGRADED]",
+        "FAILED": "[FAILED]",
+    }.get(status, "[ERROR]")
+
+    parts: list[str] = []
+    cl_bot = (payload.get("bots") or {}).get("cl") or {}
+    false_positives = payload.get("false_positive_issues") or []
+    effective_critical = payload.get("effective_critical_issues") or payload.get("critical_issues") or []
+
+    if false_positives and cl_bot.get("active"):
+        canonical = cl_bot.get("log_path") or "cl_futures_live.log"
+        parts.append(f"CL bot OK ({canonical}; legacy cl_bot_live.log stale — watchdog false positive)")
+
+    for issue in effective_critical:
+        if issue not in false_positives:
+            parts.append(issue)
+
+    non_critical = [
+        issue
+        for issue in (payload.get("issues") or [])
+        if issue not in false_positives and issue not in effective_critical
+    ]
+    parts.extend(non_critical[:2])
+
+    if not parts:
+        if status == "OK":
+            return f"{prefix} Trading system health audit passed"
+        return f"{prefix} Trading system health audit {status.lower()}"
+
+    return f"{prefix} {'; '.join(parts)}"
+
 
 def _disk_usage(path: Path) -> dict[str, Any]:
     try:
@@ -157,9 +221,31 @@ def get_system_health(
     elif issues:
         status = "degraded"
 
-    return {
+    cl_bot = bots.get("cl") or {}
+    false_positive_issues: list[str] = []
+    for issue in list(critical_issues) + list(issues):
+        if is_cl_legacy_inactive_false_positive(issue, cl_bot):
+            false_positive_issues.append(issue)
+
+    health_snapshot = _read_health_snapshot(root)
+    for snapshot_issue in _extract_snapshot_issue_strings(health_snapshot):
+        if is_cl_legacy_inactive_false_positive(snapshot_issue, cl_bot):
+            if snapshot_issue not in false_positive_issues:
+                false_positive_issues.append(snapshot_issue)
+
+    effective_critical_issues = [
+        issue for issue in critical_issues if issue not in false_positive_issues
+    ]
+    effective_status = status
+    if status == "failed" and not effective_critical_issues:
+        effective_status = "degraded" if issues else "ok"
+    elif status == "failed" and effective_critical_issues:
+        effective_status = "failed"
+
+    payload: dict[str, Any] = {
         "component": "trading-system-health",
         "status": status,
+        "effective_status": effective_status,
         "stale_log_threshold_seconds": STALE_LOG_SECONDS,
         "control_tower": str(root),
         "control_tower_exists": root.exists(),
@@ -167,6 +253,10 @@ def get_system_health(
         "disk": {"control_tower": disk_root, "home": disk_home},
         "issues": issues,
         "critical_issues": critical_issues,
-        "health_snapshot": _read_health_snapshot(root),
+        "false_positive_issues": false_positive_issues,
+        "effective_critical_issues": effective_critical_issues,
+        "health_snapshot": health_snapshot,
         "checked_at_unix": int(current_time),
     }
+    payload["formatted_line"] = format_trading_system_health_line(payload)
+    return payload
