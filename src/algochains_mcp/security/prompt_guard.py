@@ -6,8 +6,8 @@ user/tool attempts to override operator-authored system instructions.
 Operator/system prompts often *describe* attack phrases (e.g. "never reveal
 system prompt") for defensive guidance. Scanning those trusted roles causes
 false positives that trip skill circuit breakers (adaptive-brain,
-crew-orchestrator, slack-command-listener, output-auditor, fat-finger-protection,
-crew-handoff-router).
+chief-productivity-officer, crew-orchestrator, slack-command-listener,
+output-auditor, fat-finger-protection, crew-handoff-router).
 
 By default, trusted roles (system, system_prompt, developer) are NOT scanned.
 Set PROMPT_GUARD_SCAN_SYSTEM=1 to enforce scanning on every role.
@@ -67,6 +67,102 @@ def _compile_patterns() -> tuple[_InjectionPattern, ...]:
 
 INJECTION_PATTERNS: tuple[_InjectionPattern, ...] = _compile_patterns()
 
+_CATALOG_HEADER_WORDS: frozenset[str] = frozenset(
+    {
+        "examples",
+        "example",
+        "injections",
+        "injection",
+        "patterns",
+        "pattern",
+        "attacks",
+        "attack",
+        "phrases",
+        "phrase",
+        "prohibited",
+        "blocked",
+        "forbidden",
+        "banned",
+        "disallowed",
+        "controls",
+        "mitigations",
+        "e",
+        "g",
+    }
+)
+
+_DEFENSIVE_MODIFIER_WORDS: frozenset[str] = frozenset(
+    {
+        "never",
+        "not",
+        "no",
+        "block",
+        "prevent",
+        "avoid",
+        "stop",
+        "refuse",
+        "reject",
+        "decline",
+        "deny",
+        "against",
+        "without",
+        "unless",
+        "dont",
+        "don't",
+        "including",
+        "include",
+        "like",
+        "e",
+        "g",
+        "examples",
+        "example",
+        "injections",
+        "injection",
+        "patterns",
+        "pattern",
+        "attacks",
+        "attack",
+        "phrases",
+        "phrase",
+        "say",
+        "type",
+        "use",
+        "send",
+        "write",
+        "state",
+        "phrase",
+    }
+)
+
+_USER_ATTEMPT_WORDS: frozenset[str] = frozenset(
+    {"requests", "request", "attempts", "attempt", "tries", "try", "asks", "ask"}
+)
+
+_REFUSAL_WORDS: frozenset[str] = frozenset({"refuse", "reject", "decline"})
+
+_CATALOG_CONTEXT_WORDS: frozenset[str] = frozenset(
+    {
+        "examples",
+        "example",
+        "phrases",
+        "phrase",
+        "attacks",
+        "attack",
+        "injections",
+        "injection",
+        "patterns",
+        "pattern",
+        "blocked",
+        "prohibited",
+        "forbidden",
+        "including",
+        "include",
+        "such",
+        "monitor",
+        "watch",
+    }
+)
+
 
 def scan_system_prompts_enabled() -> bool:
     """Return True when operator prompts should also be scanned."""
@@ -108,105 +204,69 @@ def _should_scan_role(role: str, *, scan_system: bool) -> bool:
     return True
 
 
-def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
-    """True when *reveal system prompt* appears in operator defensive guidance."""
+def _is_defensive_catalog_context(text: str, match: re.Match[str]) -> bool:
+    """True when an injection phrase appears in operator defensive/catalog text."""
     prefix = text[: match.start()]
     stripped_prefix = prefix.rstrip()
-    if stripped_prefix.endswith(("(", "[", "/")):
+    if stripped_prefix.endswith(("(", "[", "/", "-", "*", "•", "'", '"', "`")):
         return True
     if stripped_prefix.endswith(":"):
         doc_tokens = re.findall(r"[A-Za-z']+", prefix)
-        if doc_tokens and doc_tokens[-1].lower() in {
-            "examples",
-            "example",
-            "injections",
-            "injection",
-            "patterns",
-            "pattern",
-            "attacks",
-            "attack",
-            "phrases",
-            "phrase",
-            "e",
-            "g",
-        }:
+        if doc_tokens and doc_tokens[-1].lower() in _CATALOG_HEADER_WORDS:
             return True
+
+    if re.search(
+        r"(?i)\b(?:examples?|phrases?|attacks?|injections?|patterns?|"
+        r"blocked|prohibited|forbidden)\s*:[^\n]*,",
+        prefix,
+    ):
+        return True
+
+    if re.search(
+        r"(?i)\b(?:"
+        + "|".join(re.escape(word) for word in sorted(_CATALOG_CONTEXT_WORDS))
+        + r")\b",
+        prefix,
+    ):
+        return True
 
     tokens = re.findall(r"[A-Za-z']+", prefix)
     if not tokens:
-        return False
+        return match.start() == 0
 
     last = tokens[-1].lower()
-    if last in {
-        "never",
-        "not",
-        "no",
-        "block",
-        "prevent",
-        "avoid",
-        "stop",
-        "refuse",
-        "reject",
-        "decline",
-        "deny",
-        "against",
-        "without",
-        "unless",
-        "dont",
-        "don't",
-        "including",
-        "like",
-        "e",
-        "g",
-        "examples",
-        "example",
-        "injections",
-        "injection",
-        "patterns",
-        "pattern",
-        "attacks",
-        "attack",
-        "phrases",
-        "phrase",
-    }:
+    if last in _DEFENSIVE_MODIFIER_WORDS:
+        return True
+    if last in _USER_ATTEMPT_WORDS:
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "do" and last == "not":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() in {
-        "requests",
-        "request",
-        "attempts",
-        "attempt",
-        "tries",
-        "try",
-        "asks",
-        "ask",
-    } and last == "to":
+    if len(tokens) >= 2 and tokens[-2].lower() in _USER_ATTEMPT_WORDS and last == "to":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() in {
-        "refuse",
-        "reject",
-        "decline",
-    } and last == "to":
+    if len(tokens) >= 2 and tokens[-2].lower() in _USER_ATTEMPT_WORDS:
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch"} and last == "as":
+    if len(tokens) >= 2 and tokens[-2].lower() in _REFUSAL_WORDS and last == "to":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() == "watch" and last == "for":
+    if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch", "monitor"} and last == "as":
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() in {"watch", "monitor"} and last == "for":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "e" and last == "g":
         return True
     return False
 
 
-def find_injection_pattern(text: str) -> Optional[_InjectionPattern]:
+def find_injection_pattern(
+    text: str,
+    *,
+    allow_catalog_context: bool = False,
+) -> Optional[_InjectionPattern]:
     """Return the first injection pattern matched in *text*, if any."""
     if not text:
         return None
     for pattern in INJECTION_PATTERNS:
         for match in pattern.regex.finditer(text):
-            if pattern.name == "reveal system prompt" and _is_defensive_reveal_match(
-                text, match
-            ):
+            if allow_catalog_context and _is_defensive_catalog_context(text, match):
                 continue
             return pattern
     return None
@@ -226,7 +286,8 @@ def check_prompt_text(
         return None
 
     body = _normalize_content(content)
-    matched = find_injection_pattern(body)
+    allow_catalog = normalized_role in TRUSTED_ROLES and scan_system
+    matched = find_injection_pattern(body, allow_catalog_context=allow_catalog)
     if matched is None:
         return None
 
