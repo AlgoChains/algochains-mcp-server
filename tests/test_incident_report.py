@@ -37,6 +37,10 @@ def test_get_incident_report_reads_latest_incident(tmp_path):
     assert report["title"] == "Critical Path Failure: 2 Issues"
     assert report["issue_count"] == 2
     assert report["issues"][0] == "Bot Processes: 5/4 running"
+    assert report["triage_notes"]
+    assert "false positive" in report["triage_notes"][0].lower()
+    assert "alpha_loop" in report["triage_notes"][1].lower()
+    assert report["live_bot_processes"]["expected_count"] == 5
 
 
 def test_get_incident_report_missing_dir(tmp_path):
