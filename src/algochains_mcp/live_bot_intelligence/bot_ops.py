@@ -20,6 +20,7 @@ import signal
 import subprocess
 import time
 from datetime import datetime, timezone
+from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 
@@ -40,6 +41,17 @@ BOT_MAP = {
 }
 
 SYMBOL_MAP = {"mnq": "MNQ", "cl": "CL", "mes": "MES", "nq": "NQ"}
+
+_ALT_LOGS: dict[str, tuple[str, ...]] = {
+    "mnq": ("logs/futures_bot_demo.log",),
+}
+
+_MARKET_DATA_STATE_FILES = (
+    "state/market_data_health.json",
+    "state/md_quote_feed_state.json",
+    "state/quote_feed_state.json",
+    "state/futures_market_data_health.json",
+)
 
 
 def _tail_jsonl(path: Path, limit: int = 200) -> list[dict[str, Any]]:
@@ -89,6 +101,166 @@ def _read_env_file_value(env_file: Path, key: str) -> str | None:
     except Exception:
         return None
     return None
+
+
+def _read_recent_text(path: Path, *, max_lines: int = 250) -> str:
+    if not path.exists():
+        return ""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return "\n".join(deque(handle, maxlen=max(1, max_lines)))
+    except Exception:
+        return ""
+
+
+def _matching_evidence(text: str, patterns: tuple[str, ...], source: str) -> list[dict[str, str]]:
+    evidence: list[dict[str, str]] = []
+    for line in text.splitlines():
+        if any(re.search(pattern, line, re.I) for pattern in patterns):
+            evidence.append({"source": source, "line": line.strip()[:240]})
+    return evidence[-5:]
+
+
+def _source_state_from_json(payload: Any, keys: tuple[str, ...]) -> str | None:
+    """Best-effort status extraction from known control-tower feed state files."""
+    if not isinstance(payload, dict):
+        return None
+    lowered = {str(k).lower(): v for k, v in payload.items()}
+    for key in keys:
+        raw = lowered.get(key)
+        if isinstance(raw, dict):
+            status = raw.get("status") or raw.get("state") or raw.get("health")
+        else:
+            status = raw
+        if isinstance(status, str):
+            value = status.strip().lower()
+            if value in {"ok", "healthy", "connected", "available", "up", "live"}:
+                return "ok"
+            if value in {"down", "failed", "error", "unavailable", "disconnected", "stale"}:
+                return "down"
+    return None
+
+
+def get_market_data_feed_health(
+    bot_id: str = "mnq",
+    *,
+    control_tower: Path | None = None,
+) -> dict[str, Any]:
+    """Summarize recent bot market-data feed health from bounded state/log evidence."""
+    bot_id = bot_id.lower()
+    if bot_id not in BOT_MAP:
+        return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(BOT_MAP)}"}
+
+    root = control_tower or CONTROL_TOWER
+    cfg = BOT_MAP[bot_id]
+    log_candidates = [root / cfg["log"]]
+    log_candidates.extend(root / rel for rel in _ALT_LOGS.get(bot_id, ()))
+
+    rest_failed_patterns = (
+        r"REST price fetch failed",
+        r"REST .*price.*(?:failed|error|unavailable)",
+        r"price fetch failed",
+    )
+    quote_feed_failed_patterns = (
+        r"md_quote_feed unavailable",
+        r"md_quote_feed.*(?:failed|down|unavailable|stale|disconnected)",
+        r"quote_feed.*(?:failed|down|unavailable|stale|disconnected)",
+    )
+    fail_closed_patterns = (
+        r"No live market price",
+        r"T4-FAIL-CLOSED",
+        r"Order aborted \(fail-closed\)",
+        r"fail-closed",
+    )
+    rest_ok_patterns = (
+        r"REST .*price.*(?:ok|success|succeeded|available)",
+        r"REST quote.*(?:ok|success|succeeded|available)",
+    )
+    quote_feed_ok_patterns = (
+        r"md_quote_feed.*(?:ok|connected|available|live)",
+        r"quote_feed.*(?:ok|connected|available|live)",
+    )
+
+    evidence: list[dict[str, str]] = []
+    logs_checked: list[str] = []
+    rest_state: str | None = None
+    quote_feed_state: str | None = None
+    fail_closed_seen = False
+
+    for log_path in log_candidates:
+        if not log_path.exists():
+            continue
+        logs_checked.append(str(log_path))
+        text = _read_recent_text(log_path)
+        rest_failures = _matching_evidence(text, rest_failed_patterns, str(log_path))
+        quote_failures = _matching_evidence(text, quote_feed_failed_patterns, str(log_path))
+        fail_closed = _matching_evidence(text, fail_closed_patterns, str(log_path))
+        rest_ok = _matching_evidence(text, rest_ok_patterns, str(log_path))
+        quote_ok = _matching_evidence(text, quote_feed_ok_patterns, str(log_path))
+
+        if rest_failures:
+            rest_state = "down"
+            evidence.extend(rest_failures)
+        elif rest_ok and rest_state is None:
+            rest_state = "ok"
+            evidence.extend(rest_ok[-1:])
+
+        if quote_failures:
+            quote_feed_state = "down"
+            evidence.extend(quote_failures)
+        elif quote_ok and quote_feed_state is None:
+            quote_feed_state = "ok"
+            evidence.extend(quote_ok[-1:])
+
+        if fail_closed:
+            fail_closed_seen = True
+            evidence.extend(fail_closed)
+
+    state_files_checked: list[str] = []
+    for rel in _MARKET_DATA_STATE_FILES:
+        state_path = root / rel
+        if not state_path.exists():
+            continue
+        state_files_checked.append(str(state_path))
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception as exc:
+            evidence.append({"source": str(state_path), "line": f"parse_error: {exc}"[:240]})
+            continue
+        rest_from_state = _source_state_from_json(payload, ("rest", "rest_price_fetch", "rest_quote", "tradovate_rest"))
+        quote_from_state = _source_state_from_json(payload, ("md_quote_feed", "quote_feed", "stream", "websocket"))
+        if rest_from_state is not None:
+            rest_state = rest_from_state
+        if quote_from_state is not None:
+            quote_feed_state = quote_from_state
+
+    if rest_state == "down" and quote_feed_state == "down":
+        status = "critical"
+        detail = "REST price fetch and md_quote_feed both unavailable; live-price guard should fail closed."
+    elif rest_state == "down" or quote_feed_state == "down":
+        status = "degraded"
+        detail = "One market-data price source is unavailable; redundancy is reduced."
+    elif rest_state == "ok" or quote_feed_state == "ok":
+        status = "ok"
+        detail = "Recent evidence shows at least one market-data source healthy."
+    else:
+        status = "unknown"
+        detail = "No recent market-data feed evidence found in known control-tower logs/state files."
+
+    return {
+        "bot": bot_id,
+        "symbol": SYMBOL_MAP[bot_id],
+        "status": status,
+        "detail": detail,
+        "fail_closed_seen": fail_closed_seen,
+        "sources": {
+            "rest_price_fetch": {"status": rest_state or "unknown"},
+            "md_quote_feed": {"status": quote_feed_state or "unknown"},
+        },
+        "logs_checked": logs_checked,
+        "state_files_checked": state_files_checked,
+        "evidence": evidence[-10:],
+    }
 
 
 def _pipeline_timeout_config(control_tower: Path) -> tuple[float, str]:
@@ -409,6 +581,7 @@ def get_all_bot_ops_status() -> dict:
             "symbol": SYMBOL_MAP[bot_id],
             "position": get_position_state(bot_id),
             "bracket": get_bracket_status(bot_id),
+            "market_data": get_market_data_feed_health(bot_id),
         }
     result["pipeline_health"] = get_ai_pipeline_health("mnq")
     return result

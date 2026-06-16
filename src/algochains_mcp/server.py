@@ -6191,10 +6191,21 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         desktop_inference_slo = _summarize_desktop_inference_log(control_tower)
         decision_latency_slo = _summarize_decision_latency_log(control_tower)
+        try:
+            from .live_bot_intelligence.bot_ops import get_market_data_feed_health as _get_market_data_feed_health
+
+            market_data_feeds = {
+                key: _get_market_data_feed_health(key, control_tower=control_tower)
+                for key in ("mnq", "cl", "mes", "nq")
+                if bot_filter in ("all", key)
+            }
+        except Exception as _md_err:
+            market_data_feeds = {"error": f"market data feed health parse failure: {_md_err}"}
 
         return _text({
             "control_tower": str(control_tower),
             "bots": results,
+            "market_data_feeds": market_data_feeds,
             "signal_health": signal_health_slice,
             "ml_env_flags": ml_env_flags,
             "cc_health": cc_health,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
@@ -76,3 +77,50 @@ def test_ai_pipeline_health_reports_decision_and_desktop_telemetry(tmp_path, mon
     desktop_group = result["desktop_inference"]["groups"]["qwen3|ollama|validation"]
     assert desktop_group["failure_rate"] == 0.5
     assert desktop_group["fallback_reasons"] == ["timeout"]
+
+
+def test_market_data_feed_health_detects_dual_source_fail_closed(tmp_path, monkeypatch):
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "futures_bot_demo.log").write_text(
+        "\n".join(
+            [
+                "2026-06-16 05:28:04 ERROR REST price fetch failed for MNQ: timeout",
+                "2026-06-16 05:28:04 ERROR md_quote_feed unavailable for MNQ",
+                "2026-06-16 05:28:04 T4-FAIL-CLOSED — MNQ No live market price",
+                "2026-06-16 05:28:04 Order aborted (fail-closed)",
+            ]
+        )
+        + "\n"
+    )
+    monkeypatch.setattr(bot_ops, "CONTROL_TOWER", tmp_path)
+
+    result = bot_ops.get_market_data_feed_health("mnq")
+
+    assert result["status"] == "critical"
+    assert result["fail_closed_seen"] is True
+    assert result["sources"]["rest_price_fetch"]["status"] == "down"
+    assert result["sources"]["md_quote_feed"]["status"] == "down"
+    assert any("futures_bot_demo.log" in path for path in result["logs_checked"])
+
+
+def test_get_bot_health_includes_market_data_feed_diagnostics(tmp_path, monkeypatch):
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "futures_bot_demo.log").write_text(
+        "ERROR REST price fetch failed AND md_quote_feed unavailable\n"
+        "T4-FAIL-CLOSED — MNQ No live market price\n"
+    )
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+
+    import algochains_mcp.server as srv
+
+    result = asyncio.run(srv.call_tool("get_bot_health", {"bot": "mnq"}))
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    payload = json.loads(text)
+    feed = payload["market_data_feeds"]["mnq"]
+
+    assert feed["status"] == "critical"
+    assert feed["sources"]["rest_price_fetch"]["status"] == "down"
+    assert feed["sources"]["md_quote_feed"]["status"] == "down"
+    assert feed["fail_closed_seen"] is True
