@@ -180,6 +180,184 @@ def test_place_order_uses_fresh_broker_winner_over_stale_signal_health(
     assert payload["status"] == OrderStatus.ACCEPTED.value
 
 
+def test_place_order_fails_closed_when_live_price_unavailable(
+    isolated_guardrails, monkeypatch
+):
+    monkeypatch.setenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0")
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return SimpleNamespace(text="DATE,OPEN,HIGH,LOW,CLOSE\n2026-06-12,0,0,0,12.5\n")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    class EmptyDataRegistry:
+        def list_available(self):
+            return []
+
+        def get(self, name):
+            return None
+
+    import algochains_mcp.server as srv
+
+    monkeypatch.setattr(srv, "_data_registry", EmptyDataRegistry())
+
+    class FakeBroker:
+        order_submitted = False
+
+        async def get_fills(self):
+            return []
+
+        async def get_quote(self, symbol):
+            raise RuntimeError("REST price fetch failed")
+
+        async def place_order(self, *args, **kwargs):
+            self.order_submitted = True
+            raise AssertionError("place_order should not be called without a live price")
+
+    fake_broker = FakeBroker()
+
+    class FakeRegistry:
+        def get(self, name):
+            return fake_broker if name == "tradovate" else None
+
+    import asyncio
+
+    result = asyncio.run(
+        srv._dispatch_tool(
+            "place_order",
+            {
+                "broker": "tradovate",
+                "symbol": "MNQ",
+                "side": OrderSide.BUY.value,
+                "qty": 1,
+                "order_type": OrderType.MARKET.value,
+                "estimated_notional": 12345.0,
+            },
+            FakeRegistry(),
+        )
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["error_type"] == "MarketPriceUnavailable"
+    assert payload["order_submitted"] is False
+    assert "estimated_notional=ignored_not_live_price" in payload["message"]
+    assert fake_broker.order_submitted is False
+
+
+def test_place_order_uses_backup_data_provider_when_broker_quote_fails(
+    isolated_guardrails, monkeypatch
+):
+    monkeypatch.setenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0")
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return SimpleNamespace(text="DATE,OPEN,HIGH,LOW,CLOSE\n2026-06-12,0,0,0,12.5\n")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    class BackupProvider:
+        async def get_quote(self, symbol):
+            return SimpleNamespace(symbol=symbol, bid=100.0, ask=102.0, last=101.0)
+
+    class BackupDataRegistry:
+        def __init__(self):
+            self.provider = BackupProvider()
+
+        def list_available(self):
+            return ["backup_feed"]
+
+        def get(self, name):
+            return self.provider if name == "backup_feed" else None
+
+    import algochains_mcp.server as srv
+
+    monkeypatch.setattr(srv, "_data_registry", BackupDataRegistry())
+
+    class FakeBroker:
+        async def get_fills(self):
+            return []
+
+        async def get_quote(self, symbol):
+            raise RuntimeError("REST price fetch failed")
+
+        async def get_account(self):
+            return AccountInfo(
+                broker="tradovate",
+                account_id="test",
+                equity=100_000.0,
+                cash=100_000.0,
+                buying_power=100_000.0,
+            )
+
+        async def place_order(
+            self,
+            symbol,
+            side,
+            qty,
+            order_type=OrderType.MARKET,
+            limit_price=None,
+            stop_price=None,
+            trail_pct=None,
+            time_in_force="day",
+        ):
+            return Order(
+                id="ok-backup-price",
+                broker="tradovate",
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                qty=qty,
+                status=OrderStatus.ACCEPTED,
+            )
+
+    class FakeRegistry:
+        def get(self, name):
+            return FakeBroker() if name == "tradovate" else None
+
+    import asyncio
+
+    result = asyncio.run(
+        srv._dispatch_tool(
+            "place_order",
+            {
+                "broker": "tradovate",
+                "symbol": "MNQ",
+                "side": OrderSide.BUY.value,
+                "qty": 1,
+                "order_type": OrderType.MARKET.value,
+            },
+            FakeRegistry(),
+        )
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["id"] == "ok-backup-price"
+    assert payload["status"] == OrderStatus.ACCEPTED.value
+
+
 def test_unexpired_ai_loop_breaker_survives_restart(isolated_guardrails, monkeypatch):
     state_path = isolated_guardrails
     now_epoch = 1_781_000_000.0

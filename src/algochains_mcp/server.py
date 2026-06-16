@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -5530,6 +5531,105 @@ def _require_broker(registry: BrokerRegistry, broker_name: str):
     return conn
 
 
+class LivePriceUnavailable(Exception):
+    """Raised when pre-trade safety cannot resolve a live positive price."""
+
+    def __init__(self, symbol: str, diagnostics: list[str]):
+        self.symbol = symbol
+        self.diagnostics = diagnostics
+        detail = "; ".join(diagnostics) if diagnostics else "no quote sources configured"
+        super().__init__(f"No live market price for {symbol}: {detail}")
+
+
+_CONTRACT_MULTIPLIERS: dict[str, float] = {
+    "MNQ": 2.0,
+    "NQ": 20.0,
+    "MES": 5.0,
+    "ES": 50.0,
+    "MCL": 100.0,
+    "CL": 1000.0,
+    "MGC": 10.0,
+    "GC": 100.0,
+}
+
+
+def _positive_float(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return parsed if parsed > 0 and math.isfinite(parsed) else 0.0
+
+
+def _quote_price(quote: Any) -> float:
+    """Return a positive executable quote price, preferring last then NBBO mid."""
+    last = _positive_float(getattr(quote, "last", None))
+    if last:
+        return last
+    bid = _positive_float(getattr(quote, "bid", None))
+    ask = _positive_float(getattr(quote, "ask", None))
+    if bid and ask:
+        return (bid + ask) / 2.0
+    return bid or ask
+
+
+def _contract_multiplier(symbol: str) -> float:
+    letters = "".join(c for c in symbol.upper() if c.isalpha())
+    for root in sorted(_CONTRACT_MULTIPLIERS, key=len, reverse=True):
+        if letters.startswith(root):
+            return _CONTRACT_MULTIPLIERS[root]
+    return 1.0
+
+
+async def _resolve_pre_order_notional(conn: Any, symbol: str, qty: float, arguments: dict) -> tuple[float, str, float]:
+    """Resolve notional from explicit order prices or live quote sources.
+
+    Market orders fail closed if no source returns a positive live price. A caller
+    estimate is intentionally not enough: it cannot prove current market state.
+    """
+    for key in ("limit_price", "stop_price"):
+        explicit_price = _positive_float(arguments.get(key))
+        if explicit_price:
+            multiplier = _contract_multiplier(symbol)
+            return explicit_price * abs(qty) * multiplier, key, explicit_price
+
+    diagnostics: list[str] = []
+    try:
+        quote = await conn.get_quote(symbol)
+        price = _quote_price(quote)
+        if price:
+            multiplier = _contract_multiplier(symbol)
+            return price * abs(qty) * multiplier, "broker_rest_quote", price
+        diagnostics.append("broker_rest_quote=non_positive")
+    except Exception as exc:
+        diagnostics.append(f"broker_rest_quote=failed:{type(exc).__name__}")
+
+    try:
+        data_registry = _get_data_registry()
+        provider_names = data_registry.list_available() if data_registry else []
+    except Exception as exc:
+        diagnostics.append(f"data_provider_registry=failed:{type(exc).__name__}")
+        provider_names = []
+
+    for provider_name in provider_names:
+        try:
+            provider = data_registry.get(provider_name) if data_registry else None
+            if provider is None:
+                continue
+            quote = await provider.get_quote(symbol)
+            price = _quote_price(quote)
+            if price:
+                multiplier = _contract_multiplier(symbol)
+                return price * abs(qty) * multiplier, f"data_provider:{provider_name}", price
+            diagnostics.append(f"data_provider:{provider_name}=non_positive")
+        except Exception as exc:
+            diagnostics.append(f"data_provider:{provider_name}=failed:{type(exc).__name__}")
+
+    if _positive_float(arguments.get("estimated_notional")):
+        diagnostics.append("estimated_notional=ignored_not_live_price")
+    raise LivePriceUnavailable(symbol, diagnostics)
+
+
 async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -> list[TextContent]:
     """Route tool calls to their implementations."""
     args = arguments  # alias used by some handlers
@@ -5676,30 +5776,28 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                         )
 
                 # ── Live notional — NotionalValueGuard REQUIRES a real value ──
-                # Previously hardcoded to 0.0, disabling notional size checks.
-                # Compute from price * qty * contract_multiplier.
-                _notional = 0.0
-                _CONTRACT_MULTIPLIERS: dict[str, float] = {
-                    "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0,
-                    "MCL": 100.0, "CL": 1000.0, "MGC": 10.0, "GC": 100.0,
-                }
+                # Market orders fail closed when no live quote source returns a
+                # positive price. Caller estimates are not live market evidence.
                 try:
-                    _price_hint = arguments.get("limit_price")
-                    if _price_hint:
-                        _price = float(_price_hint)
-                    else:
-                        # Try live quote; fall back to estimated_notional arg if provided
-                        _q = await conn.get_quote(_symbol)
-                        _price = float(getattr(_q, "last", 0) or getattr(_q, "bid", 0) or 0)
-                    _root = "".join(c for c in _symbol.upper() if c.isalpha())[:3]
-                    _mult = _CONTRACT_MULTIPLIERS.get(_root, 1.0)
-                    _notional = _price * _qty * _mult
-                    if _notional == 0.0:
-                        # Ultimate fallback: caller-supplied estimated_notional
-                        _notional = float(arguments.get("estimated_notional", 0))
-                except Exception as _not_err:
-                    _notional = float(arguments.get("estimated_notional", 0))
-                    logger.debug("Notional compute failed (%s), using arg fallback: %.2f", _not_err, _notional)
+                    _notional, _price_source, _price = await _resolve_pre_order_notional(
+                        conn, _symbol, _qty, arguments
+                    )
+                    logger.debug(
+                        "place_order guardrail: notional=%.2f price=%.2f source=%s",
+                        _notional,
+                        _price,
+                        _price_source,
+                    )
+                except LivePriceUnavailable as _price_err:
+                    logger.warning("place_order BLOCKED fail-closed: %s", _price_err)
+                    return _text({
+                        "error_type": "MarketPriceUnavailable",
+                        "reason": "live_market_price_unavailable",
+                        "message": str(_price_err),
+                        "symbol": _symbol,
+                        "order_submitted": False,
+                        "action": "Order rejected before reaching broker. No position opened.",
+                    })
 
                 try:
                     _acct = await conn.get_account()
