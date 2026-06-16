@@ -36,6 +36,7 @@ import { killswitchOn, killswitchOff, killswitchStatus } from "./commands/killsw
 import { generateBashCompletion, generateFishCompletion, generatePowershellCompletion, generateZshCompletion } from "./commands/completion.js";
 import { installPlugin, listPlugins, removePlugin, printPluginList } from "./plugins/manager.js";
 import { addTrigger, listTriggers, setTriggerEnabled, removeTrigger, printTriggerList } from "./triggers/manager.js";
+import { retryPendingTriggers } from "./triggers/retry.js";
 import { readAuditLog, appendAuditLog } from "./trust.js";
 import { loadConfig, writeDefaultConfig } from "./config.js";
 import { createMcpClient, extractText } from "./mcp_client.js";
@@ -321,6 +322,12 @@ triggerCmd.command("enable <id>")
 triggerCmd.command("remove <id>")
   .description("Remove a trigger by ID")
   .action((id) => { removeTrigger(id); console.log(`  ✓ Trigger ${id} removed`); });
+
+triggerCmd.command("retry")
+  .description("Retry failed cron triggers after connection recovery")
+  .action(async () => {
+    await retryPendingTriggers();
+  });
 
 // ── config ─────────────────────────────────────────────────────────────────────
 const configCmd = program.command("config").description("CLI configuration management");
