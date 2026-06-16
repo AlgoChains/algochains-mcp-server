@@ -518,18 +518,18 @@ def _local_non_mnq_exposure() -> list[dict[str, Any]]:
     for bot_id in _NON_MNQ_BOTS:
         state = get_position_state(bot_id)
         qty = int(state.get("qty", 0) or 0)
-        flat = bool(state.get("flat", qty == 0))
-        if flat or qty == 0:
+        if qty == 0:
             continue
-        exposure.append(
-            {
-                "bot": bot_id,
-                "symbol": state.get("symbol", SYMBOL_MAP.get(bot_id, bot_id.upper())),
-                "qty": qty,
-                "direction": state.get("direction"),
-                "entry_price": state.get("entry_price"),
-            }
-        )
+        entry: dict[str, Any] = {
+            "bot": bot_id,
+            "symbol": state.get("symbol", SYMBOL_MAP.get(bot_id, bot_id.upper())),
+            "qty": qty,
+            "direction": state.get("direction"),
+            "entry_price": state.get("entry_price"),
+        }
+        if state.get("flat"):
+            entry["state_inconsistent"] = True
+        exposure.append(entry)
     return exposure
 
 
@@ -543,10 +543,15 @@ def format_bracket_integrity_line(result: dict[str, Any]) -> str:
         "ERROR": "[ERROR]",
         "CONFIG_ERROR": "[ERROR]",
     }.get(status, "[ERROR]")
+    message = result.get("message")
+    if message:
+        return f"{prefix} {message}"
+    count = int(result.get("checked_count", 0) or 0)
+    if status == "OK" and count == 0:
+        return f"{prefix} All non-MNQ positions flat (0 checked)"
     if status == "OK":
-        count = int(result.get("checked_count", 0) or 0)
-        return f"{prefix} All non-MNQ positions have stop+target brackets ({count} checked)"
-    return f"{prefix} {result.get('message', 'bracket integrity check failed')}"
+        return f"{prefix} All {count} non-MNQ position(s) have stop+target brackets"
+    return f"{prefix} bracket integrity check failed"
 
 
 def bracket_integrity_check() -> dict[str, Any]:
@@ -740,19 +745,25 @@ def get_bracket_guardian_status() -> dict:
                 "status": "DEGRADED",
             }
 
-    positions_count = int(result.get("positions_count", 0) or 0)
-    if positions_count == 0 or not result.get("guardian_active"):
-        live = bracket_integrity_check()
-        result["live_check"] = live
-        result["checked_count"] = live.get("checked_count", 0)
-        result["formatted_line"] = live.get("formatted_line") or format_bracket_integrity_line(live)
-        live_status = str(live.get("status", "ERROR")).upper()
+    live = bracket_integrity_check()
+    result["live_check"] = live
+    result["checked_count"] = live.get("checked_count", 0)
+    live_status = str(live.get("status", "ERROR")).upper()
+    guardian_status = str(result.get("status", "OK")).upper()
+
+    if guardian_status == "ALERT" and live_status == "OK":
+        unprotected = result.get("currently_unprotected") or []
+        result["formatted_line"] = (
+            f"[ALERT] Guardian flagged {len(unprotected)} unprotected non-MNQ position(s)"
+        )
+    else:
         if live_status != "OK":
             result["status"] = live_status
             result["message"] = live.get("message")
-        elif result.get("status") != "ALERT":
+        elif guardian_status != "ALERT":
             result["status"] = "OK"
             result["message"] = live.get("message")
+        result["formatted_line"] = live.get("formatted_line") or format_bracket_integrity_line(live)
 
     return result
 

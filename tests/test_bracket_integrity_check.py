@@ -39,7 +39,7 @@ def test_bracket_integrity_check_ok_when_flat(tmp_path, monkeypatch):
 
     assert result["status"] == "OK"
     assert result["checked_count"] == 0
-    assert result["formatted_line"] == "[OK] All non-MNQ positions have stop+target brackets (0 checked)"
+    assert result["formatted_line"] == "[OK] All non-MNQ positions flat (0 checked)"
 
 
 def test_bracket_integrity_check_alert_when_missing_target(tmp_path, monkeypatch):
@@ -105,6 +105,76 @@ def test_bracket_integrity_check_degraded_when_local_state_open_but_broker_flat(
     assert result["formatted_line"].startswith("[DEGRADED]")
 
 
+def test_bracket_integrity_check_degraded_when_flat_flag_contradicts_qty(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(bot_ops, "CONTROL_TOWER", tmp_path)
+    logs = tmp_path / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "cl_position_state.json").write_text(
+        json.dumps(
+            {
+                "direction": "long",
+                "qty": 2,
+                "entry_price": 75.0,
+                "flat": True,
+                "timestamp": "2026-06-16T17:30:00Z",
+            }
+        )
+    )
+    monkeypatch.setattr(
+        bot_ops,
+        "_fetch_tradovate_book",
+        lambda: {
+            "status": "OK",
+            "positions": [],
+            "working_orders": [],
+            "environment": "LIVE",
+        },
+    )
+
+    result = bot_ops.bracket_integrity_check()
+
+    assert result["status"] == "DEGRADED"
+    assert result["local_exposure"][0]["bot"] == "cl"
+    assert result["local_exposure"][0]["state_inconsistent"] is True
+
+
+def test_get_bracket_guardian_status_always_runs_live_check(tmp_path, monkeypatch):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "bracket_guardian_state.json").write_text(
+        json.dumps(
+            {
+                "last_check": "2026-06-16T17:25:00Z",
+                "positions_count": 2,
+                "working_orders_count": 4,
+                "unprotected_since": {},
+            }
+        )
+    )
+    monkeypatch.setattr(bot_ops, "CONTROL_TOWER", tmp_path)
+
+    calls = {"count": 0}
+
+    def _live_check():
+        calls["count"] += 1
+        return {
+            "status": "OK",
+            "message": "All 2 non-MNQ position(s) have stop+target brackets",
+            "checked_count": 2,
+            "formatted_line": "[OK] All 2 non-MNQ position(s) have stop+target brackets",
+        }
+
+    monkeypatch.setattr(bot_ops, "bracket_integrity_check", _live_check)
+
+    result = bot_ops.get_bracket_guardian_status()
+
+    assert calls["count"] == 1
+    assert result["live_check"]["checked_count"] == 2
+    assert result["formatted_line"] == "[OK] All 2 non-MNQ position(s) have stop+target brackets"
+
+
 def test_get_bracket_guardian_status_runs_live_check_when_zero_positions(
     tmp_path, monkeypatch
 ):
@@ -126,7 +196,7 @@ def test_get_bracket_guardian_status_runs_live_check_when_zero_positions(
         "status": "OK",
         "message": "All non-MNQ positions flat (0 checked)",
         "checked_count": 0,
-        "formatted_line": "[OK] All non-MNQ positions have stop+target brackets (0 checked)",
+        "formatted_line": "[OK] All non-MNQ positions flat (0 checked)",
     }
     monkeypatch.setattr(bot_ops, "bracket_integrity_check", lambda: live_payload)
 
