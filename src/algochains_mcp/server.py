@@ -3926,6 +3926,12 @@ TOOLS = [
          description="Run the trading-system-health audit: bot process/log liveness (with legacy log alias resolution), disk space on control-tower and home volumes, and optional health_snapshot.json. Use to triage SEV1 trading-system-health watchdog alerts without false inactive signals from stale cl_bot_live.log.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="repair_trading_system_health",
+         description="Repair stale legacy bot log aliases (e.g. symlink cl_bot_live.log -> cl_futures_live.log) and return a fresh trading-system-health audit. Use after SEV1 inactive alerts caused by legacy log path drift; does not free disk space.",
+         inputSchema={"type": "object", "properties": {
+             "dry_run": {"type": "boolean", "description": "Preview symlink repairs without writing", "default": False},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_strategy_academic_citations",
          description="Get all academic citations, SSRN papers, and published works that provide the theoretical basis for a specific bot's strategy. Includes authors, year, venue, DOI/SSRN link, and relevance explanation. Bot IDs: mnq, cl, mes, nq.",
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
@@ -5062,6 +5068,7 @@ TIER1_TOOL_NAMES = {
     "get_all_bot_metrics",
     "get_system_heartbeat",
     "get_system_health",
+    "repair_trading_system_health",
     "get_adaptive_brain_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
@@ -9508,6 +9515,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(get_system_health())
         except Exception as exc:
             return _text({"error": f"System health error: {exc}"})
+
+    elif name == "repair_trading_system_health":
+        try:
+            from .trading_system_health import repair_trading_system_health
+            dry_run = bool(args.get("dry_run", False))
+            return _text(repair_trading_system_health(dry_run=dry_run))
+        except Exception as exc:
+            return _text({"error": f"Trading system health repair error: {exc}"})
 
     elif name == "get_adaptive_brain_status":
         try:

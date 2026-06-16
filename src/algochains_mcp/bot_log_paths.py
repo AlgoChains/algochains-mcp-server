@@ -89,3 +89,72 @@ def resolve_bot_log(
 def bot_log_path(control_tower: Path, bot_id: str) -> Path | None:
     """Return the freshest existing log path for a bot, if any."""
     return resolve_bot_log(control_tower, bot_id).get("path")
+
+
+def sync_bot_log_legacy_aliases(
+    control_tower: Path,
+    *,
+    dry_run: bool = False,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Replace stale legacy log files with symlinks to the canonical live log.
+
+    Control-tower trading-system-health-audit still probes legacy paths such as
+    logs/cl_bot_live.log. When CL writes only to logs/cl_futures_live.log the
+    legacy file stops updating and triggers false SEV1 inactive alerts.
+    """
+    actions: list[dict[str, Any]] = []
+    current_time = time.time() if now is None else now
+
+    for bot_id, candidates in BOT_LOG_CANDIDATES.items():
+        if len(candidates) < 2:
+            continue
+
+        resolved = resolve_bot_log(control_tower, bot_id, now=current_time)
+        if not resolved.get("legacy_stale_mismatch"):
+            continue
+
+        canonical_rel = candidates[0]
+        legacy_rel = candidates[1]
+        canonical = control_tower / canonical_rel
+        legacy = control_tower / legacy_rel
+        if not canonical.exists():
+            continue
+
+        canonical_resolved = canonical.resolve()
+        action: dict[str, Any] = {
+            "bot_id": bot_id,
+            "legacy_relative": legacy_rel,
+            "canonical_relative": canonical_rel,
+        }
+
+        if legacy.is_symlink():
+            try:
+                if legacy.resolve() == canonical_resolved:
+                    action["status"] = "already_synced"
+                    actions.append(action)
+                    continue
+            except OSError:
+                pass
+            if not dry_run:
+                legacy.unlink()
+            action["prior_state"] = "wrong_symlink"
+        elif legacy.exists() and not legacy.is_symlink():
+            action["prior_state"] = "stale_file"
+            if not dry_run:
+                legacy.unlink()
+
+        if dry_run:
+            action["status"] = "would_symlink"
+        else:
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            legacy.symlink_to(canonical_resolved)
+            action["status"] = "symlinked"
+        actions.append(action)
+
+    return {
+        "control_tower": str(control_tower),
+        "dry_run": dry_run,
+        "actions": actions,
+        "synced_count": sum(1 for a in actions if a.get("status") == "symlinked"),
+    }

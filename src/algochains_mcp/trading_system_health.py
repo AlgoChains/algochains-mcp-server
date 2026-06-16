@@ -8,8 +8,19 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .bot_log_paths import BOT_SCRIPT_NAMES, STALE_LOG_SECONDS, resolve_bot_log
+from .bot_log_paths import (
+    BOT_SCRIPT_NAMES,
+    STALE_LOG_SECONDS,
+    resolve_bot_log,
+    sync_bot_log_legacy_aliases,
+)
 from .paths import default_control_tower
+
+_LEGACY_INACTIVE_MARKERS = (
+    "cl_bot_live.log",
+    "mes_swing.log",
+    "nq_swing.log",
+)
 
 
 def _disk_usage(path: Path) -> dict[str, Any]:
@@ -37,6 +48,65 @@ def _disk_usage(path: Path) -> dict[str, Any]:
 
 def _process_running(script_name: str, ps_output: str) -> bool:
     return script_name in ps_output
+
+
+def _reconcile_watchdog_snapshot(
+    snapshot_payload: dict[str, Any] | None,
+    *,
+    bots: dict[str, Any],
+) -> dict[str, Any]:
+    """Downgrade known false positives emitted by legacy control-tower audits."""
+    if not isinstance(snapshot_payload, dict):
+        return {"reconciled": False, "false_positive_issues": [], "remaining_critical": []}
+
+    raw_critical = snapshot_payload.get("critical_issues")
+    if not isinstance(raw_critical, list):
+        raw_critical = snapshot_payload.get("issues")
+    if not isinstance(raw_critical, list):
+        return {"reconciled": False, "false_positive_issues": [], "remaining_critical": []}
+
+    false_positives: list[str] = []
+    remaining: list[str] = []
+    for issue in raw_critical:
+        text = str(issue)
+        lowered = text.lower()
+        if (
+            "inactive" in lowered
+            and any(marker in lowered for marker in _LEGACY_INACTIVE_MARKERS)
+            and bots.get("cl", {}).get("active")
+            and bots.get("cl", {}).get("legacy_stale_mismatch")
+        ):
+            false_positives.append(text)
+            continue
+        remaining.append(text)
+
+    return {
+        "reconciled": bool(false_positives),
+        "false_positive_issues": false_positives,
+        "remaining_critical": remaining,
+    }
+
+
+def format_system_health_line(payload: dict[str, Any]) -> str:
+    """Compact watchdog-compatible status line for Slack posts."""
+    status = payload.get("status", "unknown")
+    critical = payload.get("critical_issues") or []
+    reconciliation = payload.get("watchdog_reconciliation") or {}
+    false_positives = reconciliation.get("false_positive_issues") or []
+
+    if status == "ok":
+        return "[OK] Trading system health audit passed"
+    if status == "degraded" and not critical:
+        return f"[WARN] Trading system health degraded ({len(payload.get('issues') or [])} issue(s))"
+    if false_positives and not critical:
+        return (
+            "[WARN] Trading system health: legacy log false positive reconciled; "
+            f"{len(false_positives)} inactive alert(s) suppressed"
+        )
+    if critical:
+        joined = "; ".join(str(item) for item in critical[:3])
+        return f"[FAILED] Trading system health audit FAILED. Critical issues: {joined}"
+    return f"[{str(status).upper()}] Trading system health audit"
 
 
 def _read_health_snapshot(control_tower: Path) -> dict[str, Any]:
@@ -151,13 +221,28 @@ def get_system_health(
                 f"Disk space warn on {label}: {disk.get('free_percent')}% free ({disk.get('path')})"
             )
 
+    health_snapshot = _read_health_snapshot(root)
+    snapshot_payload = None
+    if isinstance(health_snapshot.get("payload"), dict):
+        snapshot_payload = health_snapshot["payload"]
+
+    reconciliation = _reconcile_watchdog_snapshot(snapshot_payload, bots=bots)
+    if reconciliation.get("false_positive_issues"):
+        for fp_issue in reconciliation["false_positive_issues"]:
+            note = (
+                f"Reconciled watchdog false positive: {fp_issue} "
+                f"(CL active on {bots.get('cl', {}).get('log_path')})"
+            )
+            if note not in issues:
+                issues.append(note)
+
     status = "ok"
     if critical_issues:
         status = "failed"
     elif issues:
         status = "degraded"
 
-    return {
+    payload = {
         "component": "trading-system-health",
         "status": status,
         "stale_log_threshold_seconds": STALE_LOG_SECONDS,
@@ -167,6 +252,27 @@ def get_system_health(
         "disk": {"control_tower": disk_root, "home": disk_home},
         "issues": issues,
         "critical_issues": critical_issues,
-        "health_snapshot": _read_health_snapshot(root),
+        "watchdog_reconciliation": reconciliation,
+        "health_snapshot": health_snapshot,
         "checked_at_unix": int(current_time),
+    }
+    payload["summary"] = format_system_health_line(payload)
+    payload["formatted_line"] = payload["summary"]
+    return payload
+
+
+def repair_trading_system_health(
+    *,
+    control_tower: Path | None = None,
+    dry_run: bool = False,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Repair legacy log alias drift and return a fresh health audit."""
+    root = control_tower or default_control_tower()
+    sync_result = sync_bot_log_legacy_aliases(root, dry_run=dry_run, now=now)
+    health = get_system_health(control_tower=root, now=now)
+    return {
+        "repair": sync_result,
+        "health": health,
+        "formatted_line": health.get("formatted_line"),
     }
