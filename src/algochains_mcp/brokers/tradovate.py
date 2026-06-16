@@ -126,6 +126,60 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _positive_price(value: object) -> float | None:
+    parsed = _optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _entry_price(entries: dict, name: str) -> float | None:
+    entry = entries.get(name)
+    if not isinstance(entry, dict):
+        return None
+    return _positive_price(entry.get("price"))
+
+
+def _entry_size(entries: dict, name: str) -> int:
+    entry = entries.get(name)
+    if not isinstance(entry, dict):
+        return 0
+    size = _optional_float(entry.get("size"))
+    return int(size) if size is not None and size > 0 else 0
+
+
+def _parse_quote_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _extract_quote_row(payload: object, contract_id: object | None = None) -> dict | None:
+    """Return a Tradovate quote row from REST or market-data wrapped payloads."""
+    if not isinstance(payload, dict):
+        return None
+    if isinstance(payload.get("entries"), dict):
+        return payload
+
+    quotes: object = payload.get("quotes")
+    data = payload.get("d")
+    if isinstance(data, dict) and "quotes" in data:
+        quotes = data.get("quotes")
+
+    if not isinstance(quotes, list):
+        return None
+
+    quote_rows = [row for row in quotes if isinstance(row, dict)]
+    if contract_id is not None:
+        for row in quote_rows:
+            if row.get("contractId") == contract_id or row.get("id") == contract_id:
+                return row
+    return quote_rows[0] if quote_rows else None
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -743,25 +797,33 @@ class TradovateConnector(BrokerConnector):
             )
         try:
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
-            if isinstance(quotes, dict):
-                entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
-                return Quote(
-                    symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
-                )
+            quote_row = _extract_quote_row(quotes, contract.get("id"))
+            if quote_row:
+                entries = quote_row.get("entries", {})
+                if isinstance(entries, dict):
+                    bid = _entry_price(entries, "Bid")
+                    ask = _entry_price(entries, "Offer")
+                    last = _entry_price(entries, "Trade")
+                    if last is None and bid is not None and ask is not None:
+                        last = (bid + ask) / 2
+                    if bid is None:
+                        bid = last
+                    if ask is None:
+                        ask = last
+                    if bid is not None and ask is not None and last is not None:
+                        return Quote(
+                            symbol=symbol,
+                            bid=bid,
+                            ask=ask,
+                            last=last,
+                            volume=_entry_size(entries, "TotalTradeVolume") or _entry_size(entries, "Trade"),
+                            timestamp=_parse_quote_timestamp(quote_row.get("timestamp")),
+                        )
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 
-        # Return None-sentinel prices so callers can distinguish "API error"
-        # from "market genuinely at zero". Callers must check for float("nan").
         raise BrokerQuoteError(
-            f"Quote unavailable for {symbol} — API returned no data",
+            f"Quote unavailable for {symbol} — API returned no live price",
             broker="tradovate",
         )
 

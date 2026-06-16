@@ -263,3 +263,78 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_parses_wrapped_market_data_payload():
+    """Tradovate market-data quote payloads are wrapped under d.quotes[]."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"id": 123456, "name": "MNQM6"}
+
+    async def _mock_get(path, params):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {
+            "e": "md",
+            "d": {
+                "quotes": [
+                    {
+                        "timestamp": "2026-06-16T12:26:07Z",
+                        "contractId": 123456,
+                        "entries": {
+                            "Bid": {"price": 21650.25, "size": 7},
+                            "Offer": {"price": 21650.50, "size": 5},
+                            "Trade": {"price": 21650.25, "size": 2},
+                            "TotalTradeVolume": {"size": 48123},
+                        },
+                    }
+                ],
+            },
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    quote = asyncio.run(conn.get_quote("MNQ"))
+    assert quote.symbol == "MNQ"
+    assert quote.bid == 21650.25
+    assert quote.ask == 21650.50
+    assert quote.last == 21650.25
+    assert quote.volume == 48123
+    assert quote.timestamp is not None
+    assert quote.timestamp.isoformat() == "2026-06-16T12:26:07+00:00"
+
+
+def test_get_quote_fails_closed_when_wrapped_payload_has_no_live_price():
+    """Quote reads with only size metadata must not become zero-valued prices."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"id": 123456, "name": "MNQM6"}
+
+    async def _mock_get(path, params):
+        return {
+            "e": "md",
+            "d": {
+                "quotes": [
+                    {
+                        "contractId": 123456,
+                        "entries": {
+                            "Bid": {"size": 7},
+                            "Offer": {"size": 5},
+                            "Trade": {"size": 2},
+                        },
+                    }
+                ],
+            },
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    with pytest.raises(BrokerQuoteError, match="no live price"):
+        asyncio.run(conn.get_quote("MNQ"))
