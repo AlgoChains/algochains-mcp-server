@@ -1112,6 +1112,7 @@ def create_fastapi_app():
         sig = _read_json_state("state/signal_health.json")
         sentinel = _read_json_state("state/e2e_execution_sentinel.json")
         guardian = _read_json_state("state/bracket_guardian_state.json")
+        orphan_scanner = _read_json_state("state/orphan_bracket_scanner_state.json")
         session = _read_json_state("state/session_summary.json")
         mnq_stats = _read_json_state("state/mnq_session_stats.json")
         incident_dedup = _read_json_state("state/incident_dedup.json")
@@ -1152,6 +1153,22 @@ def create_fastapi_app():
             "working_orders_count": guardian.get("working_orders_count", 0),
             "unknown_flat_orders": len(guardian.get("unknown_flat_orders") or []),
             "last_check": guardian.get("last_check"),
+            "gate": guardian.get("gate") or guardian.get("GATE"),
+            "swing": guardian.get("swing") or guardian.get("SWING"),
+            "mnq_swing_protect": guardian.get("mnq_swing_protect") or guardian.get("MNQ_SWING_PROTECT"),
+        }
+        orphan_scanner_summary = {
+            "last_check": orphan_scanner.get("last_check") or orphan_scanner.get("last_scan"),
+            "scan_status": orphan_scanner.get("scan_status"),
+            "gate": orphan_scanner.get("gate") or orphan_scanner.get("GATE") or guardian_summary.get("gate"),
+            "swing": orphan_scanner.get("swing") or orphan_scanner.get("SWING") or guardian_summary.get("swing"),
+            "mnq_swing_protect": (
+                orphan_scanner.get("mnq_swing_protect")
+                or orphan_scanner.get("MNQ_SWING_PROTECT")
+                or guardian_summary.get("mnq_swing_protect")
+            ),
+            "orphans_found": orphan_scanner.get("orphans_found", guardian_summary["unknown_flat_orders"]),
+            "orphans_cancelled": orphan_scanner.get("orphans_cancelled", 0),
         }
 
         payload: dict = {
@@ -1161,6 +1178,7 @@ def create_fastapi_app():
             "all_bots_running": all(bot_procs.values()),
             "sentinel": sentinel_summary,
             "guardian": guardian_summary,
+            "orphan_bracket_scanner": orphan_scanner_summary,
             "signal_health": signal_summaries,
             "recent_incidents": recent_incidents,
         }
