@@ -125,6 +125,7 @@ _TOOL_TIERS: dict[str, int] = {
     "compute_correlation_risk": TIER_READ_ONLY,
     "check_vix_gate": TIER_READ_ONLY,
     "get_daily_loss_proximity": TIER_READ_ONLY,
+    "bracket_integrity_check": TIER_READ_ONLY,
     "event_risk_check": TIER_READ_ONLY,
     # Strategy research (read only)
     "run_backtest": TIER_READ_ONLY,
