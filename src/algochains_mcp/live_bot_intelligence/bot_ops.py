@@ -21,7 +21,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # ── Path resolution ──────────────────────────────────────────────────────────
 # Unified resolver honors ALGOCHAINS_CONTROL_TOWER first, then falls back to
@@ -391,7 +391,6 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
 def get_all_bot_ops_status() -> dict:
     """Get bracket status, position state, and process status for all 4 bots."""
     result = {}
-    import re as _re
     ps_output = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
     for bot_id, cfg in BOT_MAP.items():
         running = any(cfg["grep"] in line and "grep" not in line for line in ps_output.splitlines())
@@ -400,8 +399,10 @@ def get_all_bot_ops_status() -> dict:
             if cfg["grep"] in line and "grep" not in line:
                 parts = line.split()
                 if len(parts) > 1:
-                    try: pid = int(parts[1])
-                    except ValueError: pass
+                    try:
+                        pid = int(parts[1])
+                    except ValueError:
+                        pass
                 break
         result[bot_id] = {
             "running": running,
@@ -609,7 +610,7 @@ def restart_bot(bot_id: str, owner_token: str) -> dict:
     # Restart
     log_path = CONTROL_TOWER / cfg["log"]
     log_handle = open(log_path, "a")
-    proc = subprocess.Popen(
+    subprocess.Popen(
         ["python3", "-B", "-u", cfg["script"]],
         cwd=str(CONTROL_TOWER),
         stdout=log_handle,
@@ -625,8 +626,10 @@ def restart_bot(bot_id: str, owner_token: str) -> dict:
         if cfg["grep"] in line and "grep" not in line:
             parts = line.split()
             if len(parts) > 1:
-                try: verified_pid = int(parts[1])
-                except ValueError: pass
+                try:
+                    verified_pid = int(parts[1])
+                except ValueError:
+                    pass
             break
 
     return {
@@ -727,7 +730,6 @@ def flatten_position_tradovate(symbol: str, owner_token: str) -> dict:
 
     if result:
         # Mark position state flat
-        bot_id = symbol.lower()[:3]
         state_path = CONTROL_TOWER / "logs" / f"{symbol.lower()}_position_state.json"
         try:
             with open(state_path, "w") as sf:
