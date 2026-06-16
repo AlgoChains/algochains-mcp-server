@@ -182,8 +182,33 @@ def _quote_timestamp(row: dict) -> datetime | None:
         return None
 
 
-def _parse_tradovate_quote(symbol: str, payload: object) -> Quote | None:
-    for row in _quote_rows(payload):
+def _quote_contract_id(row: dict) -> int | None:
+    value = row.get("contractId")
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _quote_rows_for_contract(payload: object, contract_id: int | None) -> list[dict]:
+    rows = _quote_rows(payload)
+    if contract_id is None:
+        return rows
+    matching: list[dict] = []
+    untagged: list[dict] = []
+    for row in rows:
+        row_contract_id = _quote_contract_id(row)
+        if row_contract_id == contract_id:
+            matching.append(row)
+        elif row_contract_id is None:
+            untagged.append(row)
+    return matching or untagged or rows
+
+
+def _parse_tradovate_quote(symbol: str, payload: object, contract_id: int | None = None) -> Quote | None:
+    for row in _quote_rows_for_contract(payload, contract_id):
         entries = row.get("entries")
         if not isinstance(entries, dict):
             continue
@@ -828,7 +853,7 @@ class TradovateConnector(BrokerConnector):
             )
         try:
             quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
-            quote = _parse_tradovate_quote(symbol, quotes)
+            quote = _parse_tradovate_quote(symbol, quotes, _quote_contract_id(contract))
             if quote is not None:
                 return quote
         except Exception as e:

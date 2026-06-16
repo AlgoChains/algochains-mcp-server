@@ -300,7 +300,7 @@ def test_get_quote_accepts_wrapped_quote_payload():
 
     async def _mock_find_contract(symbol):
         assert symbol == "MNQ"
-        return {"name": "MNQM6"}
+        return {"name": "MNQM6", "id": 12345}
 
     async def _mock_get(path, params):
         assert path == "/md/getQuote"
@@ -327,6 +327,33 @@ def test_get_quote_accepts_wrapped_quote_payload():
     assert quote.last == 20002.25
     assert quote.volume == 2
     assert quote.timestamp is not None
+
+
+def test_get_quote_prefers_matching_contract_id():
+    """Wrapped quote batches must not accidentally use a different contract."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        assert symbol == "MNQ"
+        return {"name": "MNQM6", "id": 222}
+
+    async def _mock_get(path, params):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {
+            "quotes": [
+                {"contractId": 111, "entries": {"Trade": {"price": 19900.0, "size": 1}}},
+                {"contractId": 222, "entries": {"Trade": {"price": 20050.0, "size": 3}}},
+            ]
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    quote = asyncio.run(conn.get_quote("MNQ"))
+
+    assert quote.last == 20050.0
+    assert quote.volume == 3
 
 
 def test_get_quote_raises_when_payload_has_no_live_price():
