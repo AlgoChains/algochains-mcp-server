@@ -263,3 +263,56 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_raises_when_rest_payload_has_no_live_price():
+    """Empty Tradovate quote payloads must fail closed instead of returning 0.0."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None):
+        if path == "/contract/find":
+            return {"id": 123, "name": "MNQZ5"}
+        if path == "/md/getQuote":
+            return {"entries": {}}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="no live price") as exc:
+        asyncio.run(_run())
+
+    assert exc.value.details["contract"] == "MNQZ5"
+    assert exc.value.details["response_keys"] == ["entries"]
+
+
+def test_get_quote_uses_bid_ask_midpoint_when_trade_entry_missing():
+    """Bid/offer quotes are live price evidence even when the last trade is absent."""
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None):
+        if path == "/contract/find":
+            return {"id": 123, "name": "MNQZ5"}
+        if path == "/md/getQuote":
+            return {
+                "entries": {
+                    "Bid": {"price": "28751.25", "size": 4},
+                    "Offer": {"price": "28751.75", "size": 3},
+                }
+            }
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.symbol == "MNQ"
+    assert quote.bid == 28751.25
+    assert quote.ask == 28751.75
+    assert quote.last == 28751.5

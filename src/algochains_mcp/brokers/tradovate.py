@@ -126,6 +126,74 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _positive_price(value: object) -> float | None:
+    parsed = _optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
+def _quote_entry(entries: object, *names: str) -> object:
+    targets = {name.lower() for name in names}
+    if isinstance(entries, dict):
+        for key, value in entries.items():
+            if str(key).lower() in targets:
+                return value
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_name = (
+                entry.get("type")
+                or entry.get("name")
+                or entry.get("side")
+                or entry.get("entryType")
+            )
+            if str(entry_name).lower() in targets:
+                return entry
+    return {}
+
+
+def _quote_entry_number(entry: object, *keys: str) -> float | None:
+    if isinstance(entry, dict):
+        for key in keys:
+            value = _positive_price(entry.get(key))
+            if value is not None:
+                return value
+        return None
+    return _positive_price(entry)
+
+
+def _quote_entry_size(entry: object) -> int:
+    if not isinstance(entry, dict):
+        return 0
+    for key in ("size", "volume", "qty"):
+        value = _optional_float(entry.get(key))
+        if value is not None and value >= 0:
+            return int(value)
+    return 0
+
+
+def _extract_tradovate_quote(entries: object) -> tuple[float, float, float, int] | None:
+    bid_entry = _quote_entry(entries, "Bid")
+    ask_entry = _quote_entry(entries, "Offer", "Ask")
+    trade_entry = _quote_entry(entries, "Trade", "Last")
+
+    bid = _quote_entry_number(bid_entry, "price", "p", "bid", "bidPrice")
+    ask = _quote_entry_number(ask_entry, "price", "p", "ask", "askPrice", "offer")
+    trade = _quote_entry_number(trade_entry, "price", "p", "last", "lastPrice")
+
+    last = trade
+    if last is None and bid is not None and ask is not None:
+        last = (bid + ask) / 2
+    if last is None:
+        last = bid if bid is not None else ask
+    if last is None:
+        return None
+
+    return bid or 0.0, ask or 0.0, last, _quote_entry_size(trade_entry)
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -741,28 +809,32 @@ class TradovateConnector(BrokerConnector):
             raise BrokerQuoteError(
                 f"Contract not found: {symbol}", broker="tradovate"
             )
+        contract_name = contract.get("name", symbol)
+        raw_quote: object | None = None
         try:
-            quotes = await self._get("/md/getQuote", {"symbol": contract.get("name", symbol)})
-            if isinstance(quotes, dict):
-                entries = quotes.get("entries", {})
-                bid_entry = entries.get("Bid", {})
-                ask_entry = entries.get("Offer", {})
-                trade_entry = entries.get("Trade", {})
-                return Quote(
-                    symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
-                )
+            raw_quote = await self._get("/md/getQuote", {"symbol": contract_name})
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
+            raise BrokerQuoteError(
+                f"Quote unavailable for {symbol} — REST price fetch failed",
+                broker="tradovate",
+                details={"contract": contract_name, "error": str(e)},
+            ) from e
 
-        # Return None-sentinel prices so callers can distinguish "API error"
-        # from "market genuinely at zero". Callers must check for float("nan").
+        if isinstance(raw_quote, dict):
+            parsed = _extract_tradovate_quote(raw_quote.get("entries", {}))
+            if parsed is not None:
+                bid, ask, last, volume = parsed
+                return Quote(symbol=symbol, bid=bid, ask=ask, last=last, volume=volume)
+
         raise BrokerQuoteError(
-            f"Quote unavailable for {symbol} — API returned no data",
+            f"Quote unavailable for {symbol} — API returned no live price",
             broker="tradovate",
+            details={
+                "contract": contract_name,
+                "response_type": type(raw_quote).__name__,
+                "response_keys": sorted(raw_quote.keys()) if isinstance(raw_quote, dict) else [],
+            },
         )
 
     async def _find_contract(self, symbol: str) -> Optional[dict]:
