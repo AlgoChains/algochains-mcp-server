@@ -698,6 +698,262 @@ def check_unprotected_positions() -> dict:
     }
 
 
+_ORPHAN_SCANNER_STATE_CANDIDATES = (
+    Path("state") / "orphan_bracket_scanner_state.json",
+    Path("state") / "orphan_bracket_scan_state.json",
+)
+
+
+def _is_bracket_order(order: dict[str, Any]) -> bool:
+    order_type = order.get("orderType", "")
+    return order_type in _STOP_ORDER_TYPES or order_type in _TARGET_ORDER_TYPES
+
+
+def _read_json_state(relative: Path) -> dict[str, Any]:
+    path = CONTROL_TOWER / relative
+    if not path.exists():
+        return {}
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _resolve_mnq_swing_protect(state: dict[str, Any] | None = None) -> bool:
+    container = state or {}
+    if "mnq_swing_protect" in container:
+        return bool(container.get("mnq_swing_protect"))
+    raw = (
+        os.getenv("MNQ_SWING_PROTECT", "").strip()
+        or _read_env_file_value(CONTROL_TOWER / ".env", "MNQ_SWING_PROTECT")
+        or ""
+    )
+    if not raw:
+        return True
+    return raw.upper() in {"1", "YES", "TRUE", "ON"}
+
+
+def _resolve_swing_active(state: dict[str, Any] | None = None) -> bool:
+    container = state or {}
+    swing = container.get("swing")
+    if isinstance(swing, str):
+        return swing.upper() in {"YES", "TRUE", "1", "ON"}
+    if isinstance(swing, bool):
+        return swing
+    if container.get("swing_active") is not None:
+        return bool(container.get("swing_active"))
+    mnq_state = get_position_state("mnq")
+    return not mnq_state.get("flat", True) and int(mnq_state.get("qty", 0) or 0) != 0
+
+
+def _resolve_orphan_scanner_gate(
+    *,
+    mnq_swing_protect: bool,
+    swing_active: bool,
+    state: dict[str, Any] | None = None,
+) -> str:
+    container = state or {}
+    gate = container.get("gate")
+    if isinstance(gate, str) and gate.upper() in {"PROCEED", "BLOCKED"}:
+        return gate.upper()
+    try:
+        from algochains_mcp.daily_loss_proximity import get_daily_loss_proximity
+
+        proximity = get_daily_loss_proximity(control_tower=CONTROL_TOWER)
+    except Exception:
+        return "PROCEED"
+    if proximity.get("status") == "BLOCK" and not (mnq_swing_protect and swing_active):
+        return "BLOCKED"
+    return "PROCEED"
+
+
+def format_orphan_bracket_line(result: dict[str, Any]) -> str:
+    """Single-line summary for ORPHAN-BRACKET-SCANNER Slack posts."""
+    status = str(result.get("status", "ERROR")).upper()
+    prefix = {
+        "OK": "[OK]",
+        "ORPHAN_ORDERS": "[ORPHAN_ORDERS]",
+        "BLOCKED": "[BLOCKED]",
+        "DEGRADED": "[DEGRADED]",
+        "ERROR": "[ERROR]",
+        "CONFIG_ERROR": "[ERROR]",
+    }.get(status, "[ERROR]")
+    orphan_count = int(result.get("orphan_count", 0) or 0)
+    checked = int(result.get("working_orders_count", 0) or 0)
+    if status == "OK":
+        return (
+            f"{prefix} No orphan bracket orders on flat contracts "
+            f"({checked} working orders checked)"
+        )
+    if status == "ORPHAN_ORDERS":
+        return (
+            f"{prefix} {orphan_count} orphan bracket order(s) on flat contract(s) "
+            f"({checked} working orders checked)"
+        )
+    if status == "BLOCKED":
+        return (
+            f"{prefix} Orphan scan gated — {orphan_count} orphan order(s) detected "
+            "but auto-cancel blocked"
+        )
+    return f"{prefix} {result.get('message', 'orphan bracket scan failed')}"
+
+
+def check_orphan_bracket_orders() -> dict[str, Any]:
+    """
+    Live Tradovate check for working bracket orders on flat contracts (orphans).
+
+    Inverse of check_unprotected_positions: flags stop/target orders that remain
+    working after the position is closed.
+    """
+    book = _fetch_tradovate_book()
+    if book.get("status") in {"ERROR", "CONFIG_ERROR"}:
+        payload = dict(book)
+        payload["orphan_count"] = 0
+        payload["orphan_orders"] = []
+        payload["formatted_line"] = format_orphan_bracket_line(payload)
+        return payload
+
+    positions = book["positions"]
+    working_orders = book["working_orders"]
+    open_contracts: set[int | str] = set()
+    contract_names: dict[int | str, str | None] = {}
+
+    for position in positions:
+        net = position.get("netPos", 0)
+        if not net:
+            continue
+        cid = _position_contract_id(position)
+        if cid is None:
+            continue
+        open_contracts.add(cid)
+        contract_names[cid] = position.get("contractName")
+
+    orphan_orders: list[dict[str, Any]] = []
+    for order in working_orders:
+        if not _is_bracket_order(order):
+            continue
+        cid = _order_contract_id(order)
+        if cid is None or cid in open_contracts:
+            continue
+        contract_name = order.get("contractName") or (order.get("contract") or {}).get("name")
+        orphan_orders.append(
+            {
+                "orderId": order.get("id") or order.get("orderId"),
+                "contractId": cid,
+                "contractName": contract_name,
+                "orderType": order.get("orderType"),
+                "action": order.get("action"),
+                "qty": order.get("orderQty") or order.get("qty"),
+            }
+        )
+
+    scanner_state = _read_json_state(_ORPHAN_SCANNER_STATE_CANDIDATES[0])
+    if not scanner_state:
+        scanner_state = _read_json_state(_ORPHAN_SCANNER_STATE_CANDIDATES[1])
+    mnq_swing_protect = _resolve_mnq_swing_protect(scanner_state)
+    swing_active = _resolve_swing_active(scanner_state)
+    gate = _resolve_orphan_scanner_gate(
+        mnq_swing_protect=mnq_swing_protect,
+        swing_active=swing_active,
+        state=scanner_state,
+    )
+
+    actionable_orphans: list[dict[str, Any]] = []
+    swing_protected_orphans: list[dict[str, Any]] = []
+    for entry in orphan_orders:
+        if mnq_swing_protect and swing_active and _is_mnq_contract(entry.get("contractName")):
+            swing_protected_orphans.append(entry)
+        else:
+            actionable_orphans.append(entry)
+
+    orphan_count = len(actionable_orphans)
+    status = "OK"
+    if orphan_count:
+        status = "BLOCKED" if gate == "BLOCKED" else "ORPHAN_ORDERS"
+    message = (
+        f"{orphan_count} orphan bracket order(s) on flat contract(s)"
+        if orphan_count
+        else f"No orphan bracket orders ({len(working_orders)} working orders checked)"
+    )
+
+    payload: dict[str, Any] = {
+        "status": status,
+        "message": message,
+        "orphan_count": orphan_count,
+        "orphan_orders": actionable_orphans,
+        "swing_protected_orphans": swing_protected_orphans,
+        "working_orders_count": len(working_orders),
+        "open_contracts_count": len(open_contracts),
+        "mnq_swing_protect": mnq_swing_protect,
+        "swing": "YES" if swing_active else "NO",
+        "gate": gate,
+        "environment": book.get("environment"),
+        "source": "live_broker",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+    payload["formatted_line"] = format_orphan_bracket_line(payload)
+    return payload
+
+
+def get_orphan_bracket_scanner_status() -> dict[str, Any]:
+    """
+    Read orphan bracket scanner daemon state and run a live broker check when
+    state is missing or stale so ORPHAN-BRACKET-SCANNER Slack posts can emit
+    structured formatted_line output instead of raw gate flags only.
+    """
+    state_path = _first_orphan_scanner_state_path()
+    state = _read_json_state(state_path.relative_to(CONTROL_TOWER)) if state_path else {}
+    live = check_orphan_bracket_orders()
+
+    last_cancel_count = int(state.get("last_cancel_count", 0) or 0)
+    last_orphan_count = int(state.get("last_orphan_count", state.get("orphan_count", 0)) or 0)
+    unknown_flat_orders = state.get("unknown_flat_orders") or state.get("orphans") or []
+
+    result: dict[str, Any] = {
+        "scanner_active": state_path is not None,
+        "last_check": state.get("last_check"),
+        "last_cancel_count": last_cancel_count,
+        "last_orphan_count": last_orphan_count,
+        "unknown_flat_orders": unknown_flat_orders,
+        "state_path": str(state_path) if state_path else None,
+        "live_check": live,
+        "status": live.get("status", "ERROR"),
+        "orphan_count": live.get("orphan_count", 0),
+        "orphan_orders": live.get("orphan_orders", []),
+        "swing_protected_orphans": live.get("swing_protected_orphans", []),
+        "working_orders_count": live.get("working_orders_count", 0),
+        "mnq_swing_protect": live.get("mnq_swing_protect"),
+        "swing": live.get("swing"),
+        "gate": live.get("gate"),
+        "formatted_line": live.get("formatted_line") or format_orphan_bracket_line(live),
+        "message": live.get("message"),
+        "checked_at": live.get("checked_at"),
+        "policy": (
+            "Every 10 min during market hours: scan for working orders with no matching "
+            "position (orphans). Auto-cancel when gate=PROCEED."
+        ),
+    }
+    if not state_path:
+        result["status"] = live.get("status", "DEGRADED")
+        result["action"] = (
+            "Write state/orphan_bracket_scanner_state.json from the control-tower watchdog "
+            "or call check_orphan_bracket_orders for live broker evidence."
+        )
+    return result
+
+
+def _first_orphan_scanner_state_path() -> Path | None:
+    for relative in _ORPHAN_SCANNER_STATE_CANDIDATES:
+        path = CONTROL_TOWER / relative
+        if path.exists():
+            return path
+    guardian = CONTROL_TOWER / "state" / "bracket_guardian_state.json"
+    if guardian.exists():
+        return guardian
+    return None
+
+
 def get_bracket_guardian_status() -> dict:
     """
     Read the bracket integrity guardian state file.
@@ -717,19 +973,37 @@ def get_bracket_guardian_status() -> dict:
             "action": "Load com.algochains.bracket-guardian plist to activate",
             "positions_count": 0,
             "working_orders_count": 0,
+            "unknown_flat_orders": [],
+            "unknown_flat_orders_count": 0,
+            "mnq_swing_protect": _resolve_mnq_swing_protect(),
+            "swing": "NO",
+            "gate": "PROCEED",
             "status": "DEGRADED",
         }
     else:
         try:
             data = json.loads(state_path.read_text())
             unprotected_since = data.get("unprotected_since", {})
+            unknown_flat_orders = data.get("unknown_flat_orders") or data.get("orphans") or []
+            mnq_swing_protect = _resolve_mnq_swing_protect(data)
+            swing_active = _resolve_swing_active(data)
+            gate = _resolve_orphan_scanner_gate(
+                mnq_swing_protect=mnq_swing_protect,
+                swing_active=swing_active,
+                state=data,
+            )
             result = {
                 "guardian_active": True,
                 "last_check": data.get("last_check", "unknown"),
                 "positions_count": data.get("positions_count", 0),
                 "working_orders_count": data.get("working_orders_count", 0),
+                "unknown_flat_orders": unknown_flat_orders,
+                "unknown_flat_orders_count": len(unknown_flat_orders),
                 "currently_unprotected": list(unprotected_since.keys()),
                 "unprotected_since": unprotected_since,
+                "mnq_swing_protect": mnq_swing_protect,
+                "swing": "YES" if swing_active else "NO",
+                "gate": gate,
                 "status": "ALERT" if unprotected_since else "OK",
             }
         except Exception as e:

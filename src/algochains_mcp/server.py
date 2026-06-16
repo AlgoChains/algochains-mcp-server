@@ -3993,6 +3993,14 @@ TOOLS = [
          description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. When guardian positions_count is 0 (or guardian inactive), also runs live bracket_integrity_check against Tradovate so watchdogs cannot report OK with 0 checked without broker verification.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="check_orphan_bracket_orders",
+         description="Live Tradovate scan for working stop/target orders on flat contracts (orphan brackets). Inverse of check_unprotected_positions. Returns orphan_count, orphan_orders, gate, swing, MNQ_SWING_PROTECT, and formatted_line for ORPHAN-BRACKET-SCANNER.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_orphan_bracket_scanner_status",
+         description="Read orphan bracket scanner daemon state plus live broker check. Returns unknown_flat_orders, gate/swing/MNQ_SWING_PROTECT fields, and formatted_line so ORPHAN-BRACKET-SCANNER Slack posts are triage-friendly.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
 
     # V22.2: Onboarding — guided setup wizard for new users
     # ═══════════════════════════════════════════════════════════════
@@ -5075,6 +5083,8 @@ TIER1_TOOL_NAMES = {
     "check_unprotected_positions",
     "bracket_integrity_check",
     "get_bracket_guardian_status",
+    "check_orphan_bracket_orders",
+    "get_orphan_bracket_scanner_status",
     # V22.4 — Desktop tower ML visibility
     "get_tower_health",
     "get_tower_job_status",
@@ -9650,6 +9660,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(get_bracket_guardian_status())
         except Exception as exc:
             return _text({"error": str(exc)})
+
+    elif name == "check_orphan_bracket_orders":
+        try:
+            from .live_bot_intelligence.bot_ops import check_orphan_bracket_orders
+            return _text(check_orphan_bracket_orders())
+        except Exception as exc:
+            return _text({"error": f"Orphan bracket check error: {exc}"})
+
+    elif name == "get_orphan_bracket_scanner_status":
+        try:
+            from .live_bot_intelligence.bot_ops import get_orphan_bracket_scanner_status
+            return _text(get_orphan_bracket_scanner_status())
+        except Exception as exc:
+            return _text({"error": f"Orphan bracket scanner status error: {exc}"})
 
     elif name == "restart_trading_bot":
         try:
