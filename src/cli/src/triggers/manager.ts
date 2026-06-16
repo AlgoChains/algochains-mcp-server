@@ -31,6 +31,10 @@ export interface Trigger {
   last_run?: string;
   run_count: number;
   last_error?: string;
+  retry_pending?: boolean;
+  retry_count?: number;
+  next_retry_at?: string;
+  last_retry_error?: string;
 }
 
 // ── Persistence ────────────────────────────────────────────────────────────────
@@ -41,6 +45,23 @@ function loadTriggers(): Trigger[] {
 
 function saveTriggers(triggers: Trigger[]): void {
   writeFileSync(TRIGGERS_FILE, JSON.stringify(triggers, null, 2), { mode: 0o600 });
+}
+
+export function saveTriggerRecord(
+  id: string,
+  patch: Partial<Omit<Trigger, "id">>,
+): Trigger | undefined {
+  const triggers = loadTriggers();
+  const idx = triggers.findIndex((trigger) => trigger.id === id);
+  if (idx < 0) return undefined;
+
+  const next = { ...triggers[idx], ...patch };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete (next as Record<string, unknown>)[key];
+  }
+  triggers[idx] = next;
+  saveTriggers(triggers);
+  return next;
 }
 
 // ── Add ────────────────────────────────────────────────────────────────────────
@@ -93,7 +114,10 @@ export function removeTrigger(id: string): void {
 }
 
 // ── Execute a trigger command (with kill switch check) ────────────────────────
-export async function executeTrigger(trigger: Trigger): Promise<void> {
+export async function executeTrigger(
+  trigger: Trigger,
+  opts: { fromRetry?: boolean } = {},
+): Promise<void> {
   const cmdTier = getTier(trigger.command.split(" ")[0]);
 
   if ((cmdTier === "T2" || cmdTier === "T3") && isKillSwitchActive()) {
@@ -103,27 +127,36 @@ export async function executeTrigger(trigger: Trigger): Promise<void> {
   }
 
   const { execSync } = await import("child_process");
-  const triggers = loadTriggers();
-  const idx = triggers.findIndex(t => t.id === trigger.id);
 
   try {
     // Execute the CLI command (self-invocation)
     const cliCmd = `${process.argv[0]} ${process.argv[1]} ${trigger.command}`;
     execSync(cliCmd, { stdio: "inherit", timeout: 120_000 });
 
-    if (idx >= 0) {
-      triggers[idx].last_run = new Date().toISOString();
-      triggers[idx].run_count = (triggers[idx].run_count ?? 0) + 1;
-      delete triggers[idx].last_error;
-      saveTriggers(triggers);
+    const current = listTriggers().find((entry) => entry.id === trigger.id);
+    saveTriggerRecord(trigger.id, {
+      last_run: new Date().toISOString(),
+      run_count: (current?.run_count ?? 0) + 1,
+      last_error: undefined,
+      retry_pending: false,
+      retry_count: 0,
+      next_retry_at: undefined,
+      last_retry_error: undefined,
+    });
+  } catch (error) {
+    saveTriggerRecord(trigger.id, {
+      last_error: String(error),
+      last_run: new Date().toISOString(),
+    });
+
+    if (!opts.fromRetry) {
+      const { isConnectionError, queueTriggerRetry } = await import("./retry.js");
+      if (isConnectionError(error)) {
+        queueTriggerRetry(trigger, error);
+      }
     }
-  } catch (e) {
-    if (idx >= 0) {
-      triggers[idx].last_error = String(e);
-      triggers[idx].last_run = new Date().toISOString();
-      saveTriggers(triggers);
-    }
-    throw e;
+
+    throw error;
   }
 }
 
@@ -202,6 +235,9 @@ export function printTriggerList(): void {
     console.log(`  ${status}  [${t.id}]  ${t.type.padEnd(8)}  ${schedule}`);
     console.log(`          command:  ${t.command}`);
     if (t.last_run) console.log(`          last run: ${t.last_run} (×${t.run_count})`);
+    if (t.retry_pending) {
+      console.log(`          retry:    pending (attempt ${(t.retry_count ?? 0) + 1}, next ${t.next_retry_at ?? "now"})`);
+    }
     if (t.last_error) console.log(`          error:    \x1b[31m${t.last_error.slice(0, 80)}\x1b[0m`);
     console.log("");
   }

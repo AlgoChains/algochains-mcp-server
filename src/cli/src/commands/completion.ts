@@ -39,7 +39,7 @@ const PROFILES = ["demo", "paper", "live"];
 const DAEMON_SUBCOMMANDS = ["start", "stop", "status", "logs", "install", "uninstall"];
 const KILLSWITCH_SUBCOMMANDS = ["on", "off", "status"];
 const PLUGIN_SUBCOMMANDS = ["install", "list", "remove", "update", "info"];
-const TRIGGER_SUBCOMMANDS = ["add", "list", "disable", "enable", "remove", "logs"];
+const TRIGGER_SUBCOMMANDS = ["add", "list", "disable", "enable", "remove", "retry", "logs"];
 const CONFIG_SUBCOMMANDS = ["init", "show", "generate", "set", "get"];
 
 export function generateBashCompletion(): string {
