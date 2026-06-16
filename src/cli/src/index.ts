@@ -640,7 +640,6 @@ accountCmd
 // ── auth mfa subcommands ────────────────────────────────────────────────────────
 // Extend the existing 'auth' command with an 'mfa' subcommand group
 
-const authCmd = program.commands.find(c => c.name() === "auth");
 if (authCmd) {
   const mfaCmd = authCmd
     .command("mfa")
