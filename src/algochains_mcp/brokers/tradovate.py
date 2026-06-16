@@ -748,12 +748,30 @@ class TradovateConnector(BrokerConnector):
                 bid_entry = entries.get("Bid", {})
                 ask_entry = entries.get("Offer", {})
                 trade_entry = entries.get("Trade", {})
+                bid = _optional_float(bid_entry.get("price"))
+                ask = _optional_float(ask_entry.get("price"))
+                trade = _optional_float(trade_entry.get("price"))
+                live_prices = [
+                    price for price in (bid, ask, trade)
+                    if price is not None and price > 0
+                ]
+                if not live_prices:
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — API returned no live price",
+                        broker="tradovate",
+                    )
+                if trade is not None and trade > 0:
+                    last = trade
+                elif bid is not None and bid > 0 and ask is not None and ask > 0:
+                    last = (bid + ask) / 2
+                else:
+                    last = live_prices[0]
                 return Quote(
                     symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
+                    bid=bid or 0.0,
+                    ask=ask or 0.0,
+                    last=last,
+                    volume=int(_optional_float(trade_entry.get("size")) or 0),
                 )
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
