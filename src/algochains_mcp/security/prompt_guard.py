@@ -5,9 +5,9 @@ user/tool attempts to override operator-authored system instructions.
 
 Operator/system prompts often *describe* attack phrases (e.g. "never reveal
 system prompt") for defensive guidance. Scanning those trusted roles causes
-false positives that trip skill circuit breakers (adaptive-brain,
+false positives that trip skill circuit breakers (bot-health, adaptive-brain,
 crew-orchestrator, slack-command-listener, output-auditor, fat-finger-protection,
-crew-handoff-router).
+crew-handoff-router, agent-knowledge-graph).
 
 By default, trusted roles (system, system_prompt, developer) are NOT scanned.
 Set PROMPT_GUARD_SCAN_SYSTEM=1 to enforce scanning on every role.
@@ -108,36 +108,8 @@ def _should_scan_role(role: str, *, scan_system: bool) -> bool:
     return True
 
 
-def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
-    """True when *reveal system prompt* appears in operator defensive guidance."""
-    prefix = text[: match.start()]
-    stripped_prefix = prefix.rstrip()
-    if stripped_prefix.endswith(("(", "[", "/")):
-        return True
-    if stripped_prefix.endswith(":"):
-        doc_tokens = re.findall(r"[A-Za-z']+", prefix)
-        if doc_tokens and doc_tokens[-1].lower() in {
-            "examples",
-            "example",
-            "injections",
-            "injection",
-            "patterns",
-            "pattern",
-            "attacks",
-            "attack",
-            "phrases",
-            "phrase",
-            "e",
-            "g",
-        }:
-            return True
-
-    tokens = re.findall(r"[A-Za-z']+", prefix)
-    if not tokens:
-        return False
-
-    last = tokens[-1].lower()
-    if last in {
+_DEFENSIVE_REVEAL_IMMEDIATE: frozenset[str] = frozenset(
+    {
         "never",
         "not",
         "no",
@@ -168,11 +140,41 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "attack",
         "phrases",
         "phrase",
-    }:
-        return True
-    if len(tokens) >= 2 and tokens[-2].lower() == "do" and last == "not":
-        return True
-    if len(tokens) >= 2 and tokens[-2].lower() in {
+    }
+)
+
+# Extra markers for operator system prompts (bot-health, agent-knowledge-graph, graphiti).
+_DEFENSIVE_REVEAL_OPERATOR_LOOKBACK: frozenset[str] = frozenset(
+    {
+        "treat",
+        "regard",
+        "classify",
+        "consider",
+        "label",
+        "scan",
+        "check",
+        "search",
+        "watch",
+        "look",
+        "detect",
+        "identify",
+        "flag",
+        "ignore",
+        "mention",
+        "describe",
+        "contain",
+        "include",
+        "quote",
+        "guard",
+        "defend",
+        "protect",
+        "resist",
+        "if",
+    }
+)
+
+_ASK_TO_TOKENS: frozenset[str] = frozenset(
+    {
         "requests",
         "request",
         "attempts",
@@ -181,31 +183,111 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "try",
         "asks",
         "ask",
-    } and last == "to":
+    }
+)
+
+_ASK_TO_LOOKBACK_TOKENS: frozenset[str] = frozenset(
+    {
+        "asked",
+        "requested",
+        "instructed",
+        "directed",
+    }
+)
+
+_REFUSE_TO_TOKENS: frozenset[str] = frozenset({"refuse", "reject", "decline", "deny"})
+
+_SCAN_FOR_TOKENS: frozenset[str] = frozenset(
+    {"scan", "check", "search", "watch", "look", "monitor"}
+)
+
+_TREAT_AS_TOKENS: frozenset[str] = frozenset({"treat", "regard", "classify", "consider", "label"})
+
+
+def _is_defensive_reveal_match(
+    text: str,
+    match: re.Match[str],
+    *,
+    trusted_context: bool = False,
+) -> bool:
+    """True when *reveal system prompt* appears in operator defensive guidance."""
+    prefix = text[: match.start()]
+    stripped_prefix = prefix.rstrip()
+    if stripped_prefix.endswith(("(", "[", "/")):
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() in {
-        "refuse",
-        "reject",
-        "decline",
-    } and last == "to":
+    if stripped_prefix.endswith(":"):
+        doc_tokens = re.findall(r"[A-Za-z']+", prefix)
+        if doc_tokens and doc_tokens[-1].lower() in {
+            "examples",
+            "example",
+            "injections",
+            "injection",
+            "patterns",
+            "pattern",
+            "attacks",
+            "attack",
+            "phrases",
+            "phrase",
+            "e",
+            "g",
+        }:
+            return True
+
+    tokens = re.findall(r"[A-Za-z']+", prefix)
+    if not tokens:
+        return False
+
+    lowered = [token.lower() for token in tokens]
+    last = lowered[-1]
+
+    if last in _DEFENSIVE_REVEAL_IMMEDIATE:
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch"} and last == "as":
+    if len(lowered) >= 2 and lowered[-2] == "do" and last == "not":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() == "watch" and last == "for":
+    if len(lowered) >= 2 and lowered[-2] in _ASK_TO_TOKENS and last == "to":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() == "e" and last == "g":
+    if len(lowered) >= 2 and lowered[-2] in _REFUSE_TO_TOKENS and last == "to":
+        return True
+    if len(lowered) >= 2 and lowered[-2] in {"such", "for", "watch"} and last == "as":
+        return True
+    if len(lowered) >= 2 and lowered[-2] in _SCAN_FOR_TOKENS and last == "for":
+        return True
+    if len(lowered) >= 2 and lowered[-2] == "watch" and last == "for":
+        return True
+    if len(lowered) >= 2 and lowered[-2] == "e" and last == "g":
+        return True
+
+    if not trusted_context:
+        return False
+
+    lookback = lowered[-10:]
+    if last == "to" and any(token in _ASK_TO_TOKENS for token in lookback[:-1]):
+        return True
+    if last == "to" and any(token in _ASK_TO_LOOKBACK_TOKENS for token in lookback[:-1]):
+        return True
+    if last == "to" and any(token in _REFUSE_TO_TOKENS for token in lookback[:-1]):
+        return True
+    if last == "for" and any(token in _SCAN_FOR_TOKENS for token in lookback[:-1]):
+        return True
+    if last == "as" and any(token in _TREAT_AS_TOKENS for token in lookback[:-1]):
+        return True
+    if any(token in _DEFENSIVE_REVEAL_OPERATOR_LOOKBACK for token in lookback):
         return True
     return False
 
 
-def find_injection_pattern(text: str) -> Optional[_InjectionPattern]:
+def find_injection_pattern(
+    text: str,
+    *,
+    trusted_context: bool = False,
+) -> Optional[_InjectionPattern]:
     """Return the first injection pattern matched in *text*, if any."""
     if not text:
         return None
     for pattern in INJECTION_PATTERNS:
         for match in pattern.regex.finditer(text):
             if pattern.name == "reveal system prompt" and _is_defensive_reveal_match(
-                text, match
+                text, match, trusted_context=trusted_context
             ):
                 continue
             return pattern
@@ -226,7 +308,8 @@ def check_prompt_text(
         return None
 
     body = _normalize_content(content)
-    matched = find_injection_pattern(body)
+    trusted_context = normalized_role in TRUSTED_ROLES
+    matched = find_injection_pattern(body, trusted_context=trusted_context)
     if matched is None:
         return None
 
