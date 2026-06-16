@@ -180,6 +180,100 @@ def test_place_order_uses_fresh_broker_winner_over_stale_signal_health(
     assert payload["status"] == OrderStatus.ACCEPTED.value
 
 
+def test_place_order_fails_closed_when_market_price_unavailable(
+    isolated_guardrails, monkeypatch, tmp_path
+):
+    monkeypatch.setenv("ALGOCHAINS_CONTROL_TOWER", str(tmp_path))
+    monkeypatch.setenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "0")
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            return SimpleNamespace(text="DATE,OPEN,HIGH,LOW,CLOSE\n2026-06-12,0,0,0,12.5\n")
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    class FakeBroker:
+        def __init__(self):
+            self.place_order_called = False
+
+        async def get_fills(self):
+            return []
+
+        async def get_quote(self, symbol):
+            raise RuntimeError("md/getQuote unavailable")
+
+        async def get_account(self):
+            return AccountInfo(
+                broker="tradovate",
+                account_id="test",
+                equity=100_000.0,
+                cash=100_000.0,
+                buying_power=100_000.0,
+            )
+
+        async def place_order(
+            self,
+            symbol,
+            side,
+            qty,
+            order_type=OrderType.MARKET,
+            limit_price=None,
+            stop_price=None,
+            trail_pct=None,
+            time_in_force="day",
+        ):
+            self.place_order_called = True
+            return Order(
+                id="should-not-submit",
+                broker="tradovate",
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                qty=qty,
+                status=OrderStatus.ACCEPTED,
+            )
+
+    fake_broker = FakeBroker()
+
+    class FakeRegistry:
+        def get(self, name):
+            return fake_broker if name == "tradovate" else None
+
+    import asyncio
+    import algochains_mcp.server as srv
+
+    result = asyncio.run(
+        srv._dispatch_tool(
+            "place_order",
+            {
+                "broker": "tradovate",
+                "symbol": "MNQ",
+                "side": OrderSide.BUY.value,
+                "qty": 1,
+                "order_type": OrderType.MARKET.value,
+            },
+            FakeRegistry(),
+        )
+    )
+    payload = json.loads(result[0].text)
+
+    assert payload["error_type"] == "GuardrailTripped"
+    assert payload["reason"] == "market_price_unavailable"
+    assert payload["order_submitted"] is False
+    assert fake_broker.place_order_called is False
+
+
 def test_unexpired_ai_loop_breaker_survives_restart(isolated_guardrails, monkeypatch):
     state_path = isolated_guardrails
     now_epoch = 1_781_000_000.0
