@@ -3926,6 +3926,14 @@ TOOLS = [
          description="Run the trading-system-health audit: bot process/log liveness (with legacy log alias resolution), disk space on control-tower and home volumes, and optional health_snapshot.json. Use to triage SEV1 trading-system-health watchdog alerts without false inactive signals from stale cl_bot_live.log.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_cron_retry_status",
+         description="Read the CLI cron retry queue (~/.algochains/cron_retries.json) and return explicit CRON-RETRY watchdog lines such as [OK] No pending cron retries or [WAIT]/[RETRY] status. Read-only; does not execute queued triggers.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="run_cron_retries",
+         description="Auto-retry failed cron triggers with exponential backoff (1s-60s, max 5 attempts) on connection/recovery failures. Returns explicit CRON-RETRY status lines instead of bare SILENT when the retry queue is empty or waiting. Equivalent to algochains trigger retry.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_strategy_academic_citations",
          description="Get all academic citations, SSRN papers, and published works that provide the theoretical basis for a specific bot's strategy. Includes authors, year, venue, DOI/SSRN link, and relevance explanation. Bot IDs: mnq, cl, mes, nq.",
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
@@ -5062,6 +5070,8 @@ TIER1_TOOL_NAMES = {
     "get_all_bot_metrics",
     "get_system_heartbeat",
     "get_system_health",
+    "get_cron_retry_status",
+    "run_cron_retries",
     "get_adaptive_brain_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
@@ -9508,6 +9518,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(get_system_health())
         except Exception as exc:
             return _text({"error": f"System health error: {exc}"})
+
+    elif name == "get_cron_retry_status":
+        try:
+            from .cron_retry import get_cron_retry_status
+            return _text(get_cron_retry_status())
+        except Exception as exc:
+            return _text({"error": f"Cron retry status error: {exc}"})
+
+    elif name == "run_cron_retries":
+        try:
+            from .cron_retry import run_cron_retries
+            return _text(run_cron_retries())
+        except Exception as exc:
+            return _text({"error": f"Cron retry run error: {exc}"})
 
     elif name == "get_adaptive_brain_status":
         try:
