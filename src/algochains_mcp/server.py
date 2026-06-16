@@ -3985,8 +3985,12 @@ TOOLS = [
          description="Cross-check ALL open Tradovate positions vs working orders to identify unprotected exposure (position open, no stop/target orders). Returns status OK | UNPROTECTED_EXPOSURE. Run before any P&L report or after any bot restart. Prevents repeat of Apr 14 2026 -$4.9k incident.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="bracket_integrity_check",
+         description="Live Tradovate bracket audit for non-MNQ positions (CL/MES/NQ). Each open position must have BOTH a working stop and target order. Returns checked_count, missing_brackets, and formatted_line for BRACKET-INTEGRITY-MONITOR. Status DEGRADED when bot state files show open exposure but broker returns zero positions (fail-closed).",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_bracket_guardian_status",
-         description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. Guardian runs every 5 min via launchd (com.algochains.bracket-guardian).",
+         description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. When guardian positions_count is 0 (or guardian inactive), also runs live bracket_integrity_check against Tradovate so watchdogs cannot report OK with 0 checked without broker verification.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
 
@@ -5069,6 +5073,7 @@ TIER1_TOOL_NAMES = {
     "get_all_bot_ops_status",
     # V26.1 — Bracket integrity (always Tier 1 — safety critical)
     "check_unprotected_positions",
+    "bracket_integrity_check",
     "get_bracket_guardian_status",
     # V22.4 — Desktop tower ML visibility
     "get_tower_health",
@@ -9629,6 +9634,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .live_bot_intelligence.bot_ops import check_unprotected_positions
             return _text(check_unprotected_positions())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "bracket_integrity_check":
+        try:
+            from .live_bot_intelligence.bot_ops import bracket_integrity_check
+            return _text(bracket_integrity_check())
         except Exception as exc:
             return _text({"error": str(exc)})
 
