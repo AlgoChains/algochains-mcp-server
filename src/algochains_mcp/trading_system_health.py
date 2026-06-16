@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .bot_log_paths import BOT_SCRIPT_NAMES, STALE_LOG_SECONDS, resolve_bot_log
+from .live_bot_intelligence.heartbeat import EXPECTED_DESKTOP_BOT_COUNT, scan_running_bot_keys
 from .paths import default_control_tower
 
 
@@ -79,6 +80,7 @@ def get_system_health(
     bots: dict[str, Any] = {}
     issues: list[str] = []
     critical_issues: list[str] = []
+    running_bot_keys = scan_running_bot_keys(ps_output)
 
     for bot_id, script_name in BOT_SCRIPT_NAMES.items():
         log_info = resolve_bot_log(root, bot_id, now=current_time)
@@ -163,6 +165,15 @@ def get_system_health(
         "stale_log_threshold_seconds": STALE_LOG_SECONDS,
         "control_tower": str(root),
         "control_tower_exists": root.exists(),
+        "bot_processes": {
+            "running_count": len(running_bot_keys),
+            "expected_count": EXPECTED_DESKTOP_BOT_COUNT,
+            "processes": {
+                bot_id: bot_id in running_bot_keys for bot_id in BOT_SCRIPT_NAMES
+            },
+            "all_running": len(running_bot_keys) >= EXPECTED_DESKTOP_BOT_COUNT
+            and all(bot_id in running_bot_keys for bot_id in BOT_SCRIPT_NAMES),
+        },
         "bots": bots,
         "disk": {"control_tower": disk_root, "home": disk_home},
         "issues": issues,

@@ -116,3 +116,4 @@ def test_get_system_health_registered_and_callable(monkeypatch, tmp_path):
 
     assert payload["component"] == "trading-system-health"
     assert "bots" in payload
+    assert payload["bot_processes"]["expected_count"] == 5
