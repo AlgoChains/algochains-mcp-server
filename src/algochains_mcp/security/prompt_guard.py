@@ -5,7 +5,7 @@ user/tool attempts to override operator-authored system instructions.
 
 Operator/system prompts often *describe* attack phrases (e.g. "never reveal
 system prompt") for defensive guidance. Scanning those trusted roles causes
-false positives that trip skill circuit breakers (adaptive-brain,
+false positives that trip skill circuit breakers (adaptive-brain, bot-manager,
 crew-orchestrator, slack-command-listener, output-auditor, fat-finger-protection,
 crew-handoff-router).
 
@@ -108,36 +108,32 @@ def _should_scan_role(role: str, *, scan_system: bool) -> bool:
     return True
 
 
-def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
-    """True when *reveal system prompt* appears in operator defensive guidance."""
-    prefix = text[: match.start()]
-    stripped_prefix = prefix.rstrip()
-    if stripped_prefix.endswith(("(", "[", "/")):
-        return True
-    if stripped_prefix.endswith(":"):
-        doc_tokens = re.findall(r"[A-Za-z']+", prefix)
-        if doc_tokens and doc_tokens[-1].lower() in {
-            "examples",
-            "example",
-            "injections",
-            "injection",
-            "patterns",
-            "pattern",
-            "attacks",
-            "attack",
-            "phrases",
-            "phrase",
-            "e",
-            "g",
-        }:
-            return True
+_COLON_LABEL_TOKENS: frozenset[str] = frozenset(
+    {
+        "examples",
+        "example",
+        "injections",
+        "injection",
+        "patterns",
+        "pattern",
+        "attacks",
+        "attack",
+        "phrases",
+        "phrase",
+        "techniques",
+        "technique",
+        "blocked",
+        "prohibited",
+        "banned",
+        "forbidden",
+        "e",
+        "g",
+        "t094",
+    }
+)
 
-    tokens = re.findall(r"[A-Za-z']+", prefix)
-    if not tokens:
-        return False
-
-    last = tokens[-1].lower()
-    if last in {
+_DEFENSIVE_SINGLE_TOKENS: frozenset[str] = frozenset(
+    {
         "never",
         "not",
         "no",
@@ -155,7 +151,23 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "dont",
         "don't",
         "including",
+        "includes",
+        "include",
         "like",
+        "detect",
+        "scan",
+        "flag",
+        "monitor",
+        "resist",
+        "mentioning",
+        "mention",
+        "describe",
+        "describing",
+        "catalog",
+        "circumstances",
+        "cannot",
+        "cant",
+        "can't",
         "e",
         "g",
         "examples",
@@ -168,9 +180,79 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "attack",
         "phrases",
         "phrase",
-    }:
+    }
+)
+
+
+def _is_backtick_quoted_example(text: str, match: re.Match[str]) -> bool:
+    start = match.start()
+    end = match.end()
+    idx = start - 1
+    while idx >= 0 and text[idx].isspace():
+        idx -= 1
+    if idx < 0 or text[idx] != "`":
+        return False
+    idx = end
+    while idx < len(text) and text[idx].isspace():
+        idx += 1
+    return idx < len(text) and text[idx] == "`"
+
+
+def _is_catalog_list_item(text: str, match: re.Match[str]) -> bool:
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    line_prefix = text[line_start : match.start()]
+    stripped = line_prefix.lstrip()
+    if stripped.startswith(("- ", "* ", "• ")):
+        return True
+    return bool(re.match(r"\d+\.\s", stripped))
+
+
+def _is_colon_label_catalog(text: str, match: re.Match[str]) -> bool:
+    prefix = text[: match.start()]
+    stripped_prefix = prefix.rstrip()
+    if not stripped_prefix.endswith(":"):
+        return False
+    doc_tokens = re.findall(r"[A-Za-z0-9']+", prefix)
+    if not doc_tokens:
+        return False
+    label = doc_tokens[-1].lower()
+    return label in _COLON_LABEL_TOKENS or bool(re.fullmatch(r"t\d+", label))
+
+
+def _is_defensive_catalog_context(text: str, match: re.Match[str]) -> bool:
+    """True when matched text is an operator-authored catalog/example entry."""
+    if _is_backtick_quoted_example(text, match) or _is_catalog_list_item(text, match):
+        return True
+    return _is_colon_label_catalog(text, match)
+
+
+def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
+    """True when *reveal system prompt* appears in operator defensive guidance."""
+    if _is_defensive_catalog_context(text, match):
+        return True
+
+    prefix = text[: match.start()]
+    stripped_prefix = prefix.rstrip()
+    if stripped_prefix.endswith(("(", "[", "/", "`")):
+        return True
+
+    tokens = re.findall(r"[A-Za-z']+", prefix)
+    if not tokens:
+        return False
+
+    last = tokens[-1].lower()
+    if last in _DEFENSIVE_SINGLE_TOKENS:
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "do" and last == "not":
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() in {
+        "will",
+        "cannot",
+        "cant",
+        "can't",
+        "shall",
+        "must",
+    } and last == "not":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() in {
         "requests",
@@ -189,23 +271,41 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "decline",
     } and last == "to":
         return True
+    if len(tokens) >= 2 and tokens[-2].lower() in {
+        "scan",
+        "monitor",
+        "detect",
+        "flag",
+        "watch",
+    } and last == "for":
+        return True
     if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch"} and last == "as":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "watch" and last == "for":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "e" and last == "g":
         return True
+    if len(tokens) >= 2 and tokens[-2].lower() == "under" and last == "no":
+        return True
     return False
 
 
-def find_injection_pattern(text: str) -> Optional[_InjectionPattern]:
+def find_injection_pattern(
+    text: str,
+    *,
+    operator_prompt: bool = False,
+) -> Optional[_InjectionPattern]:
     """Return the first injection pattern matched in *text*, if any."""
     if not text:
         return None
     for pattern in INJECTION_PATTERNS:
         for match in pattern.regex.finditer(text):
-            if pattern.name == "reveal system prompt" and _is_defensive_reveal_match(
-                text, match
+            if operator_prompt and _is_defensive_catalog_context(text, match):
+                continue
+            if (
+                operator_prompt
+                and pattern.name == "reveal system prompt"
+                and _is_defensive_reveal_match(text, match)
             ):
                 continue
             return pattern
@@ -226,7 +326,10 @@ def check_prompt_text(
         return None
 
     body = _normalize_content(content)
-    matched = find_injection_pattern(body)
+    matched = find_injection_pattern(
+        body,
+        operator_prompt=normalized_role in TRUSTED_ROLES,
+    )
     if matched is None:
         return None
 
