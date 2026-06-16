@@ -28,6 +28,10 @@ from typing import Any, Optional
 # the shared legacy list (Mac, /home/trrey, WSL). Behavior on the MacBook is
 # unchanged: env typically unset → first existing legacy path = Mac repo.
 from algochains_mcp.paths import default_control_tower
+from algochains_mcp.live_bot_intelligence.log_paths import (
+    resolve_bot_log_path,
+    summarize_price_source_failures,
+)
 
 CONTROL_TOWER = default_control_tower()
 
@@ -256,11 +260,18 @@ def get_bracket_status(bot_id: str) -> dict:
     if bot_id not in BOT_MAP:
         return {"error": f"Unknown bot_id '{bot_id}'. Valid: {list(BOT_MAP)}"}
 
-    cfg = BOT_MAP[bot_id]
-    log_path = CONTROL_TOWER / cfg["log"]
+    log_resolution = resolve_bot_log_path(bot_id, CONTROL_TOWER)
+    log_path = log_resolution.path
 
     if not log_path.exists():
-        return {"bot": bot_id, "mode": "unknown", "detail": "Log file not found"}
+        return {
+            "bot": bot_id,
+            "mode": "unknown",
+            "detail": "Log file not found",
+            "log_path": str(log_path),
+            "log_mode": log_resolution.mode,
+            "log_source": log_resolution.source,
+        }
 
     try:
         # Read last 6KB of log
@@ -299,8 +310,24 @@ def get_bracket_status(bot_id: str) -> dict:
 
     pos = get_position_state(bot_id)
     if pos.get("flat"):
-        return {"bot": bot_id, "mode": "flat", "label": "FLAT — no active position", "unprotected": False}
-    return {"bot": bot_id, "mode": "unknown", "label": "Could not determine bracket status from recent logs", "unprotected": None}
+        return {
+            "bot": bot_id,
+            "mode": "flat",
+            "label": "FLAT — no active position",
+            "unprotected": False,
+            "log_path": str(log_path),
+            "log_mode": log_resolution.mode,
+            "log_source": log_resolution.source,
+        }
+    return {
+        "bot": bot_id,
+        "mode": "unknown",
+        "label": "Could not determine bracket status from recent logs",
+        "unprotected": None,
+        "log_path": str(log_path),
+        "log_mode": log_resolution.mode,
+        "log_source": log_resolution.source,
+    }
 
 
 def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
@@ -311,8 +338,8 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     if bot_id not in BOT_MAP:
         return {"error": f"Unknown bot_id. Valid: {list(BOT_MAP)}"}
 
-    cfg = BOT_MAP[bot_id]
-    log_path = CONTROL_TOWER / cfg["log"]
+    log_resolution = resolve_bot_log_path(bot_id, CONTROL_TOWER)
+    log_path = log_resolution.path
     detail = None
 
     try:
@@ -348,6 +375,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     )
     telemetry_timeout = decision_timeout_rate > 0.0 or multi_agent_p95_over_timeout
     pipeline_timeout_detected = timeout_event or telemetry_timeout
+    price_source_health = summarize_price_source_failures(tail.splitlines())
 
     mode = "unknown"
     if shadow_mode or pipeline_timeout_detected:
@@ -360,6 +388,9 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
     return {
         "bot": bot_id,
         "mode": mode,
+        "log_path": str(log_path),
+        "log_mode": log_resolution.mode,
+        "log_source": log_resolution.source,
         "advisory_only": True,
         "blocks_trades": False,
         "anthropic_quota_error": anthropic_error,
@@ -375,6 +406,7 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
         "pipeline_timeout_config_source": timeout_source,
         "decision_latency": decision_latency,
         "desktop_inference": desktop_inference,
+        "price_source_health": price_source_health,
         "cerebras_model": "llama3.1-8b",
         "detail": detail,
         "note": (

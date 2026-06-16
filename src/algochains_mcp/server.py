@@ -58,6 +58,10 @@ import sys
 from pathlib import Path as _PathGlobal
 
 from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
+from .live_bot_intelligence.log_paths import (
+    resolve_bot_log_path,
+    summarize_price_source_failures,
+)
 
 
 def _default_control_tower() -> str:
@@ -5981,11 +5985,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         for key, meta in bots.items():
             if bot_filter not in ("all", key):
                 continue
-            log_path = control_tower / meta["log"]
+            log_resolution = resolve_bot_log_path(key, control_tower)
+            log_path = log_resolution.path
             running = meta["script"] in ps_out
             last_log_mtime = None
             error_count = 0
             tail_preview = ""
+            tail_lines: list[str] = []
             if log_path.exists():
                 try:
                     last_log_mtime = int(now - log_path.stat().st_mtime)
@@ -5994,18 +6000,33 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                         ["tail", "-n", "100", str(log_path)],
                         capture_output=True, text=True, timeout=3,
                     ).stdout
+                    tail_lines = tail.splitlines()
                     error_count = sum(
-                        1 for ln in tail.splitlines()
+                        1 for ln in tail_lines
                         if any(tok in ln for tok in ("ERROR", "Exception", "Traceback", " 401", " 422"))
+                        or any(
+                            tok in ln
+                            for tok in (
+                                "T4-FAIL-CLOSED",
+                                "T4_FAIL_CLOSED",
+                                "No live market price",
+                                "REST price fetch failed",
+                                "md_quote_feed unavailable",
+                            )
+                        )
                     )
-                    tail_preview = tail.splitlines()[-1][:200] if tail.strip() else ""
+                    tail_preview = tail_lines[-1][:200] if tail.strip() else ""
                 except Exception:
                     pass
             results[key] = {
                 "running": running,
                 "log_age_seconds": last_log_mtime,
+                "log_path": str(log_path),
+                "log_mode": log_resolution.mode,
+                "log_source": log_resolution.source,
                 "error_count_last_100": error_count,
                 "last_line_preview": tail_preview,
+                "price_source_health": summarize_price_source_failures(tail_lines),
             }
 
         # Tradovate token expiry (best-effort)

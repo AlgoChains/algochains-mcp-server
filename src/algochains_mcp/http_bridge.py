@@ -59,6 +59,7 @@ from .developer_tools import (
     check_developer_tool_access,
 )
 from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
+from .live_bot_intelligence.log_paths import resolve_bot_log_path
 from .tool_policy import (
     evaluate_bridge_tool,
     visible_tools_for_bridge,
@@ -1300,17 +1301,23 @@ def create_fastapi_app():
             raise HTTPException(status_code=401, detail="Valid API key required")
         interval = max(1.0, min(float(poll_interval), 30.0))
 
-        LOG_PATHS = [
-            ("mnq", "logs/futures_bot_live.log"),
-            ("cl", "logs/cl_futures_live.log"),
-            ("mes", "logs/mes_swing_live.log"),
-            ("nq", "logs/nq_swing_live.log"),
-        ]
+        LOG_BOTS = ("mnq", "cl", "mes", "nq")
         LOG_KEYWORDS = ("SIGNAL", "FILL", "EXIT", "ERROR", "Exception", "Traceback",
-                        "BRACKET", "SENTINEL", "guardian", "P0", "P1", "P2")
+                        "BRACKET", "SENTINEL", "guardian", "ENFORCER", "T4",
+                        "FAIL-CLOSED", "md_quote_feed", "P0", "P1", "P2")
 
         def _classify_line(line: str) -> str | None:
             lower_line = line.lower()
+            if any(
+                keyword in lower_line
+                for keyword in (
+                    "t4-fail-closed",
+                    "t4_fail_closed",
+                    "no live market price",
+                    "md_quote_feed",
+                )
+            ):
+                return "error"
             if any(keyword in lower_line for keyword in ("fill", "filled")):
                 return "fill"
             if any(keyword in lower_line for keyword in ("signal", "signal_fired", "confidence")):
@@ -1336,18 +1343,21 @@ def create_fastapi_app():
                 # Emit log lines that appeared since last poll
                 def _poll_logs():
                     new_events = []
-                    for bot, rel_path in LOG_PATHS:
-                        p = _ct_path(rel_path)
+                    control_tower = _PathGlobal(_default_control_tower())
+                    for bot in LOG_BOTS:
+                        log_resolution = resolve_bot_log_path(bot, control_tower)
+                        p = log_resolution.path
                         if not p.exists():
                             continue
                         try:
                             size = p.stat().st_size
-                            last = _last_pos.get(rel_path, size)
+                            last_key = f"{bot}:{p}"
+                            last = _last_pos.get(last_key, size)
                             if size > last:
                                 with p.open() as fh:
                                     fh.seek(last)
                                     new_text = fh.read(min(size - last, 32768))
-                                _last_pos[rel_path] = last + len(new_text.encode())
+                                _last_pos[last_key] = last + len(new_text.encode())
                                 for raw_line in new_text.splitlines():
                                     line = raw_line.strip()
                                     if not line:
@@ -1356,9 +1366,15 @@ def create_fastapi_app():
                                         continue
                                     event_type = _classify_line(line)
                                     if event_type:
-                                        new_events.append({"bot": bot, "type": event_type, "line": line[-400:]})
+                                        new_events.append({
+                                            "bot": bot,
+                                            "type": event_type,
+                                            "line": line[-400:],
+                                            "log_mode": log_resolution.mode,
+                                            "log_source": log_resolution.source,
+                                        })
                             else:
-                                _last_pos[rel_path] = size
+                                _last_pos[last_key] = size
                         except Exception:
                             pass
                     return new_events

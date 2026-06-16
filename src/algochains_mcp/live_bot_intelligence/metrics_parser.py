@@ -18,6 +18,10 @@ from typing import Optional
 # Resolve control tower path (works on Mac and Desktop WSL).
 # Uses the shared helper so ALGOCHAINS_CONTROL_TOWER env is honored everywhere.
 from algochains_mcp.paths import default_control_tower
+from algochains_mcp.live_bot_intelligence.log_paths import (
+    resolve_bot_log_path,
+    summarize_price_source_failures,
+)
 
 CONTROL_TOWER = default_control_tower()
 try:
@@ -207,7 +211,12 @@ def _parse_errors(lines: list[str]) -> tuple[str, int]:
     error_count = 0
     last_error = ""
     for line in lines:
-        if re.search(r'\bERROR\b|\bException\b|\bTraceback\b|\b401\b|\b422\b', line, re.IGNORECASE):
+        if re.search(
+            r'\bERROR\b|\bException\b|\bTraceback\b|\b401\b|\b422\b|'
+            r'T4[-_]FAIL[-_]CLOSED|No live market price|md_quote_feed unavailable|REST price fetch failed',
+            line,
+            re.IGNORECASE,
+        ):
             line_ts = _line_epoch_seconds(line)
             if line_ts is not None and line_ts < one_hour_ago:
                 continue
@@ -340,7 +349,7 @@ def parse_bot_metrics_from_supabase(bot_id: str, sb_client=None) -> BotMetrics |
     metrics.avg_fill_deviation_ticks = _avg("fill_deviation_ticks")
     metrics.avg_exit_slippage_ticks = _avg("exit_slippage_ticks")
     try:
-        log_path = BOT_LOG_PATHS.get(bot_id)
+        log_path = resolve_bot_log_path(bot_id, CONTROL_TOWER).path
         if log_path and log_path.exists():
             metrics.last_log_age_sec = time.time() - log_path.stat().st_mtime
             metrics.is_running = metrics.last_log_age_sec < 300
@@ -355,7 +364,7 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
     """
     bot_id = bot_id.lower()
     meta = BOT_META.get(bot_id, {})
-    log_path = BOT_LOG_PATHS.get(bot_id)
+    log_path = resolve_bot_log_path(bot_id, CONTROL_TOWER).path if bot_id in BOT_META else None
 
     supabase_metrics = parse_bot_metrics_from_supabase(bot_id)
     if supabase_metrics is not None:
@@ -402,8 +411,11 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
 
     # Error state
     last_error, error_count = _parse_errors(lines[-100:])
+    price_source_health = summarize_price_source_failures(lines[-100:])
     metrics.last_error = last_error
     metrics.error_count_1h = error_count
+    if price_source_health["status"] == "fail_closed":
+        metrics.last_error = price_source_health["latest"] or metrics.last_error
 
     # MCPT validated metrics
     sharpe, max_dd, wr, badge = _load_mcpt_metrics(bot_id)
@@ -417,4 +429,4 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
 
 def parse_all_bots() -> dict[str, BotMetrics]:
     """Parse metrics for all 4 live bots. Returns dict keyed by bot_id."""
-    return {bot_id: parse_bot_metrics(bot_id) for bot_id in BOT_LOG_PATHS}
+    return {bot_id: parse_bot_metrics(bot_id) for bot_id in BOT_META}
