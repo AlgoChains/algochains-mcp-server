@@ -3922,6 +3922,18 @@ TOOLS = [
          description="Read adaptive_brain.py daemon liveness from bounded process, script, state, and log evidence. Read-only; does not restart or mutate daemon state.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_daily_loss_proximity",
+         description="Fleet daily-loss proximity against the hard-coded $500 limit. Alerts at 80% utilization, blocks new scalper entries at 95%, and keeps MES/NQ swing bots exempt from the scalper entry block. Aggregates verified bot trade P&L; fails closed when no P&L source is available.",
+         inputSchema={
+             "type": "object",
+             "properties": {
+                 "alert_at_pct": {"type": "number", "default": 80, "description": "Alert when daily loss reaches this % of the hard limit"},
+                 "block_scalper_at_pct": {"type": "number", "default": 95, "description": "Block new scalper entries at this % of the hard limit"},
+                 "daily_loss_limit_usd": {"type": "number", "description": "Override daily loss limit (default: hard-coded $500)"},
+             },
+             "required": [],
+         },
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_strategy_academic_citations",
          description="Get all academic citations, SSRN papers, and published works that provide the theoretical basis for a specific bot's strategy. Includes authors, year, venue, DOI/SSRN link, and relevance explanation. Bot IDs: mnq, cl, mes, nq.",
          inputSchema={"type": "object", "properties": {"bot_id": {"type": "string", "description": "Bot identifier: mnq | cl | mes | nq", "enum": ["mnq", "cl", "mes", "nq"]}}, "required": ["bot_id"]},
@@ -5050,6 +5062,7 @@ TIER1_TOOL_NAMES = {
     "get_all_bot_metrics",
     "get_system_heartbeat",
     "get_adaptive_brain_status",
+    "get_daily_loss_proximity",
     "get_strategy_academic_citations",
     "get_bot_card_data",
     "list_bot_research_attachments",
@@ -9478,6 +9491,23 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(get_adaptive_brain_status())
         except Exception as exc:
             return _text({"error": f"Adaptive brain status error: {exc}"})
+
+    elif name == "get_daily_loss_proximity":
+        try:
+            from .daily_loss_proximity import get_daily_loss_proximity
+            return _text(
+                get_daily_loss_proximity(
+                    alert_at_pct=float(args.get("alert_at_pct", 80)),
+                    block_scalper_at_pct=float(args.get("block_scalper_at_pct", 95)),
+                    daily_loss_limit_usd=(
+                        float(args["daily_loss_limit_usd"])
+                        if "daily_loss_limit_usd" in args
+                        else None
+                    ),
+                )
+            )
+        except Exception as exc:
+            return _text({"error": f"Daily loss proximity error: {exc}"})
 
     elif name == "get_strategy_academic_citations":
         try:
