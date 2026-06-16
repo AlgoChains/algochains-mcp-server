@@ -468,45 +468,93 @@ def check_unprotected_positions() -> dict:
     except Exception as e:
         return {"error": f"Tradovate connection failed: {e}", "status": "ERROR"}
 
-    # Only stop-type orders actually protect a position
-    _STOP_TYPES = {"Stop", "StopLimit", "TrailingStop", "MIT"}
-    covered = set()
+    def _normalise_contract_id(value: Any) -> int | str | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+
+    def _order_contract_id(order: dict[str, Any]) -> int | str | None:
+        return _normalise_contract_id(order.get("contractId") or (order.get("contract") or {}).get("id"))
+
+    def _order_type(order: dict[str, Any]) -> str:
+        return str(order.get("orderType") or order.get("ordType") or "").replace("_", "").lower()
+
+    def _order_action(order: dict[str, Any]) -> str:
+        return str(order.get("action") or order.get("orderAction") or order.get("side") or "").lower()
+
+    def _is_exit_order(order: dict[str, Any], net_pos: float) -> bool:
+        action = _order_action(order)
+        if not action:
+            return True
+        return (net_pos > 0 and action == "sell") or (net_pos < 0 and action == "buy")
+
+    stop_contracts: set[int | str] = set()
+    target_contracts: set[int | str] = set()
     for o in working_orders:
-        if o.get("orderType", "") not in _STOP_TYPES:
+        cid = _order_contract_id(o)
+        if cid is None:
             continue
-        cid = o.get("contractId") or (o.get("contract") or {}).get("id")
-        if cid is not None:
-            try:
-                covered.add(int(cid))
-            except (TypeError, ValueError):
-                covered.add(cid)
+        typ = _order_type(o)
+        if typ in {"stop", "stoplimit", "trailingstop"}:
+            stop_contracts.add(cid)
+        elif typ in {"limit", "mit", "marketiftouched"}:
+            target_contracts.add(cid)
 
     unprotected = []
     protected = []
+    open_positions = []
     for p in positions:
         net = p.get("netPos", 0)
-        if net == 0:
+        try:
+            net_qty = float(net)
+        except (TypeError, ValueError):
+            net_qty = 0.0
+        if net_qty == 0:
             continue
         raw_cid = p.get("contractId")
-        try:
-            cid = int(raw_cid) if raw_cid is not None else None
-        except (TypeError, ValueError):
-            cid = raw_cid
-        entry = {"contractId": raw_cid, "contractName": p.get("contractName"), "netPos": net, "netPrice": p.get("netPrice")}
-        if cid in covered:
+        cid = _normalise_contract_id(raw_cid)
+        matching_orders = [o for o in working_orders if _order_contract_id(o) == cid and _is_exit_order(o, net_qty)]
+        has_stop = any(_order_type(o) in {"stop", "stoplimit", "trailingstop"} for o in matching_orders)
+        has_target = any(_order_type(o) in {"limit", "mit", "marketiftouched"} for o in matching_orders)
+        missing = []
+        if not has_stop:
+            missing.append("stop")
+        if not has_target:
+            missing.append("target")
+        entry = {
+            "contractId": raw_cid,
+            "contractName": p.get("contractName"),
+            "netPos": net,
+            "netPrice": p.get("netPrice"),
+            "has_stop": has_stop,
+            "has_target": has_target,
+            "missing": missing,
+        }
+        open_positions.append(entry)
+        if has_stop and has_target:
             protected.append(entry)
         else:
             unprotected.append(entry)
 
     return {
         "unprotected": unprotected,
+        "missing_brackets": unprotected,
         "protected": protected,
+        "positions_checked": len(open_positions),
+        "open_positions_count": len(open_positions),
         "working_orders_count": len(working_orders),
-        "all_flat": len([p for p in positions if p.get("netPos", 0) != 0]) == 0,
+        "bracket_order_summary": {
+            "candidate_stop_contracts": sorted(stop_contracts, key=str),
+            "candidate_target_contracts": sorted(target_contracts, key=str),
+        },
+        "all_flat": len(open_positions) == 0,
         "status": "UNPROTECTED_EXPOSURE" if unprotected else "OK",
         "message": (
-            f"{len(unprotected)} unprotected position(s) — FLATTEN IMMEDIATELY" if unprotected
-            else "All positions protected" if protected
+            f"{len(unprotected)} position(s) missing stop/target bracket leg(s) — FLATTEN IMMEDIATELY" if unprotected
+            else "All open positions have stop and target brackets" if protected
             else "Account is flat"
         ),
         "environment": os.getenv("TRADOVATE_ENV", "demo").upper(),
