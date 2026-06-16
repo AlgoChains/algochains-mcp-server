@@ -126,6 +126,13 @@ def _first_number(row: dict, keys: tuple[str, ...]) -> float | None:
     return None
 
 
+def _positive_float(value: object) -> float | None:
+    parsed = _optional_float(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
+
+
 class TradovateConnector(BrokerConnector):
     """Tradovate futures connector — REST-only (OAuth2 via Token Guardian pattern).
 
@@ -748,13 +755,32 @@ class TradovateConnector(BrokerConnector):
                 bid_entry = entries.get("Bid", {})
                 ask_entry = entries.get("Offer", {})
                 trade_entry = entries.get("Trade", {})
+                bid_price = _positive_float(bid_entry.get("price"))
+                ask_price = _positive_float(ask_entry.get("price"))
+                trade_price = _positive_float(trade_entry.get("price"))
+                if bid_price is not None and ask_price is not None:
+                    midpoint = (bid_price + ask_price) / 2
+                else:
+                    midpoint = bid_price if bid_price is not None else ask_price
+                last_price = trade_price if trade_price is not None else midpoint
+                if last_price is None:
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — no trade, bid, or ask price",
+                        broker="tradovate",
+                    )
+                try:
+                    volume = int(trade_entry.get("size") or 0)
+                except (TypeError, ValueError):
+                    volume = 0
                 return Quote(
                     symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
-                    volume=int(trade_entry.get("size", 0)),
+                    bid=bid_price or 0.0,
+                    ask=ask_price or 0.0,
+                    last=last_price,
+                    volume=volume,
                 )
+        except BrokerQuoteError:
+            raise
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 

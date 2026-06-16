@@ -263,3 +263,60 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_uses_bid_ask_midpoint_when_trade_entry_missing():
+    """Bid/offer are valid live price evidence when Tradovate omits Trade."""
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": "MNQM6"}
+
+    async def _mock_get(path, params=None):
+        assert path == "/md/getQuote"
+        assert params == {"symbol": "MNQM6"}
+        return {
+            "entries": {
+                "Bid": {"price": 28750.25},
+                "Offer": {"price": 28750.75},
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+    assert quote.bid == 28750.25
+    assert quote.ask == 28750.75
+    assert quote.last == 28750.5
+
+
+def test_get_quote_fails_closed_when_trade_bid_and_ask_are_missing():
+    """All-zero/missing quote entries are still treated as no live market price."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_find_contract(symbol):
+        return {"name": "MNQM6"}
+
+    async def _mock_get(path, params=None):
+        return {
+            "entries": {
+                "Bid": {"price": 0},
+                "Offer": {"price": None},
+                "Trade": {"price": ""},
+            }
+        }
+
+    conn._find_contract = _mock_find_contract  # type: ignore
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="no trade, bid, or ask price"):
+        asyncio.run(_run())
