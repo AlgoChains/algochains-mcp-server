@@ -11,14 +11,12 @@ This enables the MCP server to self-identify its role in the dual-node setup.
 from __future__ import annotations
 
 import json
-import os
-import re
+import shlex
 import subprocess
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 
 from algochains_mcp.paths import default_heartbeat_paths
@@ -28,6 +26,17 @@ from algochains_mcp.paths import default_heartbeat_paths
 # actually writes the heartbeat, so the prior Linux-first order was inverted
 # for the desktop tower.
 _HEARTBEAT_PATHS = default_heartbeat_paths()
+
+# Desktop failover runs four Tradovate futures bots plus the Kalshi daemon.
+EXPECTED_DESKTOP_BOT_COUNT = 5
+
+BOT_SCRIPT_NAMES: dict[str, tuple[str, ...]] = {
+    "mnq": ("FUTURES_SCALPER_UPGRADED.py", "FUTURES_SCALPER.py", "FUTURES_SCALPER"),
+    "cl": ("CL_FUTURES_SCALPER.py", "CL_FUTURES_SCALPER"),
+    "mes": ("mes_swing_live.py", "mes_swing_live"),
+    "nq": ("nq_swing_live.py", "nq_swing_live"),
+    "kalshi": ("kalshi_daemon.py", "kalshi_daemon"),
+}
 
 
 @dataclass
@@ -40,6 +49,8 @@ class SystemHeartbeat:
     # Desktop state
     desktop_mode: str = "unknown"  # "primary" | "standby" | "mac"
     desktop_bots_running: int = 0
+    desktop_bots_expected: int = EXPECTED_DESKTOP_BOT_COUNT
+    desktop_bot_processes: dict[str, bool] = field(default_factory=dict)
     desktop_tailscale_active: bool = False
     # This node
     this_node: str = "unknown"  # "macbook" | "desktop"
@@ -63,20 +74,74 @@ def _read_heartbeat() -> tuple[dict, str]:
     return {}, ""
 
 
-def _count_running_bots() -> int:
-    """Count how many bot processes are running on this node."""
+def _command_from_ps_line(line: str) -> str:
+    """Return the COMMAND column from a ps aux output line."""
+    parts = line.split(None, 10)
+    return parts[10] if len(parts) >= 11 else ""
+
+
+def _command_tokens(command: str) -> list[str]:
     try:
-        result = subprocess.run(
-            ["ps", "aux"],
-            capture_output=True, text=True, timeout=5
-        )
-        count = 0
-        for pattern in ["FUTURES_SCALPER", "CL_FUTURES", "mes_swing", "nq_swing"]:
-            if pattern in result.stdout:
-                count += 1
-        return count
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return 0
+        return shlex.split(command)
+    except ValueError:
+        return command.split()
+
+
+def _is_python_eval(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    executable = Path(tokens[0]).name
+    return executable.startswith("python") and "-c" in tokens[1:]
+
+
+def _is_shell_eval(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+    executable = Path(tokens[0]).name
+    return executable in {"sh", "bash", "zsh"} and any(
+        arg in {"-c", "-lc"} for arg in tokens[1:]
+    )
+
+
+def matching_bot_key(command: str) -> str | None:
+    """Return the canonical bot key if a command is a live bot process."""
+    tokens = _command_tokens(command)
+    if not tokens or _is_python_eval(tokens) or _is_shell_eval(tokens):
+        return None
+
+    token_basenames = {Path(token).name for token in tokens}
+    for bot_key, script_names in BOT_SCRIPT_NAMES.items():
+        if token_basenames.intersection(script_names):
+            return bot_key
+    return None
+
+
+def scan_running_bot_keys(ps_output: str | None = None) -> set[str]:
+    """Return canonical bot keys currently running on this node."""
+    if ps_output is None:
+        try:
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            ps_output = result.stdout
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return set()
+
+    running: set[str] = set()
+    for line in ps_output.splitlines():
+        command = _command_from_ps_line(line)
+        bot_key = matching_bot_key(command)
+        if bot_key:
+            running.add(bot_key)
+    return running
+
+
+def _count_running_bots() -> int:
+    """Count how many canonical bot processes are running on this node."""
+    return len(scan_running_bot_keys())
 
 
 def _is_desktop() -> bool:
@@ -132,7 +197,12 @@ def get_system_heartbeat() -> SystemHeartbeat:
         hb.desktop_mode = "primary"  # Mac is offline, desktop is trading
 
     # Count local bots
-    hb.desktop_bots_running = _count_running_bots()
+    running = scan_running_bot_keys()
+    hb.desktop_bots_running = len(running)
+    hb.desktop_bots_expected = EXPECTED_DESKTOP_BOT_COUNT
+    hb.desktop_bot_processes = {
+        bot_key: bot_key in running for bot_key in BOT_SCRIPT_NAMES
+    }
 
     # Tailscale
     hb.desktop_tailscale_active = _check_tailscale()
