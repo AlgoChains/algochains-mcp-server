@@ -5999,7 +5999,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             last_log_mtime = None
             error_count = 0
             tail_preview = ""
-            if log_path.exists():
+            if log_path is not None and log_path.exists():
                 try:
                     last_log_mtime = int(now - log_path.stat().st_mtime)
                     # Read last 100 lines with tail for speed
