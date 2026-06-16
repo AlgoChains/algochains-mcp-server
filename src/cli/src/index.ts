@@ -35,7 +35,8 @@ import { daemonStart, daemonStop, daemonStatus, daemonLogs, daemonInstall, daemo
 import { killswitchOn, killswitchOff, killswitchStatus } from "./commands/killswitch.js";
 import { generateBashCompletion, generateFishCompletion, generatePowershellCompletion, generateZshCompletion } from "./commands/completion.js";
 import { installPlugin, listPlugins, removePlugin, printPluginList } from "./plugins/manager.js";
-import { addTrigger, listTriggers, setTriggerEnabled, removeTrigger, printTriggerList } from "./triggers/manager.js";
+import { addTrigger, listTriggers, setTriggerEnabled, removeTrigger, printTriggerList, executeTriggerById } from "./triggers/manager.js";
+import { runCronRetries, isRetryableConnectionError, removeTriggerRetry } from "./triggers/retry.js";
 import { readAuditLog, appendAuditLog } from "./trust.js";
 import { loadConfig, writeDefaultConfig } from "./config.js";
 import { createMcpClient, extractText } from "./mcp_client.js";
@@ -321,6 +322,34 @@ triggerCmd.command("enable <id>")
 triggerCmd.command("remove <id>")
   .description("Remove a trigger by ID")
   .action((id) => { removeTrigger(id); console.log(`  ✓ Trigger ${id} removed`); });
+
+triggerCmd.command("retry")
+  .description("Retry failed cron triggers with exponential backoff on connection recovery")
+  .option("--json", "output structured JSON")
+  .action(async (opts: { json?: boolean }) => {
+    const result = await runCronRetries(async (triggerId, command) => {
+      try {
+        await executeTriggerById(triggerId);
+      } catch (error) {
+        if (isRetryableConnectionError(error)) {
+          throw error;
+        }
+        // Non-retryable failures should not remain queued.
+        removeTriggerRetry(triggerId);
+        throw error;
+      }
+    });
+
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      for (const line of result.lines) {
+        console.log(line);
+      }
+    }
+
+    process.exit(result.status === "failed" ? 1 : 0);
+  });
 
 // ── config ─────────────────────────────────────────────────────────────────────
 const configCmd = program.command("config").description("CLI configuration management");
