@@ -5,7 +5,7 @@ import pytest
 
 from algochains_mcp.brokers.base import AccountInfo, Order, OrderSide, OrderStatus, OrderType, Quote
 from algochains_mcp import trading_guardrails as tg
-from algochains_mcp.server import _compute_consecutive_losses_from_fills
+from algochains_mcp.server import _compute_consecutive_losses_from_fills, _get_recent_fills_for_guardrail
 
 
 @pytest.fixture
@@ -115,7 +115,9 @@ def test_place_order_uses_fresh_broker_winner_over_stale_signal_health(
     monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
 
     class FakeBroker:
-        async def get_fills(self):
+        async def get_fills(self, order_id=None, symbol=None, since_seconds=60):
+            if symbol != "MNQ":
+                return []
             return [
                 SimpleNamespace(realized_pnl=-12.50),
                 SimpleNamespace(realized_pnl=8.25),
@@ -178,6 +180,18 @@ def test_place_order_uses_fresh_broker_winner_over_stale_signal_health(
 
     assert payload["id"] == "ok-1"
     assert payload["status"] == OrderStatus.ACCEPTED.value
+
+
+def test_guardrail_fill_lookup_keeps_legacy_no_arg_brokers():
+    class LegacyBroker:
+        async def get_fills(self):
+            return [SimpleNamespace(realized_pnl=7.25)]
+
+    import asyncio
+
+    fills = asyncio.run(_get_recent_fills_for_guardrail(LegacyBroker(), "MNQ"))
+
+    assert fills[0].realized_pnl == 7.25
 
 
 def test_place_order_fails_closed_when_market_price_unavailable(

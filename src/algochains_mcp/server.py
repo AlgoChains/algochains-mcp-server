@@ -31,6 +31,7 @@ Start with:  algochains-mcp  (or python -m algochains_mcp.server)
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -699,6 +700,28 @@ def _compute_consecutive_losses_from_fills(fills: Any) -> tuple[int, bool]:
         else:
             return consecutive_losses, True
     return consecutive_losses, True
+
+
+def _accepts_keyword(func: Any, keyword: str) -> bool:
+    """Return whether a callable can accept a keyword argument."""
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return True
+    return any(
+        param.name == keyword or param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    )
+
+
+async def _get_recent_fills_for_guardrail(conn: Any, symbol: str) -> Any:
+    """Fetch recent fills using the narrowest broker-supported filter."""
+    get_fills = getattr(conn, "get_fills", None)
+    if not callable(get_fills):
+        return []
+    if symbol and _accepts_keyword(get_fills, "symbol"):
+        return await get_fills(symbol=symbol)
+    return await get_fills()
 
 
 def _get_validator() -> StrategyValidator:
@@ -5620,7 +5643,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 _loss_streak_from_fills = False
                 _fills_api_err_str: str = ""  # persist outside except block (Python 3 deletes except-vars)
                 try:
-                    _fills = await conn.get_fills()
+                    _fills = await _get_recent_fills_for_guardrail(conn, _symbol)
                     _fills_source_ok = True
                     _consecutive_losses, _loss_streak_from_fills = _compute_consecutive_losses_from_fills(_fills)
                 except Exception as _fills_err:
