@@ -7,7 +7,7 @@ Operator/system prompts often *describe* attack phrases (e.g. "never reveal
 system prompt") for defensive guidance. Scanning those trusted roles causes
 false positives that trip skill circuit breakers (adaptive-brain,
 crew-orchestrator, slack-command-listener, output-auditor, fat-finger-protection,
-crew-handoff-router).
+crew-handoff-router, chief-productivity-officer, cron-doctor).
 
 By default, trusted roles (system, system_prompt, developer) are NOT scanned.
 Set PROMPT_GUARD_SCAN_SYSTEM=1 to enforce scanning on every role.
@@ -29,6 +29,89 @@ TRUSTED_ROLES: frozenset[str] = frozenset({"system", "system_prompt", "developer
 # Roles that must always be scanned even when scan_system is enabled for others.
 UNTRUSTED_ROLES: frozenset[str] = frozenset(
     {"user", "human", "assistant", "tool", "function", "model"}
+)
+
+# Labels that introduce operator-authored attack-phrase catalogs (Prohibited:/Examples:).
+_CATALOG_HEADER_WORDS: frozenset[str] = frozenset(
+    {
+        "examples",
+        "example",
+        "injections",
+        "injection",
+        "patterns",
+        "pattern",
+        "attacks",
+        "attack",
+        "phrases",
+        "phrase",
+        "prohibited",
+        "blocked",
+        "banned",
+        "forbidden",
+        "deny",
+        "denied",
+        "monitor",
+        "detect",
+        "catalog",
+        "security",
+        "t094",
+        "e",
+        "g",
+    }
+)
+
+# Single-token prefixes that indicate defensive guidance immediately before a match.
+_DEFENSIVE_PREFIX_TOKENS: frozenset[str] = frozenset(
+    {
+        "never",
+        "not",
+        "no",
+        "block",
+        "blocked",
+        "blocking",
+        "prevent",
+        "avoid",
+        "stop",
+        "refuse",
+        "reject",
+        "decline",
+        "deny",
+        "against",
+        "without",
+        "unless",
+        "dont",
+        "don't",
+        "including",
+        "include",
+        "includes",
+        "like",
+        "say",
+        "type",
+        "e",
+        "g",
+        "examples",
+        "example",
+        "injections",
+        "injection",
+        "patterns",
+        "pattern",
+        "attacks",
+        "attack",
+        "phrases",
+        "phrase",
+        "prohibited",
+        "banned",
+        "forbidden",
+        "or",
+        "and",
+        "cannot",
+        "cant",
+        "can't",
+        "scan",
+        "detect",
+        "flag",
+        "monitor",
+    }
 )
 
 
@@ -66,6 +149,7 @@ def _compile_patterns() -> tuple[_InjectionPattern, ...]:
 
 
 INJECTION_PATTERNS: tuple[_InjectionPattern, ...] = _compile_patterns()
+INJECTION_PATTERN_COUNT: int = len(INJECTION_PATTERNS)
 
 
 def scan_system_prompts_enabled() -> bool:
@@ -108,67 +192,53 @@ def _should_scan_role(role: str, *, scan_system: bool) -> bool:
     return True
 
 
-def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
-    """True when *reveal system prompt* appears in operator defensive guidance."""
+def _line_before_match(text: str, match: re.Match[str]) -> str:
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    return text[line_start : match.start()]
+
+
+def _is_catalog_header_line(line_prefix: str) -> bool:
+    """True when the current line begins with an operator catalog label."""
+    if ":" not in line_prefix:
+        return False
+    header = line_prefix.split(":", 1)[0]
+    if "t094" in header.lower():
+        return True
+    header_tokens = re.findall(r"[A-Za-z0-9']+", header)
+    if not header_tokens:
+        return False
+    return header_tokens[-1].lower() in _CATALOG_HEADER_WORDS
+
+
+def _is_defensive_catalog_context(text: str, match: re.Match[str]) -> bool:
+    """True when a pattern appears inside operator defensive guidance, not an attack."""
     prefix = text[: match.start()]
     stripped_prefix = prefix.rstrip()
-    if stripped_prefix.endswith(("(", "[", "/")):
+    if stripped_prefix.endswith(("(", "[", "/", "`", "'", '"', "-", "*", "•")):
         return True
+
+    line_prefix = _line_before_match(text, match)
+    if _is_catalog_header_line(line_prefix):
+        return True
+
     if stripped_prefix.endswith(":"):
         doc_tokens = re.findall(r"[A-Za-z']+", prefix)
-        if doc_tokens and doc_tokens[-1].lower() in {
-            "examples",
-            "example",
-            "injections",
-            "injection",
-            "patterns",
-            "pattern",
-            "attacks",
-            "attack",
-            "phrases",
-            "phrase",
-            "e",
-            "g",
-        }:
+        if doc_tokens and doc_tokens[-1].lower() in _CATALOG_HEADER_WORDS:
             return True
+
+    # Bullet item at line start: "- reveal system prompt"
+    bullet_line = line_prefix.lstrip()
+    if not bullet_line and match.start() > 0:
+        return False
+    if re.match(r"^[-*•]\s*$", bullet_line):
+        return True
 
     tokens = re.findall(r"[A-Za-z']+", prefix)
     if not tokens:
         return False
 
     last = tokens[-1].lower()
-    if last in {
-        "never",
-        "not",
-        "no",
-        "block",
-        "prevent",
-        "avoid",
-        "stop",
-        "refuse",
-        "reject",
-        "decline",
-        "deny",
-        "against",
-        "without",
-        "unless",
-        "dont",
-        "don't",
-        "including",
-        "like",
-        "e",
-        "g",
-        "examples",
-        "example",
-        "injections",
-        "injection",
-        "patterns",
-        "pattern",
-        "attacks",
-        "attack",
-        "phrases",
-        "phrase",
-    }:
+    if last in _DEFENSIVE_PREFIX_TOKENS:
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "do" and last == "not":
         return True
@@ -181,6 +251,9 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "try",
         "asks",
         "ask",
+        "asked",
+        "told",
+        "instructed",
     } and last == "to":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() in {
@@ -189,24 +262,42 @@ def _is_defensive_reveal_match(text: str, match: re.Match[str]) -> bool:
         "decline",
     } and last == "to":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch"} and last == "as":
+    if len(tokens) >= 2 and tokens[-2].lower() in {"such", "for", "watch", "monitor"} and last == "as":
         return True
-    if len(tokens) >= 2 and tokens[-2].lower() == "watch" and last == "for":
+    if len(tokens) >= 2 and tokens[-2].lower() in {
+        "watch",
+        "monitor",
+        "scan",
+        "detect",
+        "flag",
+    } and last == "for":
         return True
     if len(tokens) >= 2 and tokens[-2].lower() == "e" and last == "g":
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() == "may" and last in {
+        "say",
+        "type",
+        "ask",
+        "try",
+        "attempt",
+    }:
+        return True
+    if len(tokens) >= 2 and tokens[-2].lower() in {"users", "user"} and last == "may":
         return True
     return False
 
 
-def find_injection_pattern(text: str) -> Optional[_InjectionPattern]:
+def find_injection_pattern(
+    text: str,
+    *,
+    allow_catalog_context: bool = False,
+) -> Optional[_InjectionPattern]:
     """Return the first injection pattern matched in *text*, if any."""
     if not text:
         return None
     for pattern in INJECTION_PATTERNS:
         for match in pattern.regex.finditer(text):
-            if pattern.name == "reveal system prompt" and _is_defensive_reveal_match(
-                text, match
-            ):
+            if allow_catalog_context and _is_defensive_catalog_context(text, match):
                 continue
             return pattern
     return None
@@ -226,7 +317,8 @@ def check_prompt_text(
         return None
 
     body = _normalize_content(content)
-    matched = find_injection_pattern(body)
+    allow_catalog = normalized_role in TRUSTED_ROLES and scan_system
+    matched = find_injection_pattern(body, allow_catalog_context=allow_catalog)
     if matched is None:
         return None
 
