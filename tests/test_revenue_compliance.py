@@ -159,16 +159,25 @@ def test_included_quota_for_tier():
 
 def test_new_tools_registered_and_money_tools_owner_only():
     from algochains_mcp.server import TOOLS, TIER1_TOOL_NAMES
+    from algochains_mcp.tool_danger_tiers import TIER_ORDER_EXEC, get_danger_tier
+
     names = {t.name for t in TOOLS}
     tier1_tools = {
         "get_my_usage", "create_referral_code", "get_my_referrals",
-        "get_referral_earnings", "create_creator_onboarding_link",
-        "get_my_creator_earnings", "get_my_realized_pnl", "accept_subscriber_terms",
+        "get_referral_earnings", "get_my_realized_pnl", "accept_subscriber_terms",
     }
     for t in tier1_tools:
         assert t in names, f"{t} not registered in TOOLS"
         assert t in TIER1_TOOL_NAMES, f"{t} missing from TIER1"
-    # Money / ledger movers must NEVER be in smart mode.
-    for t in ("run_creator_payouts", "reconcile_creator_pnl"):
+
+    # Money movers, payout-routing account setup, and private creator financials
+    # must NEVER be callable in smart mode without owner authorization.
+    for t in (
+        "create_creator_onboarding_link",
+        "get_my_creator_earnings",
+        "run_creator_payouts",
+        "reconcile_creator_pnl",
+    ):
         assert t in names
         assert t not in TIER1_TOOL_NAMES, f"{t} must be owner-only, not TIER1"
+        assert get_danger_tier(t) >= TIER_ORDER_EXEC

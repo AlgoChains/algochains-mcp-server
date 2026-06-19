@@ -2,8 +2,8 @@
 -- Migration: 20260523_subscriber_copytrade.sql
 -- Apply via: supabase db push (mcp-server project)
 --
--- Referenced by subscriber_auth.py as "20260420_subscriber_copytrade.sql" —
--- this migration supersedes that reference and creates all required tables.
+-- Referenced by subscriber_auth.py. This migration creates the core
+-- subscriber copy-trade tables; later migrations may extend the key metadata.
 --
 -- Creates:
 --   1. subscriber_api_keys         — hashed sub_live_*/sub_test_* keys

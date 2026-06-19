@@ -390,18 +390,26 @@ def get_ai_pipeline_health(bot_id: str = "mnq") -> dict:
 
 def get_all_bot_ops_status() -> dict:
     """Get bracket status, position state, and process status for all 4 bots."""
+    from .heartbeat import matching_bot_key, scan_running_bot_keys
+
+    def _command_from_ps_line(line: str) -> str:
+        parts = line.split(None, 10)
+        return parts[10] if len(parts) >= 11 else ""
+
     result = {}
-    import re as _re
     ps_output = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
+    running_bots = scan_running_bot_keys(ps_output)
     for bot_id, cfg in BOT_MAP.items():
-        running = any(cfg["grep"] in line and "grep" not in line for line in ps_output.splitlines())
+        running = bot_id in running_bots
         pid = None
         for line in ps_output.splitlines():
-            if cfg["grep"] in line and "grep" not in line:
+            if matching_bot_key(_command_from_ps_line(line)) == bot_id:
                 parts = line.split()
                 if len(parts) > 1:
-                    try: pid = int(parts[1])
-                    except ValueError: pass
+                    try:
+                        pid = int(parts[1])
+                    except ValueError:
+                        pass
                 break
         result[bot_id] = {
             "running": running,
@@ -416,33 +424,61 @@ def get_all_bot_ops_status() -> dict:
 
 # ── V2: Bracket integrity tools ───────────────────────────────────────────────
 
-def check_unprotected_positions() -> dict:
-    """
-    Cross-check open positions vs working orders to detect unprotected exposure.
-    An unprotected position (open, no stop/target orders) caused the Apr 14 2026
-    -$4,917 incident. Run this before any P&L report or status check.
+_NON_MNQ_BOTS = ("cl", "mes", "nq")
+_STOP_ORDER_TYPES = {"Stop", "StopLimit", "TrailingStop", "MIT"}
+_TARGET_ORDER_TYPES = {"Limit"}
 
-    Returns status: OK | UNPROTECTED_EXPOSURE | ERROR
-    """
+
+def _normalize_contract_id(raw: Any) -> int | str | None:
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return raw
+
+
+def _order_contract_id(order: dict[str, Any]) -> int | str | None:
+    raw = order.get("contractId") or (order.get("contract") or {}).get("id")
+    return _normalize_contract_id(raw)
+
+
+def _position_contract_id(position: dict[str, Any]) -> int | str | None:
+    return _normalize_contract_id(position.get("contractId"))
+
+
+def _is_mnq_contract(contract_name: str | None) -> bool:
+    if not contract_name:
+        return False
+    root = contract_name.upper().split(".")[0].split("-")[0]
+    return root.startswith("MNQ")
+
+
+def _load_tradovate_env() -> None:
     import sys
+
     ct = str(CONTROL_TOWER)
     if ct not in sys.path:
         sys.path.insert(0, ct)
     try:
         from dotenv import load_dotenv
+
         load_dotenv(CONTROL_TOWER / ".env")
     except ImportError:
         pass
+
+
+def _fetch_tradovate_book() -> dict[str, Any]:
+    """Authenticate to Tradovate and return open positions + working orders."""
+    _load_tradovate_env()
 
     try:
         from tradovate_client import TradovateClient
     except ImportError as e:
         return {"error": f"Cannot import tradovate_client: {e}", "status": "ERROR"}
 
-    # BUG-05 FIX: Never silently default to "demo" — wrong environment means silently
-    # checking the wrong book and reporting "OK" when live is exposed.
-    _env = os.getenv("TRADOVATE_ENV")
-    if not _env:
+    env = os.getenv("TRADOVATE_ENV")
+    if not env:
         return {
             "error": "TRADOVATE_ENV not set — cannot determine which account to check",
             "status": "CONFIG_ERROR",
@@ -453,7 +489,7 @@ def check_unprotected_positions() -> dict:
         client = TradovateClient(
             cid=os.getenv("TRADOVATE_CID"),
             secret=os.getenv("TRADOVATE_SECRET"),
-            env=_env,
+            env=env,
         )
         client.authenticate()
         positions = client.get_positions()
@@ -468,18 +504,167 @@ def check_unprotected_positions() -> dict:
     except Exception as e:
         return {"error": f"Tradovate connection failed: {e}", "status": "ERROR"}
 
-    # Only stop-type orders actually protect a position
-    _STOP_TYPES = {"Stop", "StopLimit", "TrailingStop", "MIT"}
+    return {
+        "status": "OK",
+        "positions": positions,
+        "working_orders": working_orders,
+        "environment": env.upper(),
+    }
+
+
+def _local_non_mnq_exposure() -> list[dict[str, Any]]:
+    """Return CL/MES/NQ bot state files that still show open exposure."""
+    exposure: list[dict[str, Any]] = []
+    for bot_id in _NON_MNQ_BOTS:
+        state = get_position_state(bot_id)
+        qty = int(state.get("qty", 0) or 0)
+        flat = bool(state.get("flat", qty == 0))
+        if flat or qty == 0:
+            continue
+        exposure.append(
+            {
+                "bot": bot_id,
+                "symbol": state.get("symbol", SYMBOL_MAP.get(bot_id, bot_id.upper())),
+                "qty": qty,
+                "direction": state.get("direction"),
+                "entry_price": state.get("entry_price"),
+            }
+        )
+    return exposure
+
+
+def format_bracket_integrity_line(result: dict[str, Any]) -> str:
+    """Single-line summary for BRACKET-INTEGRITY-MONITOR Slack posts."""
+    status = str(result.get("status", "ERROR")).upper()
+    prefix = {
+        "OK": "[OK]",
+        "ALERT": "[ALERT]",
+        "DEGRADED": "[DEGRADED]",
+        "ERROR": "[ERROR]",
+        "CONFIG_ERROR": "[ERROR]",
+    }.get(status, "[ERROR]")
+    if status == "OK":
+        count = int(result.get("checked_count", 0) or 0)
+        return f"{prefix} All non-MNQ positions have stop+target brackets ({count} checked)"
+    return f"{prefix} {result.get('message', 'bracket integrity check failed')}"
+
+
+def bracket_integrity_check() -> dict[str, Any]:
+    """
+    Live broker verification for non-MNQ positions: each open position must have
+    BOTH a working stop and a working target order.
+
+    Returns status: OK | ALERT | DEGRADED | ERROR | CONFIG_ERROR
+    """
+    book = _fetch_tradovate_book()
+    if book.get("status") in {"ERROR", "CONFIG_ERROR"}:
+        payload = dict(book)
+        payload["checked_count"] = 0
+        payload["formatted_line"] = format_bracket_integrity_line(payload)
+        return payload
+
+    positions = book["positions"]
+    working_orders = book["working_orders"]
+    stops_by_contract: dict[Any, list[dict[str, Any]]] = {}
+    targets_by_contract: dict[Any, list[dict[str, Any]]] = {}
+
+    for order in working_orders:
+        cid = _order_contract_id(order)
+        if cid is None:
+            continue
+        order_type = order.get("orderType", "")
+        if order_type in _STOP_ORDER_TYPES:
+            stops_by_contract.setdefault(cid, []).append(order)
+        elif order_type in _TARGET_ORDER_TYPES:
+            targets_by_contract.setdefault(cid, []).append(order)
+
+    checked: list[dict[str, Any]] = []
+    missing_brackets: list[dict[str, Any]] = []
+    for position in positions:
+        net = position.get("netPos", 0)
+        if not net:
+            continue
+        contract_name = position.get("contractName") or (position.get("contract") or {}).get("name")
+        if _is_mnq_contract(contract_name):
+            continue
+
+        cid = _position_contract_id(position)
+        has_stop = bool(stops_by_contract.get(cid))
+        has_target = bool(targets_by_contract.get(cid))
+        entry = {
+            "contractId": position.get("contractId"),
+            "contractName": contract_name,
+            "netPos": net,
+            "netPrice": position.get("netPrice"),
+            "has_stop": has_stop,
+            "has_target": has_target,
+        }
+        checked.append(entry)
+        if not (has_stop and has_target):
+            missing_brackets.append(
+                {
+                    **entry,
+                    "missing_stop": not has_stop,
+                    "missing_target": not has_target,
+                }
+            )
+
+    local_exposure = _local_non_mnq_exposure()
+    checked_count = len(checked)
+    status = "OK"
+    if missing_brackets:
+        status = "ALERT"
+        message = (
+            f"{len(missing_brackets)} non-MNQ position(s) missing stop and/or target brackets"
+        )
+    elif local_exposure and checked_count == 0:
+        status = "DEGRADED"
+        message = (
+            f"Broker returned 0 non-MNQ positions but {len(local_exposure)} bot state file(s) "
+            "show open CL/MES/NQ exposure — bracket verification failed open"
+        )
+    elif checked_count == 0:
+        message = "All non-MNQ positions flat (0 checked)"
+    else:
+        message = f"All {checked_count} non-MNQ position(s) have stop+target brackets"
+
+    payload = {
+        "status": status,
+        "message": message,
+        "checked_count": checked_count,
+        "positions_checked": checked,
+        "missing_brackets": missing_brackets,
+        "local_exposure": local_exposure,
+        "working_orders_count": len(working_orders),
+        "environment": book.get("environment"),
+        "source": "live_broker",
+    }
+    payload["formatted_line"] = format_bracket_integrity_line(payload)
+    return payload
+
+
+def check_unprotected_positions() -> dict:
+    """
+    Cross-check open positions vs working orders to detect unprotected exposure.
+    An unprotected position (open, no stop/target orders) caused the Apr 14 2026
+    -$4,917 incident. Run this before any P&L report or status check.
+
+    Returns status: OK | UNPROTECTED_EXPOSURE | ERROR
+    """
+    book = _fetch_tradovate_book()
+    if book.get("status") in {"ERROR", "CONFIG_ERROR"}:
+        return book
+
+    positions = book["positions"]
+    working_orders = book["working_orders"]
+
     covered = set()
     for o in working_orders:
-        if o.get("orderType", "") not in _STOP_TYPES:
+        if o.get("orderType", "") not in _STOP_ORDER_TYPES:
             continue
-        cid = o.get("contractId") or (o.get("contract") or {}).get("id")
+        cid = _order_contract_id(o)
         if cid is not None:
-            try:
-                covered.add(int(cid))
-            except (TypeError, ValueError):
-                covered.add(cid)
+            covered.add(cid)
 
     unprotected = []
     protected = []
@@ -509,7 +694,7 @@ def check_unprotected_positions() -> dict:
             else "All positions protected" if protected
             else "Account is flat"
         ),
-        "environment": os.getenv("TRADOVATE_ENV", "demo").upper(),
+        "environment": book.get("environment", os.getenv("TRADOVATE_ENV", "demo").upper()),
     }
 
 
@@ -518,29 +703,58 @@ def get_bracket_guardian_status() -> dict:
     Read the bracket integrity guardian state file.
     Returns whether the guardian is running, last check time, any unprotected positions
     it has flagged, and whether auto-flatten has fired.
+
+    When the guardian reports zero positions (or is inactive), also runs a live
+    broker bracket_integrity_check so watchdogs cannot fail-open with
+    "0 checked" without verifying Tradovate.
     """
     state_path = CONTROL_TOWER / "state" / "bracket_guardian_state.json"
+    result: dict[str, Any]
     if not state_path.exists():
-        return {
+        result = {
             "guardian_active": False,
             "detail": "bracket_guardian_state.json not found — guardian may not be running",
             "action": "Load com.algochains.bracket-guardian plist to activate",
+            "positions_count": 0,
+            "working_orders_count": 0,
+            "status": "DEGRADED",
         }
-    try:
-        data = json.loads(state_path.read_text())
-        unprotected_since = data.get("unprotected_since", {})
-        last_check = data.get("last_check", "unknown")
-        return {
-            "guardian_active": True,
-            "last_check": last_check,
-            "positions_count": data.get("positions_count", 0),
-            "working_orders_count": data.get("working_orders_count", 0),
-            "currently_unprotected": list(unprotected_since.keys()),
-            "unprotected_since": unprotected_since,
-            "status": "ALERT" if unprotected_since else "OK",
-        }
-    except Exception as e:
-        return {"guardian_active": False, "error": str(e)}
+    else:
+        try:
+            data = json.loads(state_path.read_text())
+            unprotected_since = data.get("unprotected_since", {})
+            result = {
+                "guardian_active": True,
+                "last_check": data.get("last_check", "unknown"),
+                "positions_count": data.get("positions_count", 0),
+                "working_orders_count": data.get("working_orders_count", 0),
+                "currently_unprotected": list(unprotected_since.keys()),
+                "unprotected_since": unprotected_since,
+                "status": "ALERT" if unprotected_since else "OK",
+            }
+        except Exception as e:
+            result = {
+                "guardian_active": False,
+                "error": str(e),
+                "positions_count": 0,
+                "status": "DEGRADED",
+            }
+
+    positions_count = int(result.get("positions_count", 0) or 0)
+    if positions_count == 0 or not result.get("guardian_active"):
+        live = bracket_integrity_check()
+        result["live_check"] = live
+        result["checked_count"] = live.get("checked_count", 0)
+        result["formatted_line"] = live.get("formatted_line") or format_bracket_integrity_line(live)
+        live_status = str(live.get("status", "ERROR")).upper()
+        if live_status != "OK":
+            result["status"] = live_status
+            result["message"] = live.get("message")
+        elif result.get("status") != "ALERT":
+            result["status"] = "OK"
+            result["message"] = live.get("message")
+
+    return result
 
 
 # ── Owner-gated destructive ops ───────────────────────────────────────────────
