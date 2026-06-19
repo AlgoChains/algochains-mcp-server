@@ -105,6 +105,7 @@ class GuardrailReason(Enum):
     CONSECUTIVE_LOSSES = "consecutive_losses"
     POSITION_SIZE = "position_size"
     NOTIONAL_LIMIT = "notional_limit"
+    MARKET_PRICE_UNAVAILABLE = "market_price_unavailable"
     VIX_KILL = "vix_kill"
     AI_LOOP_DETECTED = "ai_loop_detected"
     TOOL_RATE_LIMIT = "tool_rate_limit"

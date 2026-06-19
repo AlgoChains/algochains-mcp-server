@@ -263,3 +263,53 @@ def test_get_account_raises_when_snapshot_has_no_numeric_balance():
 
     with pytest.raises(BrokerConnectionError, match="numeric balance"):
         asyncio.run(_run())
+
+
+def test_get_quote_uses_bid_ask_midpoint_when_trade_missing():
+    """Tradovate can return bid/ask updates without a Trade entry."""
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/contract/find":
+            return {"name": "MNQZ5"}
+        if path == "/md/getQuote":
+            return {
+                "entries": {
+                    "Bid": {"price": "21100.25"},
+                    "Offer": {"price": "21100.75"},
+                }
+            }
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    quote = asyncio.run(_run())
+
+    assert quote.bid == 21100.25
+    assert quote.ask == 21100.75
+    assert quote.last == 21100.5
+
+
+def test_get_quote_raises_when_all_prices_missing():
+    """A quote with no usable price evidence must stay fail-closed."""
+    from algochains_mcp.errors import BrokerQuoteError
+
+    conn = _make_connector()
+
+    async def _mock_get(path, params=None, *args, **kwargs):
+        if path == "/contract/find":
+            return {"name": "MNQZ5"}
+        if path == "/md/getQuote":
+            return {"entries": {"Bid": {}, "Offer": {}, "Trade": {}}}
+        raise AssertionError(f"Unexpected Tradovate path: {path}")
+
+    conn._get = _mock_get  # type: ignore
+
+    async def _run():
+        return await conn.get_quote("MNQ")
+
+    with pytest.raises(BrokerQuoteError, match="no bid/ask/trade price"):
+        asyncio.run(_run())

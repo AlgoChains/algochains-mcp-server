@@ -17,6 +17,7 @@ from typing import Optional
 
 # Resolve control tower path (works on Mac and Desktop WSL).
 # Uses the shared helper so ALGOCHAINS_CONTROL_TOWER env is honored everywhere.
+from algochains_mcp.bot_log_paths import BOT_LOG_CANDIDATES, bot_log_path
 from algochains_mcp.paths import default_control_tower
 
 CONTROL_TOWER = default_control_tower()
@@ -26,13 +27,9 @@ try:
 except Exception:
     pass
 
-BOT_LOG_PATHS: dict[str, Path] = {
-    "mnq": CONTROL_TOWER / "logs" / "futures_bot_live.log",
-    "cl":  CONTROL_TOWER / "logs" / "cl_futures_live.log",
-    # mes_swing.log and nq_swing.log are stale backup files — use the live paths
-    "mes": CONTROL_TOWER / "logs" / "mes_swing_live.log",
-    "nq":  CONTROL_TOWER / "logs" / "nq_swing_live.log",
-}
+def _bot_log_path(bot_id: str) -> Optional[Path]:
+    """Resolve freshest live log, including legacy aliases (e.g. cl_bot_live.log)."""
+    return bot_log_path(CONTROL_TOWER, bot_id)
 
 BOT_META: dict[str, dict] = {
     "mnq": {
@@ -71,6 +68,13 @@ BOT_META: dict[str, dict] = {
         "asset_class": "futures",
         "timeframe": "15min",
     },
+}
+
+# Back-compat export: canonical log paths (keys used for bot iteration).
+BOT_LOG_PATHS: dict[str, Path] = {
+    bot_id: CONTROL_TOWER / BOT_LOG_CANDIDATES[bot_id][0]
+    for bot_id in BOT_META
+    if bot_id in BOT_LOG_CANDIDATES
 }
 
 
@@ -340,7 +344,7 @@ def parse_bot_metrics_from_supabase(bot_id: str, sb_client=None) -> BotMetrics |
     metrics.avg_fill_deviation_ticks = _avg("fill_deviation_ticks")
     metrics.avg_exit_slippage_ticks = _avg("exit_slippage_ticks")
     try:
-        log_path = BOT_LOG_PATHS.get(bot_id)
+        log_path = _bot_log_path(bot_id)
         if log_path and log_path.exists():
             metrics.last_log_age_sec = time.time() - log_path.stat().st_mtime
             metrics.is_running = metrics.last_log_age_sec < 300
@@ -355,7 +359,7 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
     """
     bot_id = bot_id.lower()
     meta = BOT_META.get(bot_id, {})
-    log_path = BOT_LOG_PATHS.get(bot_id)
+    log_path = _bot_log_path(bot_id)
 
     supabase_metrics = parse_bot_metrics_from_supabase(bot_id)
     if supabase_metrics is not None:
@@ -417,4 +421,4 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
 
 def parse_all_bots() -> dict[str, BotMetrics]:
     """Parse metrics for all 4 live bots. Returns dict keyed by bot_id."""
-    return {bot_id: parse_bot_metrics(bot_id) for bot_id in BOT_LOG_PATHS}
+    return {bot_id: parse_bot_metrics(bot_id) for bot_id in BOT_META}
