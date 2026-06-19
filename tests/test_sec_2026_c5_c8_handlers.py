@@ -16,6 +16,15 @@ def _handler_test_env(monkeypatch):
     """Full mode + clean guardrail state so handlers are reachable in isolation."""
     monkeypatch.setenv("OWNER_API_TOKEN", "test-owner-secret")
     monkeypatch.setenv("ALGOCHAINS_TOOL_MODE", "full")
+    # call_tool reads `cfg = _config or load_config()`, and tool handlers cache the
+    # module-global `_config` on first use. A prior smart-mode call in the suite can
+    # therefore pin `_config` to smart, making the env var above a no-op. Force a
+    # full-mode config object directly so these direct-dispatch gates are reachable
+    # regardless of test ordering (monkeypatch restores the original afterward).
+    import algochains_mcp.server as srv
+    from algochains_mcp.config import load_config
+
+    monkeypatch.setattr(srv, "_config", load_config())
     from algochains_mcp.trading_guardrails import get_guardrails
 
     g = get_guardrails()
