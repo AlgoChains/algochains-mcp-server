@@ -12,14 +12,15 @@
 
 > **The only MCP server with live futures bots, real fill data, real-time ML inference, and 503 tools across 20 domains — all backed by real APIs, zero synthetic data.**
 
-Connect your AI assistant (Claude, Cursor, ChatGPT) to your trading infrastructure in 3 commands. Ask Claude "What's my MNQ P&L today?" — it calls Tradovate, gets the real answer, and tells you.
+Connect your AI assistant (Claude, Cursor, ChatGPT) to your trading infrastructure in 3 commands. Ask Claude "What's my paper P&L today?" — it reads your AlgoChains virtual paper account and tells you. No broker required.
 
 ```
-You ask Claude:                    Claude calls:                    Server calls:
-"What's my NQ position?"   →  get_positions()           →  Tradovate API → real data
-"Run a backtest on MNQ"    →  run_backtest()             →  Databento tick archive
-"Is the market trending?"  →  detect_market_regime()    →  Polygon + FRED → analysis
-"Check my MNQ bot health"  →  get_bot_health(bot="MNQ") →  launchd + logs → live state
+You ask Claude:                       Claude calls:                    Server calls:
+"What's my paper P&L?"        →  get_my_portfolio()        →  AlgoChains paper account → real signals
+"What signals did MNQ fire?"  →  get_signal_stream()       →  copy-trade signal feed → live bot output
+"Run a backtest on MNQ"       →  run_backtest()             →  Databento tick archive
+"Is the market trending?"     →  detect_market_regime()    →  Polygon + FRED → analysis
+"What's my live NQ position?" →  get_positions()           →  Tradovate API → real data  (live users)
 ```
 
 ---
@@ -37,99 +38,11 @@ python scripts/quickstart.py --generate-config cursor
 python scripts/quickstart.py --mode demo
 ```
 
-That's it. Your AI now has 168 tools (smart mode) available immediately. Add broker credentials for live trading access. See [Option C](#option-c-full-live-setup) for live credentials.
+That's it. Your AI now has 168 tools (smart mode) available immediately.
 
----
+**Recommended next step — no broker needed:** Sign up at [algochains.ai](https://algochains.ai) for a free hosted virtual paper account, set `ALGOCHAINS_SUBSCRIBER_KEY=sub_live_…`, and start copy-trading MNQ signals instantly. See [Option B](#option-b--algochains-hosted-paper-free-no-broker-needed) below.
 
-## Smart Mode vs Full Mode
-
-AlgoChains exposes tools in two tiers, controlled by `ALGOCHAINS_TOOL_MODE`:
-
-| Mode | Tools Exposed | Token Cost | When to Use |
-|------|:---:|:---:|-----|
-| **Smart** (default) | 168 curated | ~4K tokens | Cursor, Windsurf (80-tool limit), everyday use |
-| **Full** (`ALGOCHAINS_TOOL_MODE=full`) | 503 tools | ~40K tokens | Claude Code, full agentic sessions |
-
-**Smart mode includes:** all live bot tools, market data, signals, research/backtest, Onyx RAG, prop fund pipeline, position sizing, broker management, and order execution. Everything you need 95% of the time.
-
-**Full mode** unlocks the remaining 330 tools: advanced DeFi, Kalshi order placement, multi-tenant SaaS, QuantConnect integration, alt-data pipelines, and more.
-
-### `discover_tools` — Find Any Tool Without Full Mode
-
-Even in smart mode, you can find and use any of the 503 tools:
-
-```python
-# Ask the server to find the right tool for your task
-discover_tools("walk-forward validation with leakage check")
-# → Returns: walk_forward_test, run_mcpt_validation, analyze_overfitting
-
-# Then call it
-execute_dynamic_tool("walk_forward_test", {"symbol": "MNQ", "lookback_days": 252})
-```
-
-This provides 99.6% token reduction vs exposing all 503 tools (arXiv:2603.20313).
-
----
-
-## Tool Domains
-
-All 503 tools organized across 21 domains:
-
-| # | Domain | Smart | Full | Key Tools |
-|---|--------|:-----:|:----:|-----------|
-| 1 | **Market Data** | 14 | 22 | `get_quote`, `get_ohlcv`, `get_tick_data`, `get_options_chain`, `get_footprint_chart`, `get_dark_pool_volume` |
-| 2 | **Signals & Analysis** | 12 | 18 | `generate_signal`, `detect_market_regime`, `get_ensemble_vote`, `compute_gex`, `read_tape`, `pair_trade_signal` |
-| 3 | **Research & Backtesting** | 10 | 16 | `run_backtest`, `walk_forward_test`, `run_mcpt_validation`, `validate_strategy_metrics`, `analyze_overfitting` |
-| 4 | **Position Sizing** | 6 | 8 | `compute_r_multiple_size`, `compute_volatility_targeted_size`, `compute_idm`, `dual_size_conservative` |
-| 5 | **Options Analytics** | 4 | 6 | `compute_option_greeks`, `find_optimal_strike`, `get_options_chain`, `unusual_options_activity` |
-| 6 | **Prop Fund Pipeline** | 8 | 10 | `evaluate_strategy_for_prop_fund`, `simulate_prop_fund_evaluation`, `list_prop_funds`, `check_rithmic_status` |
-| 7 | **Broker Management** | 6 | 15 | `check_all_broker_credentials`, `connect_broker`, `get_broker_onboarding_guide`, `store_api_key` |
-| 8 | **Subscriber / Copy-Trade** | 9 | 9 | `get_my_portfolio`, `get_signal_stream`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `get_marketplace_listings`, `place_paper_order`, `cancel_paper_order`, `get_my_paper_positions` |
-| 9 | **Account Protection** | 6 | 8 | `check_protection_status`, `record_stop_event`, `lock_instrument`, `check_rate_limit_status` |
-| 10 | **Order Execution** | 8 | 12 | `place_order`, `place_bracket_order`, `cancel_order`, `smart_route_order`, `execute_twap` |
-| 11 | **Emergency / Destructive** | 3 | 5 | `flatten_all_positions`, `cancel_all_orders`, `emergency_stop`, `trip_circuit_breaker` |
-| 12 | **Intelligence (Onyx + Macro)** | 10 | 14 | `onyx_ask`, `onyx_search`, `get_macro_signals`, `get_us_economic_indicators`, `get_fed_policy_signals` |
-| 13 | **Prediction Markets** | 8 | 12 | `get_prediction_markets`, `search_prediction_markets`, `get_kalshi_settlements`, `place_kalshi_order` |
-| 14 | **Skills Bridge** | 5 | 5 | `list_skills`, `get_skill_detail`, `search_skills`, `get_skills_for_task`, `invoke_moltbook_debate` |
-| 15 | **Agent Memory** | 6 | 8 | `get_openclaw_memory`, `store_trade_lesson`, `get_current_regime`, `get_openclaw_state_summary` |
-| 16 | **Live Bot Intelligence** | 12 | 18 | `get_bot_health`, `get_live_bot_metrics`, `get_bot_position_state`, `get_ai_pipeline_health`, `restart_trading_bot` |
-| 17 | **Desktop Tower / Dispatch** | 4 | 8 | `dispatch_tower_job`, `get_tower_job_status`, `run_tower_backtest`, `sync_to_tower` |
-| 18 | **Performance Reporting** | 4 | 6 | `generate_bot_tearsheet`, `get_bot_metrics_full`, `run_mcpt_pipeline`, `capture_learning_signal` |
-| 19 | **Billing & Subscription** | 12 | 12 | `get_started`, `get_pricing`, `get_checkout_url`, `accept_subscriber_terms`, `get_my_usage`, `create_referral_code`, `get_referral_earnings`, `create_creator_onboarding_link`, `get_my_creator_earnings`, `run_creator_payouts`, `get_my_realized_pnl`, `get_system_status` |
-| 20 | **Platform / SaaS** | 8 | 20 | `join_waitlist`, `create_support_ticket`, `track_platform_event`, `get_analytics_summary` |
-| 21 | **AlphaLoop / Evolution** | 12 | 22 | `run_alphaloop_cycle`, `get_alphaloop_results`, `get_algochains_telos`, `send_ntfy_notification` |
-
----
-
-## Live Bot Showcase
-
-AlgoChains runs 4 live futures bots on Tradovate. Their state, fills, ML pipeline health, and brackets stream through this MCP server in real time.
-
-| Bot | Symbol | Strategy | Live Since | Key MCP Tool |
-|-----|--------|----------|:----------:|---|
-| `MNQ_Upgraded_Scalper` | MNQ | 7-AI ensemble, 5-min bars | Dec 2024 | `get_bot_health(bot="MNQ")` |
-| `CL_Swing_Scalper` | CL | FinBERT sentiment + momentum | Jan 2025 | `get_bot_health(bot="CL")` |
-| `MES_EMA_Swing` | MES | EMA pullback + regime detection | Feb 2025 | `get_bot_health(bot="MES")` |
-| `NQ_EMA_Swing` | NQ | Trend following + foundation model | Feb 2025 | `get_bot_health(bot="NQ")` |
-
-### `get_bot_health` — Full e2e Signal→Order→Fill Trace
-
-```python
-# Returns: process state, position, bracket status, AI pipeline health,
-#          ml_env_flags (MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, MASSIVE_HALT_GUARD),
-#          cc_health (Command Center last-seen, WS status, Databento live feed age),
-#          signal_health (params, risk_bootstrap, bot_version, trading_mode),
-#          e2e_sentinel (signal→order→bracket→fill lifecycle state)
-health = get_bot_health(bot="MNQ")
-```
-
-```python
-# All 4 bots in one call
-status = get_all_bot_ops_status()
-# Returns: process + position + bracket + pipeline snapshot for MNQ/CL/MES/NQ
-```
-
-No credentials needed if you have `ALGOCHAINS_BRIDGE_API_KEY`. Read-only.
+For live broker connectivity (Tradovate, Alpaca, etc.), see [Option C](#option-c-full-live-setup).
 
 ---
 
@@ -192,6 +105,102 @@ Paper trade:
 
 ---
 
+## Smart Mode vs Full Mode
+
+AlgoChains exposes tools in two tiers, controlled by `ALGOCHAINS_TOOL_MODE`:
+
+| Mode | Tools Exposed | Token Cost | When to Use |
+|------|:---:|:---:|-----|
+| **Smart** (default) | 168 curated | ~4K tokens | Cursor, Windsurf (80-tool limit), everyday use |
+| **Full** (`ALGOCHAINS_TOOL_MODE=full`) | 503 tools | ~40K tokens | Claude Code, full agentic sessions |
+
+**Smart mode includes:** all live bot tools, market data, signals, research/backtest, Onyx RAG, prop fund pipeline, position sizing, broker management, and order execution. Everything you need 95% of the time.
+
+**Full mode** unlocks the remaining 330 tools: advanced DeFi, Kalshi order placement, multi-tenant SaaS, QuantConnect integration, alt-data pipelines, and more.
+
+### `discover_tools` — Find Any Tool Without Full Mode
+
+Even in smart mode, you can find and use any of the 503 tools:
+
+```python
+# Ask the server to find the right tool for your task
+discover_tools("walk-forward validation with leakage check")
+# → Returns: walk_forward_test, run_mcpt_validation, analyze_overfitting
+
+# Then call it
+execute_dynamic_tool("walk_forward_test", {"symbol": "MNQ", "lookback_days": 252})
+```
+
+This provides 99.6% token reduction vs exposing all 503 tools (arXiv:2603.20313).
+
+---
+
+## Tool Domains
+
+All 503 tools organized across 21 domains:
+
+| # | Domain | Smart | Full | Key Tools |
+|---|--------|:-----:|:----:|-----------|
+| 1 | **Market Data** | 14 | 22 | `get_quote`, `get_ohlcv`, `get_tick_data`, `get_options_chain`, `get_footprint_chart`, `get_dark_pool_volume` |
+| 2 | **Signals & Analysis** | 12 | 18 | `generate_signal`, `detect_market_regime`, `get_ensemble_vote`, `compute_gex`, `read_tape`, `pair_trade_signal` |
+| 3 | **Research & Backtesting** | 10 | 16 | `run_backtest`, `walk_forward_test`, `run_mcpt_validation`, `validate_strategy_metrics`, `analyze_overfitting` |
+| 4 | **Position Sizing** | 6 | 8 | `compute_r_multiple_size`, `compute_volatility_targeted_size`, `compute_idm`, `dual_size_conservative` |
+| 5 | **Options Analytics** | 4 | 6 | `compute_option_greeks`, `find_optimal_strike`, `get_options_chain`, `unusual_options_activity` |
+| 6 | **Prop Fund Pipeline** | 8 | 10 | `evaluate_strategy_for_prop_fund`, `simulate_prop_fund_evaluation`, `list_prop_funds`, `check_rithmic_status` |
+| 7 | **Broker Management** | 6 | 15 | `check_all_broker_credentials`, `connect_broker`, `get_broker_onboarding_guide`, `store_api_key` |
+| 8 | **Subscriber / Copy-Trade** | 3 stdio | 16 bridge | `get_subscriber_status`, `accept_subscriber_terms`, `join_bot`, `get_my_portfolio`, `get_signal_stream`, `place_paper_order` |
+| 9 | **Account Protection** | 6 | 8 | `check_protection_status`, `record_stop_event`, `lock_instrument`, `check_rate_limit_status` |
+| 10 | **Order Execution** | 8 | 12 | `place_order`, `place_bracket_order`, `cancel_order`, `smart_route_order`, `execute_twap` |
+| 11 | **Emergency / Destructive** | 3 | 5 | `flatten_all_positions`, `cancel_all_orders`, `emergency_stop`, `trip_circuit_breaker` |
+| 12 | **Intelligence (Onyx + Macro)** | 10 | 14 | `onyx_ask`, `onyx_search`, `get_macro_signals`, `get_us_economic_indicators`, `get_fed_policy_signals` |
+| 13 | **Prediction Markets** | 8 | 12 | `get_prediction_markets`, `search_prediction_markets`, `get_kalshi_settlements`, `place_kalshi_order` |
+| 14 | **Skills Bridge** | 5 | 5 | `list_skills`, `get_skill_detail`, `search_skills`, `get_skills_for_task`, `invoke_moltbook_debate` |
+| 15 | **Agent Memory** | 6 | 8 | `get_openclaw_memory`, `store_trade_lesson`, `get_current_regime`, `get_openclaw_state_summary` |
+| 16 | **Live Bot Intelligence** | 12 | 18 | `get_bot_health`, `get_live_bot_metrics`, `get_bot_position_state`, `get_ai_pipeline_health`, `restart_trading_bot` |
+| 17 | **Desktop Tower / Dispatch** | 4 | 8 | `dispatch_tower_job`, `get_tower_job_status`, `run_tower_backtest`, `sync_to_tower` |
+| 18 | **Performance Reporting** | 4 | 6 | `generate_bot_tearsheet`, `get_bot_metrics_full`, `run_mcpt_pipeline`, `capture_learning_signal` |
+| 19 | **Billing & Subscription** | 12 | 12 | `get_started`, `get_pricing`, `get_checkout_url`, `accept_subscriber_terms`, `get_my_usage`, `create_referral_code`, `get_referral_earnings`, `create_creator_onboarding_link`, `get_my_creator_earnings`, `run_creator_payouts`, `get_my_realized_pnl`, `get_system_status` |
+| 20 | **Platform / SaaS** | 8 | 20 | `join_waitlist`, `create_support_ticket`, `track_platform_event`, `get_analytics_summary` |
+| 21 | **AlphaLoop / Evolution** | 12 | 22 | `run_alphaloop_cycle`, `get_alphaloop_results`, `get_algochains_telos`, `send_ntfy_notification` |
+
+Subscriber tools are split by transport: local stdio exposes the consent/status
+funnel, while the HTTP bridge exposes the full subscriber data and paper-order
+surface.
+
+---
+
+## Live Bot Showcase
+
+AlgoChains runs 4 live futures bots on Tradovate. Their state, fills, ML pipeline health, and brackets stream through this MCP server in real time.
+
+| Bot | Symbol | Strategy | Live Since | Key MCP Tool |
+|-----|--------|----------|:----------:|---|
+| `MNQ_Upgraded_Scalper` | MNQ | 7-AI ensemble, 5-min bars | Dec 2024 | `get_bot_health(bot="MNQ")` |
+| `CL_Swing_Scalper` | CL | FinBERT sentiment + momentum | Jan 2025 | `get_bot_health(bot="CL")` |
+| `MES_EMA_Swing` | MES | EMA pullback + regime detection | Feb 2025 | `get_bot_health(bot="MES")` |
+| `NQ_EMA_Swing` | NQ | Trend following + foundation model | Feb 2025 | `get_bot_health(bot="NQ")` |
+
+### `get_bot_health` — Full e2e Signal→Order→Fill Trace
+
+```python
+# Returns: process state, position, bracket status, AI pipeline health,
+#          ml_env_flags (MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, MASSIVE_HALT_GUARD),
+#          cc_health (Command Center last-seen, WS status, Databento live feed age),
+#          signal_health (params, risk_bootstrap, bot_version, trading_mode),
+#          e2e_sentinel (signal→order→bracket→fill lifecycle state)
+health = get_bot_health(bot="MNQ")
+```
+
+```python
+# All 4 bots in one call
+status = get_all_bot_ops_status()
+# Returns: process + position + bracket + pipeline snapshot for MNQ/CL/MES/NQ
+```
+
+No credentials needed if you have `ALGOCHAINS_BRIDGE_API_KEY`. Read-only.
+
+---
+
 ## Billing & Subscription Funnel (Fully Programmatic)
 
 Every billing action is available as an MCP tool — no browser required after the initial
@@ -212,35 +221,34 @@ get_system_status()              # platform health, bot roster, live tool count
 # 1. Get a Stripe-hosted checkout URL (one call — no browser needed after this)
 get_checkout_url(email="you@example.com", tier="paper")
 # → returns a checkout_url the user visits once to enter payment details
-# → sub_live_... key is emailed automatically after payment
+# → subscriber API key is emailed automatically after payment
 
-# 2. Set the key and accept the CFTC risk disclosure (required before signals)
+# 2. Set ALGOCHAINS_SUBSCRIBER_KEY, then accept the CFTC risk disclosure
+#    (required before signals; subscriber_id is resolved from the key)
 accept_subscriber_terms(
-    subscriber_id="sub_...",
     acknowledgment="I have read and understand the risk disclosure above. I accept full responsibility for my trading decisions."
 )
 
 # 3. Subscribe to MNQ copy-trade signals (published for you to review and act on)
-join_bot(subscriber_id="sub_...", bot="MNQ", size_multiplier=1.0)
+join_bot(bot="MNQ", size_multiplier=1.0)
 
-# 4. Check your status and see signals
-get_subscriber_status(subscriber_id="sub_...")
-get_signal_stream()
+# 4. Check stdio status; use the HTTP bridge for portfolio/signal tools
+get_subscriber_status()
 ```
 
 ### Usage metering
 
 ```python
-get_my_usage(subscriber_id="sub_...")
+get_my_usage()
 # → calls_this_month, included_quota, overage_calls, projected_overage_usd
 ```
 
 ### Referral program
 
 ```python
-create_referral_code(subscriber_id="sub_...")   # → code: "AC-X7K2NP"
-get_my_referrals(subscriber_id="sub_...")        # attributed sign-ups + commission
-get_referral_earnings(subscriber_id="sub_...")   # total earned, pending payout
+create_referral_code()   # → code: "AC-X7K2NP"
+get_my_referrals()       # attributed sign-ups + commission
+get_referral_earnings()  # total earned, pending payout
 ```
 
 ### Creator revenue (strategy publishers)
@@ -260,7 +268,7 @@ run_creator_payouts(dry_run=False, owner_token="tok_...")  # execute transfers
 ### Realized P&L (live-tier subscribers)
 
 ```python
-get_my_realized_pnl(subscriber_id="sub_...")
+get_my_realized_pnl()
 # → realized_pnl_usd, trade_count, period, disclaimer (CFTC 4.41(b))
 ```
 
@@ -270,12 +278,12 @@ get_my_realized_pnl(subscriber_id="sub_...")
 | `get_pricing` | None | Public |
 | `get_system_status` | None | Public |
 | `get_checkout_url` | None | Public (Stripe handles billing) |
-| `accept_subscriber_terms` | `sub_live_*` key | Paper / Live |
-| `get_my_usage` | `sub_live_*` key | Paper / Live |
-| `create_referral_code` | `sub_live_*` key | Paper / Live |
-| `get_my_referrals` | `sub_live_*` key | Paper / Live |
-| `get_referral_earnings` | `sub_live_*` key | Paper / Live |
-| `get_my_realized_pnl` | `sub_live_*` key | Live |
+| `accept_subscriber_terms` | Subscriber API key | Paper / Live |
+| `get_my_usage` | Subscriber API key | Paper / Live |
+| `create_referral_code` | Subscriber API key | Paper / Live |
+| `get_my_referrals` | Subscriber API key | Paper / Live |
+| `get_referral_earnings` | Subscriber API key | Paper / Live |
+| `get_my_realized_pnl` | Subscriber API key | Live |
 | `create_creator_onboarding_link` | `OWNER_API_TOKEN` | Owner |
 | `get_my_creator_earnings` | `OWNER_API_TOKEN` | Owner |
 | `run_creator_payouts` | `OWNER_API_TOKEN` | Owner |
@@ -407,7 +415,7 @@ OWNER_API_TOKEN=your-owner-token-here
 | | Path | Credential needed | Best for |
 |---|------|:-----------------:|----------|
 | **A** | Demo mode | None | Market data, regime detection, tools exploration |
-| **B** | AlgoChains hosted paper | `sub_live_…` key (free signup) | Copy-trade MNQ bot, zero broker setup |
+| **B** | AlgoChains hosted paper | Subscriber API key (free signup) | Copy-trade MNQ bot, zero broker setup |
 | **B-2** | Alpaca paper | Alpaca paper API key | Your own paper equity account |
 | **C** | Full live | Tradovate + others | Real futures/equities trading |
 
@@ -430,16 +438,17 @@ Available immediately (no credentials):
 No Tradovate account. No Alpaca account. No broker credentials at all.
 
 1. Sign up at **[algochains.ai](https://algochains.ai)** — free hosted virtual paper account
-2. Copy your subscriber key from the dashboard (`sub_live_…`)
+2. Copy your subscriber key from the dashboard
 3. Set it and run:
 
 ```bash
-export ALGOCHAINS_SUBSCRIBER_KEY=sub_live_your_key_here
+export ALGOCHAINS_SUBSCRIBER_KEY="<SUBSCRIBER_API_KEY>"
 python scripts/quickstart.py --mode paper
 ```
 
-What unlocks immediately: all 9 subscriber tools — copy-trade signals from the live MNQ bot,
-real P&L tracking, fill history, and self-directed paper orders filled at real quotes.
+What unlocks immediately: local subscriber onboarding/status tools plus the hosted
+bridge subscriber surface for copy-trade signals from the live MNQ bot, paper P&L
+tracking, fill history, and self-directed paper orders filled at real quotes.
 See the [Subscriber Onramp](#subscriber-onramp--try-it-free-no-broker-required) section above.
 
 ### Option B-2 — Alpaca Paper (Your Own Broker)
@@ -553,11 +562,11 @@ Copy these directly into Claude or Cursor:
 ### Subscriber prompts (free, no broker needed)
 
 ```
-Portfolio snapshot:
-"Run get_my_portfolio. What's my paper balance and P&L today?"
+Portfolio snapshot over the HTTP bridge:
+"Run get_my_portfolio with my subscriber bridge key. What's my paper balance and P&L today?"
 
-Signal stream check:
-"Call get_signal_stream for the MNQ bot. What signals fired in the last 2 hours?"
+Signal stream check over the HTTP bridge:
+"Call get_signal_stream for the MNQ bot with my subscriber bridge key. What signals fired in the last 2 hours?"
 
 Weekly fill review:
 "Run get_my_fills with limit=50. Break down P&L by day."
@@ -650,6 +659,7 @@ AlgoChains MCP Server
 | [CHANGELOG.md](CHANGELOG.md) | Full version history |
 | [docs/GOTCHAS_AND_BUGS.md](docs/GOTCHAS_AND_BUGS.md) | Confirmed bugs, gotchas, operational surprises |
 | [docs/DEVELOPER_TIER_ONBOARDING.md](docs/DEVELOPER_TIER_ONBOARDING.md) | Developer key setup, scopes, and bridge auth constraints |
+| [docs/SUBSCRIBER_TOOLS.md](docs/SUBSCRIBER_TOOLS.md) | Subscriber onboarding, stdio-vs-bridge tools, scopes, and copy-trade constraints |
 | [docs/NUMERAI_TOURNAMENT.md](docs/NUMERAI_TOURNAMENT.md) | Numerai tournament tool sequence, upload gates, and troubleshooting |
 | [docs/TRADOVATE_PARITY.md](docs/TRADOVATE_PARITY.md) | Tradovate endpoint mapping vs community server |
 | [docs/CLI_GAP_ANALYSIS.md](docs/CLI_GAP_ANALYSIS.md) | `ac` CLI current commands + 10 missing subcommands roadmap |

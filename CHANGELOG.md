@@ -23,7 +23,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
   best-effort, never raises.
 
 #### Billing & subscription funnel (12 new MCP tools)
-- `get_checkout_url` — Stripe-hosted checkout URL; no auth needed; sub_live_* key
+- `get_checkout_url` — Stripe-hosted checkout URL; no auth needed; subscriber API key
   emailed automatically after payment.
 - `accept_subscriber_terms` — CFTC risk-disclosure consent gate (required before
   `join_bot`); consent persisted and audit-trailed.
@@ -168,7 +168,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 - `order_flow/kalshi_slack_notifier.py` — Pushes Kalshi signals + fills to #openclaw Slack channel
 
 #### Subscriber Auth + Tools
-- `src/algochains_mcp/subscriber_auth.py` — Subscriber key resolution (`sub_live_…` / `sub_test_…` prefixes) via Supabase SECURITY DEFINER RPC; 60-second cache; key plaintext never leaves process
+- `src/algochains_mcp/subscriber_auth.py` — Subscriber key resolution via Supabase SECURITY DEFINER RPC; 60-second cache; key plaintext never leaves process
 - `src/algochains_mcp/subscriber_tools.py` — 9 subscriber-scoped tools: `get_my_portfolio`, `get_signal_stream`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `get_marketplace_listings`, `place_paper_order`, `cancel_paper_order`, `get_my_paper_positions`; all scoped to the resolved `subscriber_id` — no cross-subscriber data access possible
 
 #### Unified Path Resolution

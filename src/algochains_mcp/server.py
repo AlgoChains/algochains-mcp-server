@@ -31,6 +31,7 @@ Start with:  algochains-mcp  (or python -m algochains_mcp.server)
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -231,7 +232,7 @@ logger = _logging_init.getLogger("algochains_mcp.server")
 # Graceful fallback: if module missing, order velocity checking is skipped
 # but a warning is logged on every place_order call.
 try:
-    from .trading_guardrails import get_guardrails, GuardrailTripped
+    from .trading_guardrails import get_guardrails, GuardrailTripped, GuardrailReason
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -703,6 +704,28 @@ def _compute_consecutive_losses_from_fills(fills: Any) -> tuple[int, bool]:
         else:
             return consecutive_losses, True
     return consecutive_losses, True
+
+
+def _accepts_keyword(func: Any, keyword: str) -> bool:
+    """Return whether a callable can accept a keyword argument."""
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return True
+    return any(
+        param.name == keyword or param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    )
+
+
+async def _get_recent_fills_for_guardrail(conn: Any, symbol: str) -> Any:
+    """Fetch recent fills using the narrowest broker-supported filter."""
+    get_fills = getattr(conn, "get_fills", None)
+    if not callable(get_fills):
+        return []
+    if symbol and _accepts_keyword(get_fills, "symbol"):
+        return await get_fills(symbol=symbol)
+    return await get_fills()
 
 
 def _get_validator() -> StrategyValidator:
@@ -3931,11 +3954,15 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_system_heartbeat",
-         description="Check whether this MCP server node is the primary trader (MacBook offline) or standby (MacBook alive). Reads the Mac heartbeat file to determine heartbeat age, Mac liveness, and which node is currently running the bots. Critical for dual-node failover awareness.",
+         description="Check whether this MCP server node is the primary trader (MacBook offline) or standby (MacBook alive). Reads the Mac heartbeat file to determine heartbeat age, Mac liveness, desktop bot process counts (expected 5: MNQ/CL/MES/NQ + Kalshi), and which node is currently running the bots. Critical for dual-node failover awareness.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_adaptive_brain_status",
          description="Read adaptive_brain.py daemon liveness from bounded process, script, state, and log evidence. Read-only; does not restart or mutate daemon state.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_system_health",
+         description="Run the trading-system-health audit: bot process/log liveness (with legacy log alias resolution), disk space on control-tower and home volumes, and optional health_snapshot.json. Use to triage SEV1 trading-system-health watchdog alerts without false inactive signals from stale cl_bot_live.log.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_strategy_academic_citations",
@@ -3997,8 +4024,12 @@ TOOLS = [
          description="Cross-check ALL open Tradovate positions vs working orders to identify unprotected exposure (position open, no stop/target orders). Returns status OK | UNPROTECTED_EXPOSURE. Run before any P&L report or after any bot restart. Prevents repeat of Apr 14 2026 -$4.9k incident.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="bracket_integrity_check",
+         description="Live Tradovate bracket audit for non-MNQ positions (CL/MES/NQ). Each open position must have BOTH a working stop and target order. Returns checked_count, missing_brackets, and formatted_line for BRACKET-INTEGRITY-MONITOR. Status DEGRADED when bot state files show open exposure but broker returns zero positions (fail-closed).",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
     Tool(name="get_bracket_guardian_status",
-         description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. Guardian runs every 5 min via launchd (com.algochains.bracket-guardian).",
+         description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. When guardian positions_count is 0 (or guardian inactive), also runs live bracket_integrity_check against Tradovate so watchdogs cannot report OK with 0 checked without broker verification.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
 
@@ -4066,6 +4097,10 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════
     Tool(name="get_circuit_breaker_status",
          description="Read current state of all hard-coded trading circuit breakers. Shows which brokers are OPEN/CLOSED/HALF_OPEN, trip reasons, cooldown timers, and current order velocity. These limits are code-level constants — the AI cannot modify them. Use to understand why orders are being blocked.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_daily_loss_proximity",
+         description="Read daily loss proximity guard status: today's P&L vs the $500 hard limit, utilization %, alert/block thresholds (80% alert, 95% block scalpers, MNQ swing exempt), and whether P&L evidence is verified. Returns DEGRADED when P&L source is unknown instead of fail-open OK.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_agent_loop_status",
@@ -4482,8 +4517,10 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {
              "creator_id": {"type": "string", "description": "Creator id."},
              "creator_email": {"type": "string", "description": "Email for the Stripe Connect account and KYC."},
-         }, "required": ["creator_id", "creator_email"]},
-         annotations=ANNOT_WRITE_SAFE),
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required until creator-authenticated sessions exist."},
+             "confirm": {"type": "boolean", "description": "Required true when called through execute_dynamic_tool."},
+        }, "required": ["creator_id", "creator_email", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
 
     Tool(name="get_my_creator_earnings",
          description=(
@@ -4492,8 +4529,10 @@ TOOLS = [
          ),
          inputSchema={"type": "object", "properties": {
              "creator_id": {"type": "string", "description": "Creator id."},
-         }, "required": ["creator_id"]},
-         annotations=ANNOT_READ_ONLY),
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required until creator-authenticated sessions exist."},
+             "confirm": {"type": "boolean", "description": "Required true when called through execute_dynamic_tool."},
+        }, "required": ["creator_id", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
 
     Tool(name="run_creator_payouts",
          description=(
@@ -5065,6 +5104,7 @@ TIER1_TOOL_NAMES = {
     "get_live_bot_metrics",
     "get_all_bot_metrics",
     "get_system_heartbeat",
+    "get_system_health",
     "get_adaptive_brain_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
@@ -5076,12 +5116,14 @@ TIER1_TOOL_NAMES = {
     "get_all_bot_ops_status",
     # V26.1 — Bracket integrity (always Tier 1 — safety critical)
     "check_unprotected_positions",
+    "bracket_integrity_check",
     "get_bracket_guardian_status",
     # V22.4 — Desktop tower ML visibility
     "get_tower_health",
     "get_tower_job_status",
     # V22.1 — Guardrails status (always Tier 1 — safety awareness)
     "get_circuit_breaker_status",
+    "get_daily_loss_proximity",
     "get_agent_loop_status",
     "get_latency_profile",
     # V22.2 — Onboarding (always Tier 1 — first thing new users see)
@@ -5152,9 +5194,9 @@ TIER1_TOOL_NAMES = {
     "create_referral_code",
     "get_my_referrals",
     "get_referral_earnings",
-    # Creator payouts (run_creator_payouts intentionally NOT here — moves money, owner-gated)
-    "create_creator_onboarding_link",
-    "get_my_creator_earnings",
+    # Creator payout account/ledger tools intentionally NOT here: they affect
+    # Stripe payout routing or expose private creator financials and require
+    # owner authorization until creator-authenticated sessions exist.
     # Realized P&L (reconcile_creator_pnl intentionally NOT here — owner-gated)
     "get_my_realized_pnl",
     # Waitlist
@@ -5618,7 +5660,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 _loss_streak_from_fills = False
                 _fills_api_err_str: str = ""  # persist outside except block (Python 3 deletes except-vars)
                 try:
-                    _fills = await conn.get_fills()
+                    _fills = await _get_recent_fills_for_guardrail(conn, _symbol)
                     _fills_source_ok = True
                     _consecutive_losses, _loss_streak_from_fills = _compute_consecutive_losses_from_fills(_fills)
                 except Exception as _fills_err:
@@ -5700,12 +5742,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0,
                     "MCL": 100.0, "CL": 1000.0, "MGC": 10.0, "GC": 100.0,
                 }
+                import math as _math_notional
                 try:
-                    _price_hint = arguments.get("limit_price")
+                    _price_hint = arguments.get("limit_price") or arguments.get("stop_price")
                     if _price_hint:
                         _price = float(_price_hint)
                     else:
-                        # Try live quote; fall back to estimated_notional arg if provided
+                        # Try live quote; caller estimate is only a fallback when
+                        # a real price source is unavailable.
                         _q = await conn.get_quote(_symbol)
                         _price = float(getattr(_q, "last", 0) or getattr(_q, "bid", 0) or 0)
                     _root = "".join(c for c in _symbol.upper() if c.isalpha())[:3]
@@ -5714,9 +5758,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     if _notional == 0.0:
                         # Ultimate fallback: caller-supplied estimated_notional
                         _notional = float(arguments.get("estimated_notional", 0))
+                    if not _math_notional.isfinite(_notional) or _notional <= 0.0:
+                        raise GuardrailTripped(
+                            GuardrailReason.MARKET_PRICE_UNAVAILABLE,
+                            "No live market price available and no positive estimated_notional was supplied. "
+                            "Order aborted fail-closed before reaching broker.",
+                        )
+                except GuardrailTripped:
+                    raise
                 except Exception as _not_err:
-                    _notional = float(arguments.get("estimated_notional", 0))
-                    logger.debug("Notional compute failed (%s), using arg fallback: %.2f", _not_err, _notional)
+                    try:
+                        _notional = float(arguments.get("estimated_notional", 0))
+                    except (TypeError, ValueError):
+                        _notional = 0.0
+                    if not _math_notional.isfinite(_notional) or _notional <= 0.0:
+                        raise GuardrailTripped(
+                            GuardrailReason.MARKET_PRICE_UNAVAILABLE,
+                            "No live market price available and no positive estimated_notional was supplied. "
+                            f"Order aborted fail-closed before reaching broker. Error: {_not_err}",
+                        )
+                    logger.warning("Notional compute failed (%s), using arg fallback: %.2f", _not_err, _notional)
 
                 try:
                     _acct = await conn.get_account()
@@ -5981,29 +6042,41 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         bot_filter = (arguments.get("bot") or "all").lower()
         control_tower = _Path(_default_control_tower())
+        from algochains_mcp.bot_log_paths import resolve_bot_log
         bots = {
-            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},
-            "cl":  {"script": "CL_FUTURES_SCALPER.py",       "log": "logs/cl_futures_live.log"},
-            "mes": {"script": "mes_swing_live.py",           "log": "logs/mes_swing_live.log"},
-            "nq":  {"script": "nq_swing_live.py",            "log": "logs/nq_swing_live.log"},
-            "kalshi": {"script": "kalshi_daemon.py",         "log": "logs/kalshi_bot.log"},
+            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py"},
+            "cl":  {"script": "CL_FUTURES_SCALPER.py"},
+            "mes": {"script": "mes_swing_live.py"},
+            "nq":  {"script": "nq_swing_live.py"},
+            "kalshi": {"script": "kalshi_daemon.py"},
         }
         try:
+            from .live_bot_intelligence.heartbeat import scan_running_bot_keys
+
             ps_out = _subp.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
+            running_bots = scan_running_bot_keys(ps_out)
         except Exception:
             ps_out = ""
+            running_bots = set()
 
         now = _time.time()
         results = {}
         for key, meta in bots.items():
             if bot_filter not in ("all", key):
                 continue
-            log_path = control_tower / meta["log"]
-            running = meta["script"] in ps_out
+            log_path = None
+            log_candidates = []
+            legacy_stale_mismatch = False
+            log_resolution = resolve_bot_log(control_tower, key, now=now)
+            if log_resolution.get("path") is not None:
+                log_path = log_resolution["path"]
+            log_candidates = log_resolution.get("candidates") or []
+            legacy_stale_mismatch = bool(log_resolution.get("legacy_stale_mismatch"))
+            running = key in running_bots
             last_log_mtime = None
             error_count = 0
             tail_preview = ""
-            if log_path.exists():
+            if log_path is not None and log_path.exists():
                 try:
                     last_log_mtime = int(now - log_path.stat().st_mtime)
                     # Read last 100 lines with tail for speed
@@ -6023,6 +6096,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "log_age_seconds": last_log_mtime,
                 "error_count_last_100": error_count,
                 "last_line_preview": tail_preview,
+                "log_path": str(log_path) if log_path else None,
+                "log_candidates": log_candidates,
+                "legacy_stale_mismatch": legacy_stale_mismatch,
             }
 
         # Tradovate token expiry (best-effort)
@@ -9501,6 +9577,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": f"Heartbeat read error: {exc}"})
 
+    elif name == "get_system_health":
+        try:
+            from .trading_system_health import get_system_health
+            return _text(get_system_health())
+        except Exception as exc:
+            return _text({"error": f"System health error: {exc}"})
+
     elif name == "get_adaptive_brain_status":
         try:
             from .adaptive_brain_status import get_adaptive_brain_status
@@ -9626,6 +9709,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .live_bot_intelligence.bot_ops import check_unprotected_positions
             return _text(check_unprotected_positions())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "bracket_integrity_check":
+        try:
+            from .live_bot_intelligence.bot_ops import bracket_integrity_check
+            return _text(bracket_integrity_check())
         except Exception as exc:
             return _text({"error": str(exc)})
 
@@ -10078,6 +10168,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 return _text({"error": str(exc)})
 
     elif name == "create_creator_onboarding_link":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "create_creator_onboarding_link requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .cloud_saas import connect_payouts as _cp
             _creator_id = arguments.get("creator_id", "")
@@ -10093,6 +10187,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "get_my_creator_earnings":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "get_my_creator_earnings requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .cloud_saas import connect_payouts as _cp
             _creator_id = arguments.get("creator_id", "")
@@ -10472,6 +10570,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(status)
         except Exception as exc:
             return _text({"error": f"Guardrail status error: {exc}"})
+
+    elif name == "get_daily_loss_proximity":
+        try:
+            from .daily_loss_proximity import get_daily_loss_proximity
+            return _text(get_daily_loss_proximity())
+        except Exception as exc:
+            return _text({"error": f"Daily loss proximity error: {exc}"})
 
     elif name == "get_agent_loop_status":
         if not _GUARDRAILS_AVAILABLE:

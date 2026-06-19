@@ -125,6 +125,7 @@ _TOOL_TIERS: dict[str, int] = {
     "compute_correlation_risk": TIER_READ_ONLY,
     "check_vix_gate": TIER_READ_ONLY,
     "get_daily_loss_proximity": TIER_READ_ONLY,
+    "bracket_integrity_check": TIER_READ_ONLY,
     "event_risk_check": TIER_READ_ONLY,
     # Strategy research (read only)
     "run_backtest": TIER_READ_ONLY,
@@ -394,6 +395,12 @@ _TOOL_TIERS: dict[str, int] = {
     "revoke_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
     "get_developer_key_usage": TIER_READ_ONLY,
     "test_bridge_connection": TIER_READ_ONLY,
+    # Creator payout account/ledger tools touch payout routing or private creator
+    # financials. Keep them owner-gated until a creator-authenticated context exists.
+    "create_creator_onboarding_link": TIER_ORDER_EXEC,
+    "get_my_creator_earnings": TIER_ORDER_EXEC,
+    "run_creator_payouts": TIER_ORDER_EXEC,
+    "reconcile_creator_pnl": TIER_ORDER_EXEC,
 
     # ── Subscriber tools (HTTP bridge SUBSCRIBER_TOOLS surface) ──────────────
     # Read-only subscriber views
