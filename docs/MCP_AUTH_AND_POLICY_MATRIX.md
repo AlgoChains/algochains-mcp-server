@@ -11,8 +11,14 @@ for stdio, HTTP bridge, and dynamic tool execution.
 | Stdio `execute_dynamic_tool` | `OWNER_API_TOKEN` for `ORDER_EXEC`+ | hidden tools reached after discovery | `confirm=true` for `ORDER_EXEC`+ |
 | HTTP public | no key | `PUBLIC_TOOLS` only | no `ORDER_EXEC` or `DESTRUCTIVE` tools allowed |
 | HTTP owner | `ALGOCHAINS_BRIDGE_API_KEY` | `PUBLIC_TOOLS` + `OWNER_TOOLS` | `confirm=true`; caller scope ceilings apply |
-| HTTP subscriber | `sub_live_*` Supabase key | `SUBSCRIBER_TOOLS` only | no owner/broker execution surface |
+| HTTP subscriber | Subscriber Supabase key | `SUBSCRIBER_TOOLS` only | no owner/broker execution surface |
 | HTTP developer | `ac_live_*` / `ac_test_*` Supabase key via `X-Api-Key` or bearer token | `DEVELOPER_TOOLS` only | max danger tier `WRITE_LOCAL`; `execute_dynamic_tool` blocked |
+
+Subscriber note: local stdio only registers the subscriber onboarding/status
+funnel (`accept_subscriber_terms`, `join_bot`, `get_subscriber_status`, usage,
+referral, and realized-P&L helpers). The portfolio, signal-stream, fill,
+paper-order, and daemon callback tools are the HTTP bridge `SUBSCRIBER_TOOLS`
+surface. See `docs/SUBSCRIBER_TOOLS.md`.
 
 ## Secret Split
 

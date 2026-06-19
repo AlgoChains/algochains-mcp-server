@@ -148,7 +148,7 @@ All 503 tools organized across 21 domains:
 | 5 | **Options Analytics** | 4 | 6 | `compute_option_greeks`, `find_optimal_strike`, `get_options_chain`, `unusual_options_activity` |
 | 6 | **Prop Fund Pipeline** | 8 | 10 | `evaluate_strategy_for_prop_fund`, `simulate_prop_fund_evaluation`, `list_prop_funds`, `check_rithmic_status` |
 | 7 | **Broker Management** | 6 | 15 | `check_all_broker_credentials`, `connect_broker`, `get_broker_onboarding_guide`, `store_api_key` |
-| 8 | **Subscriber / Copy-Trade** | 9 | 9 | `get_my_portfolio`, `get_signal_stream`, `get_my_pnl`, `get_my_fills`, `get_my_assignments`, `get_marketplace_listings`, `place_paper_order`, `cancel_paper_order`, `get_my_paper_positions` |
+| 8 | **Subscriber / Copy-Trade** | 3 stdio | 16 bridge | `get_subscriber_status`, `accept_subscriber_terms`, `join_bot`, `get_my_portfolio`, `get_signal_stream`, `place_paper_order` |
 | 9 | **Account Protection** | 6 | 8 | `check_protection_status`, `record_stop_event`, `lock_instrument`, `check_rate_limit_status` |
 | 10 | **Order Execution** | 8 | 12 | `place_order`, `place_bracket_order`, `cancel_order`, `smart_route_order`, `execute_twap` |
 | 11 | **Emergency / Destructive** | 3 | 5 | `flatten_all_positions`, `cancel_all_orders`, `emergency_stop`, `trip_circuit_breaker` |
@@ -162,6 +162,10 @@ All 503 tools organized across 21 domains:
 | 19 | **Billing & Subscription** | 12 | 12 | `get_started`, `get_pricing`, `get_checkout_url`, `accept_subscriber_terms`, `get_my_usage`, `create_referral_code`, `get_referral_earnings`, `create_creator_onboarding_link`, `get_my_creator_earnings`, `run_creator_payouts`, `get_my_realized_pnl`, `get_system_status` |
 | 20 | **Platform / SaaS** | 8 | 20 | `join_waitlist`, `create_support_ticket`, `track_platform_event`, `get_analytics_summary` |
 | 21 | **AlphaLoop / Evolution** | 12 | 22 | `run_alphaloop_cycle`, `get_alphaloop_results`, `get_algochains_telos`, `send_ntfy_notification` |
+
+Subscriber tools are split by transport: local stdio exposes the consent/status
+funnel, while the HTTP bridge exposes the full subscriber data and paper-order
+surface.
 
 ---
 
@@ -217,35 +221,34 @@ get_system_status()              # platform health, bot roster, live tool count
 # 1. Get a Stripe-hosted checkout URL (one call — no browser needed after this)
 get_checkout_url(email="you@example.com", tier="paper")
 # → returns a checkout_url the user visits once to enter payment details
-# → sub_live_... key is emailed automatically after payment
+# → subscriber API key is emailed automatically after payment
 
-# 2. Set the key and accept the CFTC risk disclosure (required before signals)
+# 2. Set ALGOCHAINS_SUBSCRIBER_KEY, then accept the CFTC risk disclosure
+#    (required before signals; subscriber_id is resolved from the key)
 accept_subscriber_terms(
-    subscriber_id="sub_...",
     acknowledgment="I have read and understand the risk disclosure above. I accept full responsibility for my trading decisions."
 )
 
 # 3. Subscribe to MNQ copy-trade signals (published for you to review and act on)
-join_bot(subscriber_id="sub_...", bot="MNQ", size_multiplier=1.0)
+join_bot(bot="MNQ", size_multiplier=1.0)
 
-# 4. Check your status and see signals
-get_subscriber_status(subscriber_id="sub_...")
-get_signal_stream()
+# 4. Check stdio status; use the HTTP bridge for portfolio/signal tools
+get_subscriber_status()
 ```
 
 ### Usage metering
 
 ```python
-get_my_usage(subscriber_id="sub_...")
+get_my_usage()
 # → calls_this_month, included_quota, overage_calls, projected_overage_usd
 ```
 
 ### Referral program
 
 ```python
-create_referral_code(subscriber_id="sub_...")   # → code: "AC-X7K2NP"
-get_my_referrals(subscriber_id="sub_...")        # attributed sign-ups + commission
-get_referral_earnings(subscriber_id="sub_...")   # total earned, pending payout
+create_referral_code()   # → code: "AC-X7K2NP"
+get_my_referrals()       # attributed sign-ups + commission
+get_referral_earnings()  # total earned, pending payout
 ```
 
 ### Creator revenue (strategy publishers)
@@ -265,7 +268,7 @@ run_creator_payouts(dry_run=False, owner_token="tok_...")  # execute transfers
 ### Realized P&L (live-tier subscribers)
 
 ```python
-get_my_realized_pnl(subscriber_id="sub_...")
+get_my_realized_pnl()
 # → realized_pnl_usd, trade_count, period, disclaimer (CFTC 4.41(b))
 ```
 
@@ -275,12 +278,12 @@ get_my_realized_pnl(subscriber_id="sub_...")
 | `get_pricing` | None | Public |
 | `get_system_status` | None | Public |
 | `get_checkout_url` | None | Public (Stripe handles billing) |
-| `accept_subscriber_terms` | `sub_live_*` key | Paper / Live |
-| `get_my_usage` | `sub_live_*` key | Paper / Live |
-| `create_referral_code` | `sub_live_*` key | Paper / Live |
-| `get_my_referrals` | `sub_live_*` key | Paper / Live |
-| `get_referral_earnings` | `sub_live_*` key | Paper / Live |
-| `get_my_realized_pnl` | `sub_live_*` key | Live |
+| `accept_subscriber_terms` | Subscriber API key | Paper / Live |
+| `get_my_usage` | Subscriber API key | Paper / Live |
+| `create_referral_code` | Subscriber API key | Paper / Live |
+| `get_my_referrals` | Subscriber API key | Paper / Live |
+| `get_referral_earnings` | Subscriber API key | Paper / Live |
+| `get_my_realized_pnl` | Subscriber API key | Live |
 | `create_creator_onboarding_link` | `OWNER_API_TOKEN` | Owner |
 | `get_my_creator_earnings` | `OWNER_API_TOKEN` | Owner |
 | `run_creator_payouts` | `OWNER_API_TOKEN` | Owner |
@@ -412,7 +415,7 @@ OWNER_API_TOKEN=your-owner-token-here
 | | Path | Credential needed | Best for |
 |---|------|:-----------------:|----------|
 | **A** | Demo mode | None | Market data, regime detection, tools exploration |
-| **B** | AlgoChains hosted paper | `sub_live_…` key (free signup) | Copy-trade MNQ bot, zero broker setup |
+| **B** | AlgoChains hosted paper | Subscriber API key (free signup) | Copy-trade MNQ bot, zero broker setup |
 | **B-2** | Alpaca paper | Alpaca paper API key | Your own paper equity account |
 | **C** | Full live | Tradovate + others | Real futures/equities trading |
 
@@ -435,16 +438,17 @@ Available immediately (no credentials):
 No Tradovate account. No Alpaca account. No broker credentials at all.
 
 1. Sign up at **[algochains.ai](https://algochains.ai)** — free hosted virtual paper account
-2. Copy your subscriber key from the dashboard (`sub_live_…`)
+2. Copy your subscriber key from the dashboard
 3. Set it and run:
 
 ```bash
-export ALGOCHAINS_SUBSCRIBER_KEY=sub_live_your_key_here
+export ALGOCHAINS_SUBSCRIBER_KEY="<SUBSCRIBER_API_KEY>"
 python scripts/quickstart.py --mode paper
 ```
 
-What unlocks immediately: all 9 subscriber tools — copy-trade signals from the live MNQ bot,
-real P&L tracking, fill history, and self-directed paper orders filled at real quotes.
+What unlocks immediately: local subscriber onboarding/status tools plus the hosted
+bridge subscriber surface for copy-trade signals from the live MNQ bot, paper P&L
+tracking, fill history, and self-directed paper orders filled at real quotes.
 See the [Subscriber Onramp](#subscriber-onramp--try-it-free-no-broker-required) section above.
 
 ### Option B-2 — Alpaca Paper (Your Own Broker)
@@ -522,11 +526,11 @@ Copy these directly into Claude or Cursor:
 ### Subscriber prompts (free, no broker needed)
 
 ```
-Portfolio snapshot:
-"Run get_my_portfolio. What's my paper balance and P&L today?"
+Portfolio snapshot over the HTTP bridge:
+"Run get_my_portfolio with my subscriber bridge key. What's my paper balance and P&L today?"
 
-Signal stream check:
-"Call get_signal_stream for the MNQ bot. What signals fired in the last 2 hours?"
+Signal stream check over the HTTP bridge:
+"Call get_signal_stream for the MNQ bot with my subscriber bridge key. What signals fired in the last 2 hours?"
 
 Weekly fill review:
 "Run get_my_fills with limit=50. Break down P&L by day."
@@ -619,6 +623,7 @@ AlgoChains MCP Server
 | [CHANGELOG.md](CHANGELOG.md) | Full version history |
 | [docs/GOTCHAS_AND_BUGS.md](docs/GOTCHAS_AND_BUGS.md) | Confirmed bugs, gotchas, operational surprises |
 | [docs/DEVELOPER_TIER_ONBOARDING.md](docs/DEVELOPER_TIER_ONBOARDING.md) | Developer key setup, scopes, and bridge auth constraints |
+| [docs/SUBSCRIBER_TOOLS.md](docs/SUBSCRIBER_TOOLS.md) | Subscriber onboarding, stdio-vs-bridge tools, scopes, and copy-trade constraints |
 | [docs/NUMERAI_TOURNAMENT.md](docs/NUMERAI_TOURNAMENT.md) | Numerai tournament tool sequence, upload gates, and troubleshooting |
 | [docs/TRADOVATE_PARITY.md](docs/TRADOVATE_PARITY.md) | Tradovate endpoint mapping vs community server |
 | [docs/CLI_GAP_ANALYSIS.md](docs/CLI_GAP_ANALYSIS.md) | `ac` CLI current commands + 10 missing subcommands roadmap |
