@@ -113,7 +113,7 @@ jobs:
           path: dist/algochains-cli.js
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
@@ -211,7 +211,7 @@ jobs:
           echo "Binary size: $(wc -c < ${{ matrix.target.output }}) bytes"
 
       - name: Upload binary to Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
         with:
