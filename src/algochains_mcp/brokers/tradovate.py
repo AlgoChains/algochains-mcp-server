@@ -40,6 +40,16 @@ MONTH_CODES = {1: "F", 2: "G", 3: "H", 4: "J", 5: "K", 6: "M",
                7: "N", 8: "Q", 9: "U", 10: "V", 11: "X", 12: "Z"}
 
 
+def _positive_price(value: Any) -> float:
+    try:
+        price = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(price) or price <= 0:
+        return 0.0
+    return price
+
+
 def _jwt_expiry_epoch(access_token: str) -> float | None:
     """Return the JWT exp claim as an epoch timestamp, if present and parseable."""
     token = access_token.strip()
@@ -748,13 +758,29 @@ class TradovateConnector(BrokerConnector):
                 bid_entry = entries.get("Bid", {})
                 ask_entry = entries.get("Offer", {})
                 trade_entry = entries.get("Trade", {})
+                bid = _positive_price(bid_entry.get("price"))
+                ask = _positive_price(ask_entry.get("price"))
+                trade = _positive_price(trade_entry.get("price"))
+                if trade:
+                    last = trade
+                elif bid and ask:
+                    last = (bid + ask) / 2.0
+                else:
+                    last = bid or ask
+                if not last:
+                    raise BrokerQuoteError(
+                        f"Quote unavailable for {symbol} — no bid/ask/trade price",
+                        broker="tradovate",
+                    )
                 return Quote(
                     symbol=symbol,
-                    bid=bid_entry.get("price", 0.0),
-                    ask=ask_entry.get("price", 0.0),
-                    last=trade_entry.get("price", 0.0),
+                    bid=bid,
+                    ask=ask,
+                    last=last,
                     volume=int(trade_entry.get("size", 0)),
                 )
+        except BrokerQuoteError:
+            raise
         except Exception as e:
             logger.warning("get_quote failed for %s: %s", symbol, e)
 

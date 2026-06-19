@@ -231,7 +231,7 @@ logger = _logging_init.getLogger("algochains_mcp.server")
 # Graceful fallback: if module missing, order velocity checking is skipped
 # but a warning is logged on every place_order call.
 try:
-    from .trading_guardrails import get_guardrails, GuardrailTripped
+    from .trading_guardrails import get_guardrails, GuardrailTripped, GuardrailReason
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -5702,12 +5702,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0,
                     "MCL": 100.0, "CL": 1000.0, "MGC": 10.0, "GC": 100.0,
                 }
+                import math as _math_notional
                 try:
-                    _price_hint = arguments.get("limit_price")
+                    _price_hint = arguments.get("limit_price") or arguments.get("stop_price")
                     if _price_hint:
                         _price = float(_price_hint)
                     else:
-                        # Try live quote; fall back to estimated_notional arg if provided
+                        # Try live quote; caller estimate is only a fallback when
+                        # a real price source is unavailable.
                         _q = await conn.get_quote(_symbol)
                         _price = float(getattr(_q, "last", 0) or getattr(_q, "bid", 0) or 0)
                     _root = "".join(c for c in _symbol.upper() if c.isalpha())[:3]
@@ -5716,9 +5718,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     if _notional == 0.0:
                         # Ultimate fallback: caller-supplied estimated_notional
                         _notional = float(arguments.get("estimated_notional", 0))
+                    if not _math_notional.isfinite(_notional) or _notional <= 0.0:
+                        raise GuardrailTripped(
+                            GuardrailReason.MARKET_PRICE_UNAVAILABLE,
+                            "No live market price available and no positive estimated_notional was supplied. "
+                            "Order aborted fail-closed before reaching broker.",
+                        )
+                except GuardrailTripped:
+                    raise
                 except Exception as _not_err:
-                    _notional = float(arguments.get("estimated_notional", 0))
-                    logger.debug("Notional compute failed (%s), using arg fallback: %.2f", _not_err, _notional)
+                    try:
+                        _notional = float(arguments.get("estimated_notional", 0))
+                    except (TypeError, ValueError):
+                        _notional = 0.0
+                    if not _math_notional.isfinite(_notional) or _notional <= 0.0:
+                        raise GuardrailTripped(
+                            GuardrailReason.MARKET_PRICE_UNAVAILABLE,
+                            "No live market price available and no positive estimated_notional was supplied. "
+                            f"Order aborted fail-closed before reaching broker. Error: {_not_err}",
+                        )
+                    logger.warning("Notional compute failed (%s), using arg fallback: %.2f", _not_err, _notional)
 
                 try:
                     _acct = await conn.get_account()
