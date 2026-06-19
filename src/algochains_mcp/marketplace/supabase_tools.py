@@ -350,10 +350,14 @@ def deliver_strategy_to_subscriber(
                          "Cannot deliver strategy config.",
             }
         # Prefer subscription-record webhook URL over caller override
-        trusted_webhook_url = sub_row.get("webhook_url") or webhook_url
+        record_webhook_url = sub_row.get("webhook_url")
+        trusted_webhook_url = record_webhook_url or webhook_url
         # SSRF guard on subscription-record URL too (defence-in-depth)
         if trusted_webhook_url and _is_ssrf_target(trusted_webhook_url):
-            trusted_webhook_url = None
+            if record_webhook_url and _is_ssrf_target(record_webhook_url) and webhook_url:
+                trusted_webhook_url = webhook_url
+            else:
+                trusted_webhook_url = None
     except Exception as exc:
         return {"error": f"Subscription verification failed: {exc}"}
 
