@@ -17,4 +17,3 @@ def test_status_alias_matches_health() -> None:
 
     assert status.status_code == 200
     assert status.json() == health.json()
-

@@ -73,7 +73,7 @@ is synchronous and results are in the `submit_strategy` response.
 
 ## P0 — ✅ RESOLVED (2026-06-14): `test_live_audit.py` Hardcoded API Keys
 
-**File:** `tests/test_live_audit.py` (now in `tests/live/`)  
+**File:** `tests/test_live_audit.py` (now in `tests/live/`)
 **Original finding:** Hardcoded live credentials in test file.
 
 **Resolution verified (2026-06-14):**
@@ -252,6 +252,67 @@ These are style/readability enhancements aligned with best-in-class MCP repos
 | `execute_dynamic_tool` | `call_tool` or `invoke_tool` | "dynamic" is vague |
 | `massive_*` tool prefix | `data_*` | "massive" is a vendor name, not a semantic descriptor |
 | Tool descriptions mixing "NEW" tags | Remove "NEW" — it's relative | Breaks semantic search |
+
+---
+
+## Follow-up Hidden Killers Audit — 2026-06-13 MCP Hardening Pass
+
+### P0/P1 — FIXED: Sensitive Tool Outputs and Direct Handler Bypasses
+
+**Files:** `src/algochains_mcp/server.py`, `src/algochains_mcp/tool_danger_tiers.py`,
+`src/algochains_mcp/brokers/oauth_manager.py`, `src/algochains_mcp/onboarding.py`,
+`src/algochains_mcp/support_tickets.py`
+
+**Issues closed:**
+- `get_broker_oauth_status` no longer returns plaintext `access_token`; owner-token is required
+  and responses use masked token metadata.
+- `generate_ide_config` returns a redacted config unless the caller provides the owner token.
+- `test_signal_propagation` requires owner token plus `confirm=true` before sending live paper
+  signal propagation requests.
+- Support ticket admin reads/updates now require owner token through the direct stdio handler,
+  not only through `execute_dynamic_tool`.
+- Dynamic dispatch tier coverage was extended so sensitive tools are ORDER_EXEC-gated even when
+  called indirectly.
+
+**Verification:** `tests/test_sec_2026_c5_c8_handlers.py` and
+`tests/test_dynamic_dispatch_safety.py` cover both direct handler and dynamic-dispatch gates.
+
+### P1 — FIXED: Subscriber Strategy Delivery SSRF and Config Leakage
+
+**File:** `src/algochains_mcp/marketplace/supabase_tools.py`
+
+**Issues closed:**
+- `deliver_strategy_to_subscriber` now verifies an active subscription before loading or
+  delivering a strategy config.
+- Caller-supplied and subscription-record webhook URLs are screened for loopback/private/link-local
+  targets before POST delivery.
+- The signed strategy token is no longer returned in the MCP tool response; callers receive a
+  delivery receipt only.
+
+### P1 — FIXED: Subscriber Assignment Shape Drift
+
+**Files:** `src/algochains_mcp/marketplace/supabase_tools.py`,
+`src/algochains_mcp/subscriber_tools.py`, `src/algochains_mcp/marketplace/bridge.py`
+
+**Issues closed:**
+- Subscriber bot reads now use `subscriber_bot_assignments` fields (`bot`, `mode`, `paused`,
+  sizing caps) instead of stale Django subscription columns.
+- Paper marketplace subscription requests no longer require a broker field when the mode is
+  `paper`.
+- Subscriber P&L responses include explicit paper aliases and UTC boundary metadata so downstream
+  agents do not mislabel cumulative paper values as broker-realized P&L.
+
+### Still Needs Operator Attention
+
+- **Remote integration:** Local `main` is behind `origin/main` by 96 commits. Do not force-push.
+  Merge via the pushed feature branch / PR after rebasing or recreating the branch from current
+  remote `main`.
+- **Local test environment:** `pytest-asyncio` is declared in the repo's `dev` extra, but the active
+  Homebrew Python environment does not have it installed and is PEP-668 externally managed.
+  Non-async hardening tests pass; full `tests/test_bridge.py` async coverage needs a project venv
+  or CI environment with `pip install -e '.[dev]'`.
+- **Value preserved:** Changes are fail-closed and permission-tightening only; no live trading
+  thresholds, sizing, stop/target logic, or broker execution paths were changed.
 
 ---
 

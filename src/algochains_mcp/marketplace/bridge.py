@@ -128,12 +128,15 @@ class MarketplaceBridge:
 
     # ── Subscriptions ─────────────────────────────────────────────
 
-    async def subscribe(self, slug: str, broker: str, mode: str = "paper") -> dict:
+    async def subscribe(self, slug: str, broker: str | None = None, mode: str = "paper") -> dict:
         self._require_listing_key()
         client = await self._ensure_client()
+        payload = {"mode": mode}
+        if mode != "paper" or broker:
+            payload["broker"] = broker
         resp = await client.post(
             f"/api/v1/listings/{slug}/subscribe/",
-            json={"broker": broker, "mode": mode},
+            json=payload,
         )
         if resp.status_code == 404:
             raise ListingNotFoundError(f"Listing '{slug}' not found")

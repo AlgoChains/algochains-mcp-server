@@ -338,10 +338,12 @@ async def send_invite(email: str) -> dict[str, Any]:
         except Exception as e:
             logger.error("Invite email send failed: %s", e)
 
+    # SEC-2026-C3 FIX: invite_code and invite_url are NOT returned in the MCP
+    # response. The code is delivered via email only (above). Returning the raw
+    # code in the tool response allowed any MCP caller to mint usable invite URLs.
     return {
         "success": True,
         "email": email,
-        "invite_code": invite_code,
         "status": "invited",
-        "invite_url": f"https://algochains.ai/signup?invite={invite_code}",
+        "message": f"Invite sent to {email} via email. The invite code is delivered by email only.",
     }

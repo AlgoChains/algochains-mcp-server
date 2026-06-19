@@ -134,7 +134,7 @@ Tradovate  Supabase  Local files
 **Verdict:** ✅ Low risk in current implementation. Flag for review if Onyx gains URL-fetch capability.
 
 ### H-F7 — Oversized payloads / DoS (PATCHED in code)
-**Path:** POST `/api/mcp` with multi-MB JSON body.  
+**Path:** POST `/api/mcp` with multi-MB JSON body.
 **Risk:** MEDIUM — could exhaust memory or hang tool dispatch.  
 **Remediation (applied):** `/api/mcp` checks `Content-Length` and raw body size
 against `ALGOCHAINS_DEV_MAX_BODY_KB` from `developer_rate_limiter.py`
@@ -143,11 +143,11 @@ as defense in depth.
 
 ### H-F11 — Developer key escalation (PATCHED in code)
 **Path:** Developer key calls `execute_dynamic_tool` or owner-only tools such as
-`place_order` / `get_bot_health`.  
+`place_order` / `get_bot_health`.
 **Verification:** `handle_mcp_request()` routes developer callers through
 `check_developer_tool_access()` before dispatch. `DEVELOPER_BLOCKED_TOOLS`
 hard-blocks dynamic dispatch, owner bot/account state, subscriber tools, and
-Numerai submit/upload paths.  
+Numerai submit/upload paths.
 **Verdict:** Mitigated; covered by `tests/test_developer_tools.py` and
 `tests/test_http_bridge_developer_auth.py`.
 

@@ -78,6 +78,26 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
         "required_env": [],
         "notes": "Read-only HTTP smoke check for algochains.ai/learn/. No deploy capability. External HTTPS call; fails gracefully if site unreachable.",
     },
+    "get_physical_event_sources": {
+        "implementation_status": "partial",
+        "required_env": [],
+        "notes": "Lists configured physical-world source lanes. Polling rows depend on Sonia Air/tower daemons and Supabase table.",
+    },
+    "map_physical_event_assets": {
+        "implementation_status": "partial",
+        "required_env": [],
+        "notes": "Static research mapping for CL/NG/MNQ/NQ/MES/ES/BTC/ETH; advisory only.",
+    },
+    "score_physical_event_alpha": {
+        "implementation_status": "partial",
+        "required_env": [],
+        "notes": "Deterministic priority score from caller-provided real event fields; not broker truth or a trade signal.",
+    },
+    "get_sonia_air_heartbeat": {
+        "implementation_status": "partial",
+        "required_env": ["ALGOCHAINS_CONTROL_TOWER"],
+        "notes": "Reads control-tower state/sonia_air_heartbeat.json and fails closed when unavailable.",
+    },
 
     # ── Numerai tournament tools (§9 / §28.3 build order step 12) ──────────
     "numerai_status": {

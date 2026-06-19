@@ -246,6 +246,7 @@ except ImportError:
 # ─── V20 Memory Safety — import first so we can monitor from startup ─────────
 # Memory safety is lightweight and has no heavy sub-deps.
 from .memory_safety import get_memory_monitor, MemoryMonitor
+from .handlers.physical_world import PHYSICAL_WORLD_HANDLERS
 from .tool_manifest import build_manifest
 from .tool_policy import evaluate_dynamic_tool, evaluate_stdio_direct_tool
 from .otel_tracing import redacted_argument_hash, trace_span
@@ -463,6 +464,9 @@ SERVER_INSTRUCTIONS = (
 )
 
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
+_HANDLER_REGISTRY = {
+    **PHYSICAL_WORLD_HANDLERS,
+}
 
 # ═══════════════════════════════════════════════════════════════════
 # MCP 2025-06-18 Tool Behavior Annotations — safety metadata
@@ -1827,10 +1831,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "slug": {"type": "string"},
-                "broker": {"type": "string", "description": "Which broker to deploy on"},
+                "broker": {"type": "string", "description": "Which broker to deploy on. Required for live mode; optional for mode=paper."},
                 "mode": {"type": "string", "enum": ["paper", "live"], "default": "paper"},
             },
-            "required": ["slug", "broker"],
+            "required": ["slug"],
         },
     
         annotations=ANNOT_TRADE_EXEC,
@@ -3103,6 +3107,18 @@ TOOLS = [
          annotations=ANNOT_TRADE_EXEC),
     Tool(name="mcp_tool_manifest", description="Return JSON manifest of all registered MCP tools with implementation_status (full|partial|stub), required env vars, and Tier-1 flags. Use for CI, Onyx indexing, and honest agent planning — call before relying on V8-V20 tools.",
          inputSchema={"type": "object", "properties": {"include_tool_details": {"type": "boolean", "default": True, "description": "If false, return summary counts only (smaller payload)"}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_physical_event_sources", description="List physical-world event sources polled by Sonia Air and tower nodes, including license/dependency status. Read-only; no broker or execution access.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="map_physical_event_assets", description="Map physical-world event classes to affected assets (CL/NG/MNQ/NQ/MES/ES/BTC/ETH). Read-only research mapping.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Optional symbol to filter, e.g. CL or BTC"}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="score_physical_event_alpha", description="Compute an advisory physical-event priority score from provided real event fields. Research queue only; not broker truth and not a trade signal.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "event_type": {"type": "string"}, "severity": {"type": "number"}, "freshness_minutes": {"type": "number"}, "liquidity_proxy": {"type": "number"}}, "required": ["symbol", "event_type"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_sonia_air_heartbeat", description="Read Sonia Air heartbeat state and fallback status for three-node physical-world polling. Read-only.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     # ═══════════════════════════════════════════════════════════════
     # V18: Intent-Based Trading + Autonomous Intelligence (8 tools)
@@ -5042,7 +5058,7 @@ TIER1_TOOL_NAMES = {
     "record_prediction_market_bot_metric",
     "get_prediction_market_bot_metrics",
     "check_propagation_health",
-    "test_signal_propagation",
+    # "test_signal_propagation" removed from Tier-1: SEC-2026-C7 — live signal injection.
     "run_guardrail",
     # Skills Bridge (V22.7)
     "list_skills",
@@ -5135,16 +5151,14 @@ TIER1_TOOL_NAMES = {
     "get_rithmic_live_pnl",
     "get_rithmic_live_positions",
     "get_rithmic_live_fills",
-    # Support Tickets
+    # Support Tickets — create only (public intake); admin tools require owner_token (SEC-2026-C8)
     "create_support_ticket",
-    "get_support_ticket",
-    "list_support_tickets",
-    "update_ticket_status",
-    "get_ticket_stats",
+    # "get_support_ticket", "list_support_tickets", "update_ticket_status", "get_ticket_stats"
+    # removed from Tier-1: SEC-2026-C8 — service_role reads/writes without auth.
     # OAuth Broker Connection
     "generate_broker_auth_url",
     "exchange_broker_oauth_code",
-    "get_broker_oauth_status",
+    # "get_broker_oauth_status" removed from Tier-1: SEC-2026-C5 — token exfiltration.
     "get_connected_brokers",
     "revoke_broker_connection",
     # Programmatic account / MFA / developer key tools
@@ -5575,6 +5589,9 @@ def _require_broker(registry: BrokerRegistry, broker_name: str):
 async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -> list[TextContent]:
     """Route tool calls to their implementations."""
     args = arguments  # alias used by some handlers
+    registered_handler = _HANDLER_REGISTRY.get(name)
+    if registered_handler is not None:
+        return _text(await registered_handler(arguments))
 
     # ── Trading ──────────────────────────────────────────────
     if name == "place_order":
@@ -6463,7 +6480,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         bridge = _get_bridge()
         result = await bridge.subscribe(
             slug=arguments["slug"],
-            broker=arguments["broker"],
+            broker=arguments.get("broker"),
             mode=arguments.get("mode", "paper"),
         )
         return _text(result)
@@ -8604,6 +8621,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
     elif name == "test_signal_propagation":
+        # SEC-2026-C7: posts signed signals to live copy-trade ingest — owner + confirm.
+        _owner_token_provided = args.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "test_signal_propagation requires owner_token matching OWNER_API_TOKEN.",
+            })
+        if not args.get("confirm"):
+            return _text({
+                "error": "test_signal_propagation requires confirm=true — sends live paper signals.",
+                "required_arg": "confirm=true",
+            })
         from .trade_propagation import run_dummy_signal_test
         try:
             out = await run_dummy_signal_test(
@@ -9801,8 +9830,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Guardrail prefs error: {exc}"})
 
     elif name == "generate_ide_config":
+        # SEC-2026-C6: full config contains env secrets — owner_token required.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
         try:
             from .onboarding import generate_mcporter_config as _gen_config
+            from .onboarding import generate_mcporter_config_masked as _gen_masked
+            if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+                return _text(_gen_masked(
+                    ide=arguments.get("ide", "cursor"),
+                    tool_mode=arguments.get("tool_mode", "smart"),
+                ))
             return _text(_gen_config(
                 ide=arguments.get("ide", "cursor"),
                 tool_mode=arguments.get("tool_mode", "smart"),
@@ -9901,6 +9939,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Support ticket create error: {exc}"})
 
     elif name == "get_support_ticket":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "get_support_ticket requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .support_tickets import get_ticket as _get_ticket
             return _text(await _get_ticket(arguments["ticket_id"]))
@@ -9908,6 +9950,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "list_support_tickets":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "list_support_tickets requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .support_tickets import list_tickets as _list_tickets
             return _text(await _list_tickets(
@@ -9921,6 +9967,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "update_ticket_status":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "update_ticket_status requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .support_tickets import update_ticket_status as _update_ticket
             return _text(await _update_ticket(
@@ -9935,6 +9985,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "get_ticket_stats":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "get_ticket_stats requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .support_tickets import get_ticket_stats as _ticket_stats
             return _text(await _ticket_stats())
@@ -9968,9 +10022,16 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "get_broker_oauth_status":
+        # SEC-2026-C5: never return plaintext access_token; owner_token required.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "get_broker_oauth_status requires owner_token matching OWNER_API_TOKEN.",
+            })
         try:
-            from .brokers.oauth_manager import get_token as _get_token
-            return _text(await _get_token(
+            from .brokers.oauth_manager import get_oauth_status as _get_oauth_status
+            return _text(await _get_oauth_status(
                 broker=arguments["broker"],
                 user_id=arguments["user_id"],
                 auto_refresh=True,

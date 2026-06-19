@@ -32,6 +32,14 @@ and live-bot operations across 503 tools in 21 domains.
 | **HTTP bridge** | `moltbook/http_bridge.py` port 8090 | algochains.ai platform, Command Center |
 | **SSE** | `moltbook/sse_server.py` port 8765 | Streaming / event-driven clients |
 
+**Claude.ai web/mobile connector rule:** never tell a user to paste `localhost`,
+`127.0.0.1`, `0.0.0.0`, a phone LAN address, or a Tailscale-only `100.x` URL into a
+Claude.ai custom connector. The local PyPI package is `stdio` and works for desktop
+clients that can spawn a local process. Claude.ai web/mobile calls remote MCP servers
+from Anthropic's infrastructure, so it needs a public `https://.../mcp` endpoint.
+Use `algochains-mcp-http --host 127.0.0.1 --port 8080` behind a secure HTTPS tunnel for
+testing, or a hosted HTTPS bridge for production.
+
 Start the server:
 ```bash
 algochains-mcp --mode demo        # no credentials needed, public tools only
