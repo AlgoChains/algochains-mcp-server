@@ -304,6 +304,18 @@ _TOOL_TIERS: dict[str, int] = {
     "get_white_label_config": TIER_READ_ONLY,
     "create_tenant": TIER_WRITE_LOCAL,
     "get_tenant": TIER_READ_ONLY,
+    # 2026-06-19 security finding (Cursor automated scan, #incident-response):
+    # neither tool had an explicit entry, so both fell through to the
+    # conservative-by-name-only prefix rules — create_saas_tenant matched no
+    # prefix at all (no "create_" rule exists) and landed on the unauthenticated
+    # TIER_WRITE_LOCAL default; update_saas_tenant matched the generic
+    # ("update_", TIER_WRITE_LOCAL) rule. Either way, any caller through
+    # execute_dynamic_tool could create or take over a tenant (status/plan/
+    # config) with the Supabase service role and no owner_token. ORDER_EXEC
+    # forces requires_owner_secret=True over dynamic/HTTP-bridge transports
+    # (tool_policy.py:79-90) — matches the finding's own remediation ask.
+    "create_saas_tenant": TIER_ORDER_EXEC,
+    "update_saas_tenant": TIER_ORDER_EXEC,
     "create_sandbox": TIER_WRITE_LOCAL,
     "destroy_sandbox": TIER_WRITE_LOCAL,
     "get_tenant_audit_log": TIER_READ_ONLY,
