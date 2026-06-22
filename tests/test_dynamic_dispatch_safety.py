@@ -127,6 +127,9 @@ def test_get_tool_details_unknown_tool():
     "list_support_tickets",
     "update_ticket_status",
     "get_ticket_stats",
+    # SEC-2026-06-19: SaaS tenant lifecycle tools use privileged tenant manager.
+    "create_saas_tenant",
+    "update_saas_tenant",
 ])
 def test_execute_dynamic_tool_blocks_order_exec_without_token(tool_name, monkeypatch):
     """execute_dynamic_tool must block ORDER_EXEC/DESTRUCTIVE tools without owner_token.

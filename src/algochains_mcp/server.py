@@ -3009,7 +3009,7 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════
     Tool(name="create_saas_tenant", description="Create a new SaaS tenant with subscription plan and configuration.",
          inputSchema={"type": "object", "properties": {"company_name": {"type": "string"}, "admin_email": {"type": "string"}, "plan": {"type": "string", "enum": ["free", "starter", "professional", "enterprise"]}, "config": {"type": "object"}}, "required": ["company_name", "admin_email"]},
-        annotations=ANNOT_WRITE_SAFE,
+        annotations=ANNOT_TRADE_EXEC,
     ),
     Tool(name="get_saas_tenant", description="Get SaaS tenant details, usage, and subscription status.",
          inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}}, "required": ["tenant_id"]},
@@ -3017,7 +3017,7 @@ TOOLS = [
     ),
     Tool(name="update_saas_tenant", description="Update SaaS tenant settings, plan, or configuration.",
          inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "updates": {"type": "object"}}, "required": ["tenant_id", "updates"]},
-        annotations=ANNOT_WRITE_SAFE,
+        annotations=ANNOT_TRADE_EXEC,
     ),
     Tool(name="get_usage_metrics", description="Get detailed usage metrics for billing (API calls, compute, storage).",
          inputSchema={"type": "object", "properties": {"tenant_id": {"type": "string"}, "period": {"type": "string", "default": "current_month"}}, "required": ["tenant_id"]},
