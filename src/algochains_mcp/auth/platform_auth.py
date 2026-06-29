@@ -721,6 +721,7 @@ async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str
         old_key = rows[0]
         env = old_key.get("env", "live")
         scopes = old_key.get("scopes", ["read:market_data"])
+        tier = old_key.get("tier_at_creation", "developer_pro")
         new_name = name or old_key.get("name", "default")
 
         # 2. Revoke old key FIRST (fail-safe: if mint fails, old key still valid)
@@ -736,7 +737,7 @@ async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str
             return {"error": f"Could not revoke old key (HTTP {r.status_code}) — rotation aborted."}
 
         # 3. Mint new key (after revoke — caller must save; if this fails, key was already revoked)
-        new_result = await create_developer_key(name=new_name, scopes=scopes, env=env)
+        new_result = await create_developer_key(name=new_name, scopes=scopes, env=env, tier=tier)
         if new_result.get("status") != "ok":
             return {
                 "error": "Old key revoked but new key minting failed. Contact support with old_key_id.",

@@ -129,7 +129,7 @@ async def provision(request: Request):
     )
     # Record Stripe-specific identifiers in the notes/metadata fields if available
     supabase_url = os.getenv("SUPABASE_URL", "")
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_SERVICE_KEY", "")
 
     key_stored = False
     if supabase_url and supabase_key:
@@ -158,8 +158,16 @@ async def provision(request: Request):
 
     if not key_stored:
         log.warning(
-            "Stripe APP: provisioning key for %s but storage failed — key may be unusable",
+            "Stripe APP: provisioning key for %s but storage failed — credentials withheld",
             clerk_user_id,
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "resource_id": f"ac_{stripe_customer_id[:12]}_{product_id}",
+                "status": "provision_failed",
+                "error": "Key storage failed — credentials not issued. Retry provisioning or contact support.",
+            },
         )
 
     return JSONResponse({
@@ -175,7 +183,7 @@ async def provision(request: Request):
             "Browse marketplace: algochains browse-strategy-marketplace",
             "Full docs: https://algochains.ai/docs/developer/",
         ],
-        "status": "active" if key_stored else "provisioned_storage_pending",
+        "status": "active",
     })
 
 # ── Status endpoint ────────────────────────────────────────────────────────────
