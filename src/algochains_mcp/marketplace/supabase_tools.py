@@ -52,7 +52,9 @@ def _get_sb_client(use_service_role: bool = False):
 
         url = os.getenv("SUPABASE_URL", "")
         if use_service_role:
-            key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+            # Accept both naming conventions: CT uses SUPABASE_SERVICE_ROLE_KEY,
+            # mcp-server .env uses SUPABASE_SERVICE_KEY (per config.py).
+            key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_SERVICE_KEY", "")
         else:
             key = os.getenv("SUPABASE_ANON_KEY", "") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")
 

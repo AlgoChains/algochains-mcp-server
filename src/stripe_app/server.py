@@ -12,13 +12,14 @@ Endpoints (Stripe APP spec):
   GET  /app/status/:id      → provisioning status
   POST /app/deprovision/:id → remove provisioned resource
 """
-import hashlib
 import hmac
 import json
+import logging
 import os
-import secrets
 import time
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -97,6 +98,8 @@ async def provision(request: Request):
       stripe projects link algochains
     We create a developer API key and return credentials.
     """
+    from algochains_mcp.auth.key_contract import generate_platform_key, build_insert_payload
+
     body = await _verify_request(request)
     data: dict[str, Any] = json.loads(body)
 
@@ -105,54 +108,74 @@ async def provision(request: Request):
     stripe_account_id  = data.get("account_id", "")
     email = data.get("email", "")
 
-    # Generate a developer API key
-    raw_key = f"ac_live_{secrets.token_urlsafe(32)}"
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    # Map Stripe product → AlgoChains tier
+    tier = "enterprise" if product_id == "enterprise-tier" else "developer_pro"
 
-    # Store in Supabase (developer_api_keys table)
-    try:
-        import httpx
-        supabase_url = os.getenv("SUPABASE_URL", "")
-        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-        if supabase_url and supabase_key:
-            async with httpx.AsyncClient() as client:
+    # Use email as clerk_user_id until Stripe webhook can supply a Clerk ID.
+    # This is acceptable — bridge resolution needs clerk_user_id NOT NULL.
+    # When Clerk is live, Stripe webhooks should include metadata.clerk_user_id.
+    clerk_user_id = (
+        data.get("metadata", {}).get("clerk_user_id")
+        or email
+        or f"stripe:{stripe_customer_id}"
+    )
+
+    raw_key = generate_platform_key(env="live")
+    payload = build_insert_payload(
+        raw_key=raw_key,
+        clerk_user_id=clerk_user_id,
+        tier=tier,
+        label=f"Stripe {product_id}",
+    )
+    # Record Stripe-specific identifiers in the notes/metadata fields if available
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
+    key_stored = False
+    if supabase_url and supabase_key:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=15) as client:
                 resp = await client.post(
                     f"{supabase_url}/rest/v1/developer_api_keys",
                     headers={
                         "apikey": supabase_key,
                         "Authorization": f"Bearer {supabase_key}",
                         "Content-Type": "application/json",
+                        "Prefer": "return=minimal",
                     },
-                    json={
-                        "stripe_customer_id": stripe_customer_id,
-                        "stripe_account_id": stripe_account_id,
-                        "email": email,
-                        "product_id": product_id,
-                        "key_hash": key_hash,
-                        "key_prefix": raw_key[:12],
-                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "trial_ends_at": time.strftime(
-                            "%Y-%m-%dT%H:%M:%SZ",
-                            time.gmtime(time.time() + 14 * 86400)
-                        ) if product_id == "developer-tier" else None,
-                    },
+                    json=payload,
                 )
-    except Exception:
-        pass  # Log but don't fail provisioning
+            if resp.status_code in (200, 201, 204):
+                key_stored = True
+            else:
+                log.error(
+                    "Stripe APP: key storage failed HTTP %s: %s",
+                    resp.status_code, resp.text[:200],
+                )
+        except Exception as exc:
+            log.error("Stripe APP: key storage exception: %s", exc)
+
+    if not key_stored:
+        log.warning(
+            "Stripe APP: provisioning key for %s but storage failed — key may be unusable",
+            clerk_user_id,
+        )
 
     return JSONResponse({
         "resource_id": f"ac_{stripe_customer_id[:12]}_{product_id}",
         "credentials": {
-            "ALGOCHAINS_BRIDGE_KEY": raw_key,
-            "ALGOCHAINS_BRIDGE_URL": "https://mcp.algochains.ai/api/mcp",
+            "ALGOCHAINS_API_KEY": raw_key,
+            "ALGOCHAINS_BRIDGE_URL": "https://api.algochains.ai/api/mcp",
         },
         "next_steps": [
+            "export ALGOCHAINS_API_KEY=<your key>",
             "Run: algochains doctor",
             "Run: algochains detect-market-regime",
             "Browse marketplace: algochains browse-strategy-marketplace",
-            "Full docs: https://docs.algochains.ai/cli",
+            "Full docs: https://algochains.ai/docs/developer/",
         ],
-        "status": "active",
+        "status": "active" if key_stored else "provisioned_storage_pending",
     })
 
 # ── Status endpoint ────────────────────────────────────────────────────────────

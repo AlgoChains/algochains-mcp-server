@@ -556,12 +556,16 @@ async def create_developer_key(
     name: str = "default",
     scopes: list[str] | None = None,
     env: str = "live",
+    tier: str = "developer_pro",
 ) -> dict[str, Any]:
     """
     Mint a new ac_live_* / ac_test_* developer API key.
     Requires an AAL2 (MFA-verified) session.
     The plaintext key is returned ONCE ONLY — store it immediately.
+    Uses key_contract.build_insert_payload() to ensure writer parity.
     """
+    from algochains_mcp.auth.key_contract import generate_platform_key, build_insert_payload
+
     err = _need_supabase()
     if err:
         return err
@@ -583,12 +587,27 @@ async def create_developer_key(
     if env not in ("live", "test"):
         return {"error": "env must be 'live' or 'test'"}
 
-    scopes = scopes or ["read:market_data", "read:signals"]
-    prefix = f"ac_{env}_"
-    plaintext = prefix + secrets.token_urlsafe(32)
-    key_hash = _sha256(plaintext)
-    key_prefix = plaintext[:12]
-    user_id = session.get("user_id", "")
+    # Resolve clerk_user_id: prefer Clerk ID from user metadata, fall back to email
+    user_meta = session.get("user_meta", {}) or {}
+    clerk_user_id = (
+        user_meta.get("clerk_user_id")
+        or user_meta.get("clerk_id")
+        or session.get("email", "")
+        or session.get("user_id", "unknown")
+    )
+
+    plaintext = generate_platform_key(env)
+    payload = build_insert_payload(
+        raw_key=plaintext,
+        clerk_user_id=clerk_user_id,
+        tier=tier,
+        label=name,
+        override_scopes=scopes,  # validated against tier max inside build_insert_payload
+    )
+    # Also store Supabase Auth user_id as secondary link
+    supabase_uid = session.get("user_id", "")
+    if supabase_uid:
+        payload["user_id"] = supabase_uid
 
     import httpx
     try:
@@ -596,14 +615,7 @@ async def create_developer_key(
             resp = await client.post(
                 f"{_SUPABASE_URL}/rest/v1/developer_api_keys",
                 headers={**_service_headers(), "Prefer": "return=representation"},
-                json={
-                    "user_id": user_id,
-                    "key_hash": key_hash,
-                    "key_prefix": key_prefix,
-                    "name": name,
-                    "scopes": scopes,
-                    "env": env,
-                },
+                json=payload,
             )
         if resp.status_code in (200, 201):
             row = resp.json()
@@ -612,10 +624,13 @@ async def create_developer_key(
                 "status": "ok",
                 "key": plaintext,  # SHOWN ONCE ONLY
                 "key_id": row_id,
-                "key_prefix": key_prefix,
+                "key_prefix": payload["key_prefix"],
+                "key_hint": payload["key_hint"],
                 "name": name,
-                "scopes": scopes,
+                "scopes": payload["scopes"],
+                "tier": tier,
                 "env": env,
+                "clerk_user_id": clerk_user_id,
                 "warning": "⚠️  Save this key immediately — it will NOT be shown again.",
                 "next_step": "test_bridge_connection",
             }

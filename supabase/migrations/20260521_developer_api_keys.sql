@@ -1,3 +1,9 @@
+-- ⚠️  TOMBSTONED 2026-06-28 — DO NOT APPLY
+-- This file is superseded by the control-tower canonical DDL path.
+-- See: algochains-control-tower/supabase/migrations/20260521_developer_api_keys.sql
+-- Key contract is now in: algochains-mcp-server/src/algochains_mcp/auth/key_contract.py
+-- ─────────────────────────────────────────────────────────────────────────────
+
 -- AlgoChains MCP Server — Developer API Keys
 -- Migration: 20260521_developer_api_keys.sql
 -- Apply via: supabase db push (mcp-server project)
