@@ -1,3 +1,16 @@
+-- ⚠️  TOMBSTONED 2026-06-28 — DO NOT APPLY
+-- ─────────────────────────────────────────────────────────────────────────────
+-- This file is superseded by the control-tower canonical DDL path:
+--   algochains-control-tower/supabase/migrations/20260521_developer_api_keys.sql
+--   algochains-control-tower/supabase/migrations/20260522_developer_api_keys_schema_align.sql
+--   algochains-control-tower/supabase/migrations/20260628_dev_keys_tier_scopes.sql
+--
+-- The mcp-server no longer ships developer_api_keys DDL. Key contract lives in:
+--   algochains-mcp-server/src/algochains_mcp/auth/key_contract.py
+--
+-- To apply schema changes: run control-tower migrations, NOT this file.
+-- ─────────────────────────────────────────────────────────────────────────────
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- Developer API Keys Migration (2026-06-14)
 -- ═══════════════════════════════════════════════════════════════════════════

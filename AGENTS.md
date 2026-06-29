@@ -153,6 +153,27 @@ No web signup. No Stripe dashboard visit. 14-day trial, then $29/mo for paper ti
 The `ac_live_*` key unlocks 25 read-only tools: market data, regime detection, backtests,
 Onyx search, marketplace listings. Set as `ALGOCHAINS_BRIDGE_KEY` env var.
 
+### Unified Key Contract (2026-06-28) — single source of truth
+
+All three key writers (Django `algochains.ai`, this MCP server, and the Stripe app)
+now mint developer keys through one shared module so every row in
+`public.developer_api_keys` has an identical INSERT shape:
+
+- **Contract:** `src/algochains_mcp/auth/key_contract.py`
+  (`generate_platform_key`, `hash_platform_key`, `key_hint`, `scopes_for_tier`,
+  `build_insert_payload`). Identity is keyed on `clerk_user_id` (TEXT, canonical).
+- **Resolution / validation:** `src/algochains_mcp/developer_auth.py` →
+  `resolve_developer_api_key` RPC (service-role), with a 60s positive cache.
+- **Schema DDL is owned by control-tower**, not this repo. The local
+  `supabase/migrations/2026052*_developer_api_keys.sql` files are **tombstoned** —
+  apply control-tower migrations instead (`20260628_dev_keys_tier_scopes.sql`).
+- **Tiered scopes:** `developer_pro` / `enterprise` resolve to
+  `read:market_data, read:signals, read:backtest, write:backtest`.
+- **Writer parity is enforced by tests:** `tests/test_writer_parity.py`
+  (mirrors Django `home/tests/test_developer_key_views.py`).
+- **Service-role env:** the bridge needs `SUPABASE_SERVICE_ROLE_KEY` (accepts
+  `SUPABASE_SERVICE_KEY` as a fallback) to resolve keys.
+
 ### `owner_token` pattern
 
 Tier 2 and Tier 3 tools require the owner token. **Always ask the user for explicit

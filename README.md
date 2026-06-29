@@ -659,6 +659,7 @@ AlgoChains MCP Server
 | [CHANGELOG.md](CHANGELOG.md) | Full version history |
 | [docs/GOTCHAS_AND_BUGS.md](docs/GOTCHAS_AND_BUGS.md) | Confirmed bugs, gotchas, operational surprises |
 | [docs/DEVELOPER_TIER_ONBOARDING.md](docs/DEVELOPER_TIER_ONBOARDING.md) | Developer key setup, scopes, and bridge auth constraints |
+| [AGENTS.md → Unified Key Contract](AGENTS.md) | 2026-06-28: all 3 writers (Django, MCP, Stripe) mint `ac_live_*` keys via `src/algochains_mcp/auth/key_contract.py`; schema DDL owned by control-tower; tiered scopes; writer parity in `tests/test_writer_parity.py` |
 | [docs/SUBSCRIBER_TOOLS.md](docs/SUBSCRIBER_TOOLS.md) | Subscriber onboarding, stdio-vs-bridge tools, scopes, and copy-trade constraints |
 | [docs/NUMERAI_TOURNAMENT.md](docs/NUMERAI_TOURNAMENT.md) | Numerai tournament tool sequence, upload gates, and troubleshooting |
 | [docs/TRADOVATE_PARITY.md](docs/TRADOVATE_PARITY.md) | Tradovate endpoint mapping vs community server |
