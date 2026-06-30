@@ -10,6 +10,29 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [22.7.0] — 2026-06-29
+
+### Changed — Documentation parity and tool count sync
+
+- Synced all public-facing tool counts to match `server.py` registration:
+  full mode **525** (was 503), smart mode **188** (was 168).
+- Updated badges, prose, and table in `README.md`.
+- Updated `AGENTS.md` smart/full counts and discover-tools examples.
+- Updated `SERVER_INSTRUCTIONS` in `server.py`: "~525 tools across 21 domains"
+  (was ~481 / 20 domains — reflected the pre-physical-world count).
+- Synced `registry.json` version from 22.4.1 → 22.7.0 and updated description count.
+- Updated `pyproject.toml` description to include physical-world event intelligence.
+
+### Added — Physical-world event intelligence (from June 14 merge)
+
+- `get_physical_event_sources` — enumerate real-world event feeds mapped to market signals.
+- `map_physical_event_assets` — resolve physical event categories to affected asset universes.
+- `score_physical_event_alpha` — score a physical event's alpha potential across asset classes.
+- `get_sonia_air_heartbeat` — advisory connectivity check for Sonia Air node.
+- All four tools are `agent_memory` authority (advisory-only), never `broker_truth`.
+
+---
+
 ## [22.6.0] — 2026-06-13
 
 ### Added — Revenue platform (WS1–WS6), legal defense & onboarding

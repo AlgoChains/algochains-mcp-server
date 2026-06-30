@@ -432,7 +432,7 @@ from algochains_mcp import __version__ as _server_version
 
 SERVER_INSTRUCTIONS = (
     f"AlgoChains MCP Server v{_server_version} — The Ultimate Algo Quant Stack. "
-    "~481 tools across 20 domains: market data, trading, strategy building, ML/AI, execution, "
+    "~525 tools across 21 domains: market data, trading, strategy building, ML/AI, execution, "
     "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
     "Onyx RAG intelligence, Graphiti temporal knowledge graph, MCP 2025-11-25 spec compliance, "
     "SaaS hardening, and autonomous marketplace pipeline (research→backtest→validate→stage). "
@@ -460,7 +460,7 @@ SERVER_INSTRUCTIONS = (
     "encrypted key vault, desktop tower dispatcher (dispatch_tower_job). "
     "LIVE: 4 futures bots (MNQ/CL/MES/NQ, owner-only), Alpaca paper trader (equities+crypto, subscribable). "
     "Command Center: algochains-command-center (Next.js, port 3333). "
-    "Set ALGOCHAINS_TOOL_MODE=full to expose all ~481 tools."
+    "Set ALGOCHAINS_TOOL_MODE=full to expose all ~525 tools."
 )
 
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
