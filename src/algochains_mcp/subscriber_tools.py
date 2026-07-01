@@ -539,6 +539,67 @@ def get_my_assignments(subscriber_id: str) -> dict[str, Any]:
     return {"assignments": list(getattr(resp, "data", None) or [])}
 
 
+def _audit_live_delivery(
+    sb: Any,
+    *,
+    subscriber_id: str,
+    signal_id: str | None,
+    bot: str | None,
+    bracket_id: str | None,
+    side: str | None,
+    disposition: str,
+    skip_reason: str | None = None,
+) -> None:
+    """Fire-and-forget delivery-audit row for LIVE subscriber activity.
+
+    Mirrors the paper executor's _audit_copy_trade_signal so the manager
+    delivery dashboard (v_signal_delivery_matrix) covers live copy-trade with
+    the same fidelity as paper. latency_ms is computed from the signal's
+    emitted_at when the copy_trade_signals row is still present (14-day TTL);
+    older/absent rows audit with latency_ms NULL. Never raises into caller.
+    """
+    emitted_at = None
+    latency_ms = None
+    if signal_id:
+        try:
+            sig = (
+                sb.table("copy_trade_signals")
+                .select("emitted_at,bot,bracket_id,side")
+                .eq("id", signal_id)
+                .maybe_single()
+                .execute()
+            )
+            row = getattr(sig, "data", None) or {}
+            emitted_at = row.get("emitted_at")
+            bot = bot or row.get("bot")
+            bracket_id = bracket_id or row.get("bracket_id")
+            side = side or row.get("side")
+            if emitted_at:
+                emitted_dt = datetime.fromisoformat(str(emitted_at).replace("Z", "+00:00"))
+                latency_ms = int(
+                    (datetime.now(timezone.utc) - emitted_dt).total_seconds() * 1000
+                )
+        except Exception:
+            pass
+    try:
+        sb.table("copy_trade_signal_audit").insert(
+            {
+                "signal_id": signal_id,
+                "subscriber_id": subscriber_id,
+                "platform_user_id": str(subscriber_id),
+                "bot": bot,
+                "bracket_id": bracket_id,
+                "side": side,
+                "emitted_at": emitted_at,
+                "disposition": disposition,
+                "skip_reason": skip_reason,
+                "latency_ms": latency_ms,
+            }
+        ).execute()
+    except Exception:
+        pass
+
+
 def report_fill(
     subscriber_id: str,
     *,
@@ -593,8 +654,30 @@ def report_fill(
         msg = str(exc).lower()
         if "23505" in msg or "duplicate key" in msg or "uniq_sf_subscriber_signal_kind" in msg:
             return {"ok": True, "fill_id": None, "duplicate": True}
+        _audit_live_delivery(
+            sb,
+            subscriber_id=subscriber_id,
+            signal_id=signal_id,
+            bot=bot,
+            bracket_id=bracket_id,
+            side=side,
+            disposition="error",
+            skip_reason="fill_insert_failed",
+        )
         return _err("insert_failed", detail=str(exc))
     rows = getattr(resp, "data", None) or []
+    # Delivery-audit parity with paper: a reported fill == the subscriber
+    # compliantly streamed their execution back to the platform.
+    _audit_live_delivery(
+        sb,
+        subscriber_id=subscriber_id,
+        signal_id=signal_id,
+        bot=bot,
+        bracket_id=bracket_id,
+        side=side,
+        disposition="consumed",
+        skip_reason=None if fill_kind != "reject" else (error_msg or "daemon_reject"),
+    )
     return {"ok": True, "fill_id": (rows[0].get("id") if rows else None)}
 
 
@@ -669,6 +752,16 @@ def ack_signal(subscriber_id: str, *, signal_id: str) -> dict[str, Any]:
         sb.table("subscriber_fills").insert(payload).execute()
     except Exception as exc:
         return _err("insert_failed", detail=str(exc))
+    _audit_live_delivery(
+        sb,
+        subscriber_id=subscriber_id,
+        signal_id=signal_id,
+        bot=sig_row.get("bot"),
+        bracket_id=None,
+        side=sig_row.get("side"),
+        disposition="ack_only",
+        skip_reason="daemon_declined",
+    )
     return {"ok": True}
 
 
