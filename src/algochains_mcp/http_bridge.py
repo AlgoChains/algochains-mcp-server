@@ -156,6 +156,13 @@ OWNER_TOOLS = {
     "numerai_get_model_scores",
     # HK-17: upload is TIER_ORDER_EXEC — restricted tier. Confirm gate in handler.
     "numerai_upload_predictions",
+    # Cricket bot (Avi's external partner API) — owner/manager observability for
+    # the Avi Predictions listing. Read-only; fails closed without env vars.
+    "get_cricket_bot_performance",
+    "get_cricket_bot_trades",
+    "get_cricket_bot_matches",
+    "get_cricket_bot_signals",
+    "get_cricket_bot_tournaments",
 }
 
 

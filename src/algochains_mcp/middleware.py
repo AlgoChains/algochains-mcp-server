@@ -67,6 +67,8 @@ class RateLimiter:
         "v15_defi": 30,
         "v16_cloud": 30,
         "v17_physical_events": 60,
+        # Avi's cricket-bot partner box is small — keep our footprint polite.
+        "cricket_bot": 30,
     }
 
     def __init__(self, overrides: dict[str, int] | None = None):
@@ -183,6 +185,12 @@ TOOL_RATE_LIMIT_CATEGORY: dict[str, str] = {
     "map_physical_event_assets": "v17_physical_events",
     "score_physical_event_alpha": "v17_physical_events",
     "get_sonia_air_heartbeat": "v17_physical_events",
+    # Cricket bot (Avi's external partner API)
+    "get_cricket_bot_performance": "cricket_bot",
+    "get_cricket_bot_trades": "cricket_bot",
+    "get_cricket_bot_matches": "cricket_bot",
+    "get_cricket_bot_signals": "cricket_bot",
+    "get_cricket_bot_tournaments": "cricket_bot",
 }
 
 

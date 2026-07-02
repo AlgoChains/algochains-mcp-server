@@ -99,6 +99,33 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
         "notes": "Reads control-tower state/sonia_air_heartbeat.json and fails closed when unavailable.",
     },
 
+    # ── Cricket bot (Avi's external partner API — Avi Predictions listing) ──
+    "get_cricket_bot_performance": {
+        "implementation_status": "full",
+        "required_env": ["CRICKET_BOT_API_KEY", "CRICKET_BOT_API_URL"],
+        "notes": "Read-only GET /performance on Avi's cricket-bot API. Fails closed when env missing/unreachable; advisory only, never a trading dependency.",
+    },
+    "get_cricket_bot_trades": {
+        "implementation_status": "full",
+        "required_env": ["CRICKET_BOT_API_KEY", "CRICKET_BOT_API_URL"],
+        "notes": "Read-only GET /trades (platform=polymarket|kalshi per row). Fails closed; advisory only.",
+    },
+    "get_cricket_bot_matches": {
+        "implementation_status": "full",
+        "required_env": ["CRICKET_BOT_API_KEY", "CRICKET_BOT_API_URL"],
+        "notes": "Read-only GET /matches per-match breakdown. Fails closed; advisory only.",
+    },
+    "get_cricket_bot_signals": {
+        "implementation_status": "full",
+        "required_env": ["CRICKET_BOT_API_KEY", "CRICKET_BOT_API_URL"],
+        "notes": "Read-only GET /signals incl. SKIP rows for transparency. Fails closed; advisory only.",
+    },
+    "get_cricket_bot_tournaments": {
+        "implementation_status": "full",
+        "required_env": ["CRICKET_BOT_API_KEY", "CRICKET_BOT_API_URL"],
+        "notes": "Read-only GET /tournaments discovery endpoint. Fails closed; advisory only.",
+    },
+
     # ── Numerai tournament tools (§9 / §28.3 build order step 12) ──────────
     "numerai_status": {
         "implementation_status": "partial",

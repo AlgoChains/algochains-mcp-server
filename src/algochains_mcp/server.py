@@ -247,6 +247,7 @@ except ImportError:
 # Memory safety is lightweight and has no heavy sub-deps.
 from .memory_safety import get_memory_monitor, MemoryMonitor
 from .handlers.physical_world import PHYSICAL_WORLD_HANDLERS
+from .handlers.cricket_bot import CRICKET_BOT_HANDLERS
 from .tool_manifest import build_manifest
 from .tool_policy import evaluate_dynamic_tool, evaluate_stdio_direct_tool
 from .otel_tracing import redacted_argument_hash, trace_span
@@ -466,6 +467,7 @@ SERVER_INSTRUCTIONS = (
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
 _HANDLER_REGISTRY = {
     **PHYSICAL_WORLD_HANDLERS,
+    **CRICKET_BOT_HANDLERS,
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -3120,6 +3122,25 @@ TOOLS = [
     Tool(name="get_sonia_air_heartbeat", description="Read Sonia Air heartbeat state and fallback status for three-node physical-world polling. Read-only.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    # ═══════════════════════════════════════════════════════════════
+    # Cricket Bot (Avi's external partner API — Avi Predictions listing, 5 tools)
+    # Read-only observability; advisory only, never a trading dependency.
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="get_cricket_bot_performance", description="Aggregate cricket-bot stats from Avi's partner API: win rate, total P&L, best/worst trade. Filter by platform (polymarket|kalshi|all), tournament ('MLC 2026' exact or 'MLC' any year), innings (1|2). Read-only, advisory; backs the Avi Predictions marketplace listing.",
+         inputSchema={"type": "object", "properties": {"platform": {"type": "string", "enum": ["all", "polymarket", "kalshi"], "default": "all"}, "tournament": {"type": "string", "description": "e.g. 'MLC 2026' (exact) or 'MLC' (any year)"}, "innings": {"type": "integer", "enum": [1, 2], "description": "1 = first innings, 2 = chase"}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_cricket_bot_trades", description="Cricket-bot individual trade history: player, tier (STAR|IN-FORM|LOW), entry/exit probability prices, size_usdc, pnl_usdc, exit_reason. Each trade carries platform=polymarket|kalshi. Paginated (limit max 500). Read-only, advisory.",
+         inputSchema={"type": "object", "properties": {"platform": {"type": "string", "enum": ["all", "polymarket", "kalshi"], "default": "all"}, "tournament": {"type": "string"}, "innings": {"type": "integer", "enum": [1, 2]}, "limit": {"type": "integer", "default": 100, "maximum": 500}, "offset": {"type": "integer", "default": 0}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_cricket_bot_matches", description="Cricket-bot per-match breakdown: trades, wins, losses, win_rate, total_pnl per cricket match. Filter by tournament and innings. Read-only, advisory.",
+         inputSchema={"type": "object", "properties": {"tournament": {"type": "string"}, "innings": {"type": "integer", "enum": [1, 2]}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_cricket_bot_signals", description="Cricket-bot signal feed — every evaluated signal including SKIPs: edge, effective_impact, expected_shift, wickets_fallen. Filter action=BUY|SKIP. Use for did-the-bot-consider-and-pass transparency. Read-only, advisory.",
+         inputSchema={"type": "object", "properties": {"action": {"type": "string", "enum": ["BUY", "SKIP"]}, "tournament": {"type": "string"}, "limit": {"type": "integer", "default": 100, "maximum": 500}, "offset": {"type": "integer", "default": 0}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_cricket_bot_tournaments", description="List cricket tournaments available in Avi's bot database with trade counts (e.g. IPL 2026, MLC 2026). Use to discover tournament filter values. Read-only, advisory.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
     # ═══════════════════════════════════════════════════════════════
     # V18: Intent-Based Trading + Autonomous Intelligence (8 tools)
     # ═══════════════════════════════════════════════════════════════

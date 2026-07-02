@@ -153,6 +153,12 @@ _TOOL_TIERS: dict[str, int] = {
     "map_physical_event_assets": TIER_READ_ONLY,
     "score_physical_event_alpha": TIER_READ_ONLY,
     "get_sonia_air_heartbeat": TIER_READ_ONLY,
+    # Cricket bot (Avi's external partner API — read-only observability)
+    "get_cricket_bot_performance": TIER_READ_ONLY,
+    "get_cricket_bot_trades": TIER_READ_ONLY,
+    "get_cricket_bot_matches": TIER_READ_ONLY,
+    "get_cricket_bot_signals": TIER_READ_ONLY,
+    "get_cricket_bot_tournaments": TIER_READ_ONLY,
     "place_kalshi_order": TIER_ORDER_EXEC,
     # BUG-07 FIX: run_safe_compounder and run_kalshi_full_pipeline call
     # kalshi_signed_post (live Kalshi orders) when execute=true + confirmed=true.
