@@ -1219,7 +1219,7 @@ def create_fastapi_app():
         Latency: <150ms — reads from state files on disk.
         """
         key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
-        if not key_valid or developer is not None or (not is_owner and subscriber is None):
+        if not key_valid or not is_owner:  # SEC: /v1/agent/* is owner-only — was leaking cross-bot signal/guardian/incident state to any subscriber key (validated finding 2026-07-04)
             raise HTTPException(status_code=401, detail="Valid API key required (owner or subscriber)")
         snapshot = await asyncio.to_thread(_build_status_snapshot, is_owner)
         snapshot["access_level"] = "owner" if is_owner else "subscriber"
@@ -1237,7 +1237,7 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
         key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
-        if not key_valid or developer is not None or (not is_owner and subscriber is None):
+        if not key_valid or not is_owner:  # SEC: /v1/agent/* is owner-only — was leaking cross-bot signal/guardian/incident state to any subscriber key (validated finding 2026-07-04)
             raise HTTPException(status_code=401, detail="Valid API key required")
         limit = max(1, min(int(limit), 100))
 
@@ -1279,7 +1279,7 @@ def create_fastapi_app():
         Auth: owner BRIDGE_API_KEY or subscriber key.
         """
         key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
-        if not key_valid or developer is not None or (not is_owner and subscriber is None):
+        if not key_valid or not is_owner:  # SEC: /v1/agent/* is owner-only — was leaking cross-bot signal/guardian/incident state to any subscriber key (validated finding 2026-07-04)
             raise HTTPException(status_code=401, detail="Valid API key required")
         hours = max(1, min(int(hours), 168))
 
@@ -1320,7 +1320,7 @@ def create_fastapi_app():
         Reconnect: standard SSE retry — client reconnects automatically on disconnect.
         """
         key_valid, is_owner, subscriber, developer, _caller_scope = _resolve_auth(x_api_key, authorization)
-        if not key_valid or developer is not None or (not is_owner and subscriber is None):
+        if not key_valid or not is_owner:  # SEC: /v1/agent/* is owner-only — was leaking cross-bot signal/guardian/incident state to any subscriber key (validated finding 2026-07-04)
             raise HTTPException(status_code=401, detail="Valid API key required")
         interval = max(1.0, min(float(poll_interval), 30.0))
 
