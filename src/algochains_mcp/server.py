@@ -3263,8 +3263,8 @@ TOOLS = [
     Tool(name="run_builder_backtest", description="Run a backtest using the Builder SDK. Supports built-in strategies (SMA crossover, RSI, Bollinger Bands, etc.) or custom data. Returns Sharpe, MaxDD, win rate, profit factor, and marketplace readiness check.",
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "default": "custom"}, "timeframe": {"type": "string", "default": "1d"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "initial_capital": {"type": "number", "default": 100000}}, "required": ["symbol"]},
          annotations=ANNOT_COMPUTE),
-    Tool(name="submit_to_marketplace", description="Submit a validated strategy to the AlgoChains marketplace. Runs 7-gate validation (schema, performance, overfitting, MCPT, walk-forward, paper trading, decay monitor). Returns tier classification (Platinum/Gold/Silver/Bronze) and next steps.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "enum": ["trend", "mean_reversion", "breakout", "momentum", "scalp", "pairs", "stat_arb"]}, "timeframe": {"type": "string"}, "oos_sharpe": {"type": "number"}, "oos_trades": {"type": "integer"}, "max_drawdown_pct": {"type": "number"}, "is_sharpe": {"type": "number"}, "win_rate": {"type": "number"}, "profit_factor": {"type": "number"}, "mcpt_p_value": {"type": "number"}, "mcpt_permutations": {"type": "integer"}, "wf_folds": {"type": "integer"}, "wf_avg_oos_sharpe": {"type": "number"}, "wf_worst_fold": {"type": "number"}, "description": {"type": "string"}, "asset_class": {"type": "string", "default": "stock"}, "price_monthly": {"type": "number", "default": 29.99}}, "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct"]},
+    Tool(name="submit_to_marketplace", description="Submit a validated strategy to the AlgoChains marketplace. Runs 7-gate validation (schema, performance, overfitting, MCPT, walk-forward, paper trading, decay monitor). REQUIRES owner_token because this stages listings with the operator marketplace credential.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "enum": ["trend", "mean_reversion", "breakout", "momentum", "scalp", "pairs", "stat_arb"]}, "timeframe": {"type": "string"}, "oos_sharpe": {"type": "number"}, "oos_trades": {"type": "integer"}, "max_drawdown_pct": {"type": "number"}, "is_sharpe": {"type": "number"}, "win_rate": {"type": "number"}, "profit_factor": {"type": "number"}, "mcpt_p_value": {"type": "number"}, "mcpt_permutations": {"type": "integer"}, "wf_folds": {"type": "integer"}, "wf_avg_oos_sharpe": {"type": "number"}, "wf_worst_fold": {"type": "number"}, "description": {"type": "string"}, "asset_class": {"type": "string", "default": "stock"}, "price_monthly": {"type": "number", "default": 29.99}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."}}, "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_submission_guide", description="Get the step-by-step guide for submitting a strategy to the AlgoChains marketplace. Includes gate requirements, pricing guide, IP protection details, and revenue split information.",
          inputSchema={"type": "object", "properties": {}, "required": []},
@@ -3930,10 +3930,11 @@ TOOLS = [
              "limit": {"type": "integer", "default": 50, "description": "Max listings to return"},
          }, "required": []},
          annotations=ANNOT_READ_ONLY),
-    Tool(name="get_subscriber_bots", description="Get all active bot subscriptions for a given subscriber. Returns listing details, status, and join date. Requires SUPABASE_SERVICE_ROLE_KEY. Pass user_id as email or UUID.",
+    Tool(name="get_subscriber_bots", description="Get all active bot subscriptions for a given subscriber. Returns listing details, status, and join date. Requires SUPABASE_SERVICE_ROLE_KEY and owner_token because it uses service-role subscriber lookups.",
          inputSchema={"type": "object", "properties": {
              "user_id": {"type": "string", "description": "Subscriber email address or UUID"},
-         }, "required": ["user_id"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+        }, "required": ["user_id", "owner_token"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="deliver_strategy_to_subscriber",
          description="Deliver an approved marketplace strategy config to a subscriber's bot endpoint. "
@@ -4262,11 +4263,12 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="revoke_broker_connection",
-         description="Disconnect a broker OAuth connection and remove stored tokens.",
+         description="Disconnect a broker OAuth connection and remove stored tokens. REQUIRES owner_token because this deletes broker credentials for the requested user_id.",
          inputSchema={"type": "object", "properties": {
              "broker": {"type": "string"},
              "user_id": {"type": "string"},
-         }, "required": ["broker","user_id"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+        }, "required": ["broker","user_id","owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
 
     # ── Programmatic Account / MFA / Developer Key Tools ─────────────────
@@ -4694,17 +4696,18 @@ TOOLS = [
 
     # ── Multi-Bot Account Metrics ─────────────────────────────────────────
     Tool(name="get_user_bot_metrics",
-         description="Get metrics for a specific bot in the context of a user's subscription. Returns live metrics or appropriate fallback state (broker_not_connected, metrics_pending, data_stale).",
+         description="Get metrics for a specific bot in the context of a user's subscription. REQUIRES owner_token because this can expose operator live bot telemetry.",
          inputSchema={"type": "object", "properties": {
              "user_id": {"type": "string"},
              "bot_id": {"type": "string", "description": "Bot identifier (mnq, cl, mes, nq, or marketplace UUID)"},
              "subscription_id": {"type": "string"},
              "log_path": {"type": "string", "description": "Optional custom log path for self-hosted bots"},
-         }, "required": ["user_id","bot_id","subscription_id"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+        }, "required": ["user_id","bot_id","subscription_id","owner_token"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_all_user_bots",
-         description="Get metrics for all bots a user is subscribed to. Includes fallback states for each bot (live, pending, not_connected, stale).",
-         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"]},
+         description="Get metrics for all bots a user is subscribed to. REQUIRES owner_token because this can expose operator live bot telemetry.",
+         inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."}}, "required": ["user_id", "owner_token"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="upsert_bot_performance",
          description="[DEPRECATED for autonomous callers] Record real performance data for a managed bot subscription. Use metrics_streaming_daemon.py instead. Requires owner_token — SEC-2026-C4.",
@@ -5610,6 +5613,18 @@ def _require_broker(registry: BrokerRegistry, broker_name: str):
 async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -> list[TextContent]:
     """Route tool calls to their implementations."""
     args = arguments  # alias used by some handlers
+
+    def _owner_token_error(tool_name: str) -> dict[str, Any] | None:
+        expected = os.environ.get("OWNER_API_TOKEN", "")
+        provided = args.get("owner_token", "")
+        if expected and provided == expected:
+            return None
+        return {
+            "error": f"{tool_name} requires owner_token matching OWNER_API_TOKEN.",
+            "blocked": True,
+            "required_secret": "OWNER_API_TOKEN",
+        }
+
     registered_handler = _HANDLER_REGISTRY.get(name)
     if registered_handler is not None:
         return _text(await registered_handler(arguments))
@@ -8119,6 +8134,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(output)
 
     elif name == "submit_to_marketplace":
+        owner_error = _owner_token_error(name)
+        if owner_error:
+            return _text(owner_error)
         pipeline = _get_submission_pipeline()
         sub = StrategySubmission(
             symbol=arguments.get("symbol", ""),
@@ -9555,6 +9573,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Bot metrics error: {exc}", "bot_id": args.get("bot_id")})
 
     elif name == "get_subscriber_bots":
+        owner_error = _owner_token_error(name)
+        if owner_error:
+            return _text(owner_error)
         try:
             from .marketplace.supabase_tools import get_subscriber_bots as _sb_subs
             user_id = args.get("user_id", "")
@@ -10070,6 +10091,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "revoke_broker_connection":
+        owner_error = _owner_token_error(name)
+        if owner_error:
+            return _text(owner_error)
         try:
             from .brokers.oauth_manager import revoke_token as _revoke_token
             return _text(await _revoke_token(
@@ -10527,6 +10551,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "get_user_bot_metrics":
+        owner_error = _owner_token_error(name)
+        if owner_error:
+            return _text(owner_error)
         try:
             from .live_bot_intelligence.multi_account_metrics import get_user_bot_metrics as _get_ubm
             result = await _get_ubm(
@@ -10540,6 +10567,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "get_all_user_bots":
+        owner_error = _owner_token_error(name)
+        if owner_error:
+            return _text(owner_error)
         try:
             from .live_bot_intelligence.multi_account_metrics import get_all_user_bots as _get_all_bots
             return _text(await _get_all_bots(arguments["user_id"]))

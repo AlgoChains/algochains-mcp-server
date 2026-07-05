@@ -278,8 +278,14 @@ async def get_user_bot_metrics(
 
     broker_connected = sub.get("broker_connected", False) if sub else False
 
-    # Owner's own bots: parse live log directly
-    if bot_id.lower() in BOT_META:
+    if sub is None and bot_id.lower() in BOT_META:
+        return broker_not_connected_state(
+            user_id, subscription_id, bot_id, bot_name, symbol,
+            broker=meta.get("broker"),
+        )
+
+    # Managed AlgoChains bots: parse the live log only after subscription lookup.
+    if sub is not None and bot_id.lower() in BOT_META:
         try:
             raw_metrics = parse_bot_metrics(bot_id)
             # Determine state
@@ -414,13 +420,7 @@ async def get_all_user_bots(user_id: str) -> dict[str, Any]:
         except Exception as e:
             logger.error("Supabase subscriptions fetch error: %s", e)
 
-    if not subscriptions:
-        # Fallback: assume owner accessing their own bots
-        from .metrics_parser import BOT_LOG_PATHS
-        for bid in BOT_LOG_PATHS:
-            m = await get_user_bot_metrics(user_id, bid, f"owner:{bid}")
-            bots.append(m.to_dict())
-    else:
+    if subscriptions:
         for sub in subscriptions:
             bot_id = sub.get("bot_id", "")
             sub_id = sub.get("id", "")

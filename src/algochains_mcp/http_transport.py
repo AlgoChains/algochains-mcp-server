@@ -61,7 +61,7 @@ def _verify_bearer_token(authorization: str | None) -> bool:
     """Verify Authorization: Bearer <token> header."""
     secret = _get_transport_secret()
     if not secret:
-        return True  # No secret configured — open access (dev mode)
+        return os.environ.get("ALGOCHAINS_HTTP_ALLOW_UNAUTHENTICATED", "0") == "1"
     if not authorization or not authorization.startswith("Bearer "):
         return False
     token = authorization[len("Bearer "):]
@@ -415,7 +415,7 @@ async def _dispatch_jsonrpc(mcp_server: Any, body: dict, session_id: str) -> dic
         }
 
 
-def run_http_server(host: str = "0.0.0.0", port: int = 8080) -> None:
+def run_http_server(host: str = "127.0.0.1", port: int = 8080) -> None:
     """Entry point for algochains-mcp-http CLI command."""
     try:
         import uvicorn
@@ -429,10 +429,16 @@ def run_http_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     secret = _get_transport_secret()
     if secret:
         logger.info("HTTP transport: Bearer token authentication ENABLED")
-    else:
+    elif os.environ.get("ALGOCHAINS_HTTP_ALLOW_UNAUTHENTICATED", "0") == "1":
         logger.warning(
-            "HTTP transport: No ALGOCHAINS_HTTP_TRANSPORT_SECRET set — "
-            "open access (set this in production!)"
+            "HTTP transport: unauthenticated development mode enabled by "
+            "ALGOCHAINS_HTTP_ALLOW_UNAUTHENTICATED=1"
+        )
+    else:
+        raise SystemExit(
+            "Refusing to start unauthenticated HTTP transport. Set "
+            "ALGOCHAINS_HTTP_TRANSPORT_SECRET, configure OAuth, or explicitly set "
+            "ALGOCHAINS_HTTP_ALLOW_UNAUTHENTICATED=1 for local development."
         )
     logger.info("Starting AlgoChains MCP HTTP server on http://%s:%d", host, port)
     logger.info("MCP endpoint: http://%s:%d/mcp", host, port)
@@ -444,7 +450,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="AlgoChains MCP HTTP Server")
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()
     run_http_server(host=args.host, port=args.port)

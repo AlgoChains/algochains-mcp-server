@@ -264,17 +264,22 @@ def evaluate_dynamic_tool(
         tier_source=source,
     )
     if tier < TIER_ORDER_EXEC:
-        # Sensitive WRITE_LOCAL tools that mutate credentials/env are gated behind
-        # owner_token in dynamic dispatch even though they're below ORDER_EXEC tier.
-        # This prevents attackers with stdio MCP access from writing to .env or
-        # harvesting masked key metadata without operator approval.
-        _SENSITIVE_WRITE_LOCAL = frozenset({
+        # Sensitive sub-ORDER tools are gated behind owner_token in dynamic
+        # dispatch even though their tiers are below ORDER_EXEC. This catches
+        # credential writers plus service-role or ambient-credential reads/writes
+        # whose names otherwise match broad READ_ONLY/WRITE_LOCAL prefix rules.
+        _SENSITIVE_SUB_ORDER_TOOLS = frozenset({
             "provision_key",
             "store_api_key",
             "rotate_api_key",
             "set_byok_key",
+            "get_subscriber_bots",
+            "get_user_bot_metrics",
+            "get_all_user_bots",
+            "revoke_broker_connection",
+            "submit_to_marketplace",
         })
-        if tool_name in _SENSITIVE_WRITE_LOCAL:
+        if tool_name in _SENSITIVE_SUB_ORDER_TOOLS:
             provided_tok = (arguments or {}).get("owner_token", "")
             # Fail-closed: if OWNER_API_TOKEN is not configured, deny credential-writing
             # tools entirely (mirrors ORDER_EXEC behavior). Allowing them when the token
@@ -285,8 +290,9 @@ def evaluate_dynamic_tool(
                     **base,
                     required_secret="OWNER_API_TOKEN",
                     reason=(
-                        f"execute_dynamic_tool: '{tool_name}' writes credentials and "
-                        "requires owner_token authorization even at WRITE_LOCAL tier. "
+                        f"execute_dynamic_tool: '{tool_name}' accesses sensitive "
+                        "operator-scoped state and requires owner_token authorization "
+                        "even below ORDER_EXEC tier. "
                         "Set OWNER_API_TOKEN in .env and pass a matching owner_token "
                         "inside the 'arguments' payload."
                     ),
