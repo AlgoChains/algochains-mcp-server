@@ -34,6 +34,7 @@ from typing import Optional
 logger = logging.getLogger("algochains_mcp.prop_fund_monitor")
 
 _STATE_FILE = os.environ.get("PROP_FUND_MONITOR_STATE", "state/prop_fund_monitor_state.json")
+_SUPPORTED_BROKERS = {"rithmic", "tradovate"}
 
 # ---------------------------------------------------------------------------
 # State management
@@ -165,6 +166,29 @@ class PropFundDrawdownMonitor:
         If fund rules not provided, loads from PROP_FUNDS dict.
         """
         from algochains_mcp.brokers.prop_fund_manager import PROP_FUNDS
+        broker = broker.lower().strip()
+        if broker not in _SUPPORTED_BROKERS:
+            return {"registered": False, "error": f"Unsupported broker: {broker}"}
+
+        try:
+            starting_balance = float(starting_balance)
+            if starting_balance <= 0:
+                raise ValueError("starting_balance must be positive")
+            if max_daily_loss_usd is not None:
+                max_daily_loss_usd = float(max_daily_loss_usd)
+                if max_daily_loss_usd <= 0:
+                    raise ValueError("max_daily_loss_usd must be positive")
+            if max_trailing_drawdown_usd is not None:
+                max_trailing_drawdown_usd = float(max_trailing_drawdown_usd)
+                if max_trailing_drawdown_usd <= 0:
+                    raise ValueError("max_trailing_drawdown_usd must be positive")
+            if profit_target_usd is not None:
+                profit_target_usd = float(profit_target_usd)
+                if profit_target_usd <= 0:
+                    raise ValueError("profit_target_usd must be positive")
+        except (TypeError, ValueError) as exc:
+            return {"registered": False, "error": str(exc)}
+
         fund = PROP_FUNDS.get(fund_name.lower())
 
         acct = MonitoredAccount(

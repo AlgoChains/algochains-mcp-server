@@ -315,6 +315,37 @@ def ingest_json_signals(
 # ---------------------------------------------------------------------------
 
 VALID_DOC_TYPES = {"strategy_research", "blueprint", "backtest", "whitepaper", "general"}
+VALID_DOC_EXTENSIONS = {".txt", ".md", ".pdf", ".json"}
+_SENSITIVE_DOC_NAMES = {
+    ".env",
+    ".env.local",
+    ".env.production",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "known_hosts",
+    "oauth_tokens.json",
+    "platform_session.json",
+}
+_SENSITIVE_DOC_SUBSTRINGS = ("credential", "password", "private_key", "secret", "token")
+
+
+def _onyx_doc_rejection_reason(path: Path) -> str | None:
+    """Return why a path must not be ingested into shared Onyx search."""
+    resolved = path.resolve()
+    parts = [part.lower() for part in resolved.parts]
+    name = resolved.name.lower()
+
+    if resolved.suffix.lower() not in VALID_DOC_EXTENSIONS:
+        return f"unsupported extension '{resolved.suffix or '<none>'}'"
+    if any(part.startswith(".") for part in parts):
+        return "hidden paths are not allowed"
+    if name in _SENSITIVE_DOC_NAMES:
+        return "sensitive filename is not allowed"
+    if any(marker in name for marker in _SENSITIVE_DOC_SUBSTRINGS):
+        return "sensitive-looking filename is not allowed"
+    return None
 
 
 def connect_onyx_docs(
@@ -350,9 +381,11 @@ def connect_onyx_docs(
     url = onyx_url or os.getenv("ONYX_API_URL", "http://localhost:8085")
     key = onyx_key or os.getenv("ONYX_API_KEY", "")
 
-    # Expand all paths to individual files
+    # Expand all paths to individual files. Every candidate is filtered before it
+    # is opened so prompt-injected callers cannot use Onyx as a local-file oracle.
     files_to_index: list[Path] = []
     not_found: list[str] = []
+    rejected: list[dict[str, str]] = []
 
     for p in doc_paths:
         path = Path(p)
@@ -360,10 +393,19 @@ def connect_onyx_docs(
             not_found.append(str(p))
             continue
         if path.is_dir():
-            for ext in ("*.txt", "*.md", "*.pdf", "*.json"):
-                files_to_index.extend(path.rglob(ext))
+            for ext in VALID_DOC_EXTENSIONS:
+                for candidate in path.rglob(f"*{ext}"):
+                    reason = _onyx_doc_rejection_reason(candidate)
+                    if reason:
+                        rejected.append({"path": str(candidate), "reason": reason})
+                    else:
+                        files_to_index.append(candidate)
         elif path.is_file():
-            files_to_index.append(path)
+            reason = _onyx_doc_rejection_reason(path)
+            if reason:
+                rejected.append({"path": str(path), "reason": reason})
+            else:
+                files_to_index.append(path)
 
     if not_found:
         return {
@@ -372,7 +414,11 @@ def connect_onyx_docs(
         }
 
     if not files_to_index:
-        return {"success": False, "error": "No indexable files found (.txt/.md/.pdf/.json)"}
+        return {
+            "success": False,
+            "error": "No indexable files found (.txt/.md/.pdf/.json)",
+            "rejected": rejected[:10],
+        }
 
     # Attempt real Onyx API call
     try:

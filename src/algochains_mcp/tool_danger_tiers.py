@@ -188,6 +188,13 @@ _TOOL_TIERS: dict[str, int] = {
     "upsert_bot_performance": TIER_ORDER_EXEC,
     # SEC-2026-C5: get_broker_oauth_status returned plaintext access_token via get_ prefix.
     "get_broker_oauth_status": TIER_ORDER_EXEC,
+    # SEC-2026-07-06: broker OAuth state stores caller-supplied user_id and
+    # exchange persists broker tokens under broker:user_id. Owner-gate the whole
+    # connection-management surface until callers are bound to authenticated users.
+    "generate_broker_auth_url": TIER_ORDER_EXEC,
+    "exchange_broker_oauth_code": TIER_ORDER_EXEC,
+    "get_connected_brokers": TIER_ORDER_EXEC,
+    "revoke_broker_connection": TIER_ORDER_EXEC,
     # SEC-2026-C6: generate_ide_config — WRITE_LOCAL + handler masks secrets (Tier-1 safe template).
     # SEC-2026-C7: test_signal_propagation posts live signed signals to copy-trade ingest.
     "test_signal_propagation": TIER_ORDER_EXEC,
@@ -368,6 +375,9 @@ _TOOL_TIERS: dict[str, int] = {
     "create_payment_session": TIER_ORDER_EXEC,
     "execute_intent": TIER_ORDER_EXEC,
     "approve_intent": TIER_ORDER_EXEC,
+    # Prop-fund monitor mutations/checks can lead to emergency broker flattening.
+    "register_prop_fund_account": TIER_ORDER_EXEC,
+    "run_prop_fund_check": TIER_ORDER_EXEC,
 
     # ── Tier 3: DESTRUCTIVE ───────────────────────────────────────────────────
     # Irreversible bulk actions
