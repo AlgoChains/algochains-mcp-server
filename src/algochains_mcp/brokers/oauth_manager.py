@@ -59,6 +59,28 @@ _OAUTH_TABLE = "algochains_oauth_tokens"
 _TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
 
+def _allowed_redirect_uris(default_uri: str) -> set[str]:
+    configured = {
+        uri.strip()
+        for uri in os.getenv("ALGOCHAINS_OAUTH_ALLOWED_REDIRECTS", "").split(",")
+        if uri.strip()
+    }
+    configured.add(default_uri)
+    return configured
+
+
+def _validate_redirect_uri(uri: str, default_uri: str) -> str | None:
+    if uri not in _allowed_redirect_uris(default_uri):
+        return (
+            "redirect_uri is not allowlisted. Use the configured broker callback "
+            "URI or add it to ALGOCHAINS_OAUTH_ALLOWED_REDIRECTS."
+        )
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return "redirect_uri must be an absolute https URL"
+    return None
+
+
 # ── Broker OAuth config registry ─────────────────────────────────────────────
 
 @dataclass
@@ -242,7 +264,11 @@ async def generate_auth_url(
             "error": f"{cfg.client_id_env} not set. Get your app credentials from the {broker} developer portal.",
         }
 
-    uri = redirect_uri or os.getenv(cfg.redirect_uri_env, f"https://algochains.ai/oauth/callback/{broker}")
+    default_uri = os.getenv(cfg.redirect_uri_env, f"https://algochains.ai/oauth/callback/{broker}")
+    uri = redirect_uri or default_uri
+    redirect_error = _validate_redirect_uri(uri, default_uri)
+    if redirect_error:
+        return {"success": False, "error": redirect_error}
 
     verifier, challenge, state = _generate_pkce()
 
@@ -311,9 +337,15 @@ async def exchange_code(
     broker = state_data["broker"]
     user_id = state_data["user_id"]
     verifier = state_data.get("verifier", "")
-    uri = redirect_uri or state_data.get("redirect_uri", "")
-
     cfg = BROKER_OAUTH_CONFIGS[broker]
+    uri = redirect_uri or state_data.get("redirect_uri", "")
+    default_uri = os.getenv(cfg.redirect_uri_env, f"https://algochains.ai/oauth/callback/{broker}")
+    if uri != state_data.get("redirect_uri", ""):
+        return {"success": False, "error": "redirect_uri must match the original OAuth state"}
+    redirect_error = _validate_redirect_uri(uri, default_uri)
+    if redirect_error:
+        return {"success": False, "error": redirect_error}
+
     client_id = os.getenv(cfg.client_id_env, "")
     client_secret = os.getenv(cfg.client_secret_env, "")
 
