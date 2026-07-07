@@ -10125,7 +10125,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name in ("join_bot", "get_subscriber_status", "accept_subscriber_terms",
                   "get_my_usage", "create_referral_code", "get_my_referrals",
                   "get_referral_earnings", "get_my_realized_pnl"):
-        _sub_key = os.environ.get("ALGOCHAINS_SUBSCRIBER_KEY", "")
+        _sub_key = os.environ.get("ALGOCHAINS_SUBSCRIBER_KEY") or os.environ.get("ALGOCHAINS_SUB_KEY", "")
         if not _sub_key:
             return _text({
                 "error": "ALGOCHAINS_SUBSCRIBER_KEY not set. "

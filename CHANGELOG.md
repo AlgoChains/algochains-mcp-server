@@ -8,6 +8,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — subscriber key env alias (2026-07-07)
+
+- Accept BOTH `ALGOCHAINS_SUBSCRIBER_KEY` (canonical) and `ALGOCHAINS_SUB_KEY` (back-compat alias) in the Python server + TS CLI. Fixes real drift: the Python server read `ALGOCHAINS_SUBSCRIBER_KEY` while the CLI told users to set `ALGOCHAINS_SUB_KEY`, so a subscriber could auth to one component but not the other.
+
 ### Fixed / Documented — subscriber onboarding parity (2026-07-06)
 
 - README: corrected "9 tools" → **16 subscriber tools** (matched `SUBSCRIBER_TOOLS`).
