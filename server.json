@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.algochains/algochains-mcp-server",
-  "description": "AI-to-broker trading protocol: 503 tools across 20 domains. Live futures bots (MNQ/CL/MES/NQ) with real fills, copy-trade signals, MCPT strategy validation, and a hosted paper account requiring zero broker credentials.",
+  "description": "AI-to-broker trading protocol: 533 tools across 21 domains. Live futures bots (MNQ/CL/MES/NQ) with real fills, copy-trade signals, MCPT strategy validation, and a hosted paper account requiring zero broker credentials.",
   "version": "22.6.0",
   "homepage": "https://algochains.ai",
   "repository": {
@@ -29,7 +29,7 @@
         },
         {
           "name": "ALGOCHAINS_TOOL_MODE",
-          "description": "smart (168 tools, default) or full (503 tools).",
+          "description": "smart (181 tools, default) or full (533 tools).",
           "isRequired": false,
           "isSecret": false
         }

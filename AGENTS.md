@@ -22,7 +22,7 @@ names, auth requirements, or safety rules.
 
 **What this server is:** An MCP server that connects your AI assistant to trading
 infrastructure — market data, backtesting, ML regime detection, broker connectivity,
-and live-bot operations across 525 tools in 21 domains.
+and live-bot operations across 533 tools in 21 domains.
 
 **Three transport entry-points:**
 
@@ -56,13 +56,13 @@ Tool exposure is controlled by `ALGOCHAINS_TOOL_MODE` (default: `smart`).
 
 | Mode | Tools visible | When to use |
 |------|--------------|-------------|
-| **smart** (default) | 188 curated tools | Everyday use; Cursor/Windsurf tool-count limits |
-| **full** | 525 tools | When smart mode can't reach a needed tool |
+| **smart** (default) | 181 curated tools | Everyday use; Cursor/Windsurf tool-count limits |
+| **full** | 533 tools | When smart mode can't reach a needed tool |
 
 **Always start in smart mode.** Use meta-tools to discover the rest:
 
 ```python
-discover_tools("dark pool volume")      # semantic search across all 525 tools
+discover_tools("dark pool volume")      # semantic search across all 533 tools
 get_tool_details("get_dark_pool_volume_v21")  # schema, params, tier
 mcp_tool_manifest()                     # full JSON manifest with tiers and domains
 execute_dynamic_tool("tool_name", {...})  # call any tool by name without switching modes
@@ -441,8 +441,8 @@ only captures gotchas.
 - To exercise it end-to-end, drive it with an MCP client over stdio (see the `mcp`
   Python package: `stdio_client` + `ClientSession`) and call a Tier-0 tool such as
   `detect_market_regime` or the meta tool `discover_tools`.
-- Tool exposure defaults to `ALGOCHAINS_TOOL_MODE=smart` (~188 tools). Set it to `full`
-  for ~525. Brokers/market-data/Stripe/Supabase/Redis/Onyx are all optional and
+- Tool exposure defaults to `ALGOCHAINS_TOOL_MODE=smart` (181 tools). Set it to `full`
+  for 533. Brokers/market-data/Stripe/Supabase/Redis/Onyx are all optional and
   credential-gated; demo mode stubs execution-class tools.
 - Optional HTTP transport: `.venv/bin/algochains-mcp-http --host 127.0.0.1 --port 8080`
   (`GET /health` → 200). This is distinct from the `http_bridge` module below.
