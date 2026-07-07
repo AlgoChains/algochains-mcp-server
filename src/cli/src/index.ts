@@ -125,8 +125,8 @@ async function callPaperTool(
     process.env.ALGOCHAINS_BRIDGE_URL
     ?? config.mcp?.bridge_url
     ?? "https://mcp.algochains.ai";
-  if (!process.env.ALGOCHAINS_SUB_KEY) {
-    console.error("  Set ALGOCHAINS_SUB_KEY (sub_live_… from algochains.ai → Account → API Keys)");
+  if (!process.env.ALGOCHAINS_SUBSCRIBER_KEY && !process.env.ALGOCHAINS_SUB_KEY) {
+    console.error("  Set ALGOCHAINS_SUBSCRIBER_KEY (sub_live_… from algochains.ai → Account → API Keys). ALGOCHAINS_SUB_KEY is also accepted.");
     process.exit(1);
   }
   const mcp = createMcpClient(bridgeUrl, config.mcp?.timeout_ms ?? 30_000);

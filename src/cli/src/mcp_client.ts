@@ -58,7 +58,7 @@ export function createMcpClient(bridgeUrl: string, timeoutMs = 30_000): McpClien
   };
 
   // Subscriber keys (sub_live_*) use X-Api-Key on the HTTP bridge.
-  const subKey = process.env.ALGOCHAINS_SUB_KEY;
+  const subKey = process.env.ALGOCHAINS_SUBSCRIBER_KEY ?? process.env.ALGOCHAINS_SUB_KEY;
   if (subKey) {
     headers["X-Api-Key"] = subKey;
   } else {
