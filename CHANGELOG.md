@@ -8,6 +8,13 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed / Documented — subscriber onboarding parity (2026-07-06)
+
+- README: corrected "9 tools" → **16 subscriber tools** (matched `SUBSCRIBER_TOOLS`).
+- Documented the server-side **Broker Hub** (`algochains.ai/account/brokers/`) — no-daemon way to connect a real broker (Tradovate/Alpaca); virtual paper still needs no broker.
+- Documented the live MNQ `strategy_name = "MNQ Upgraded Scalper"` → `bot = "MNQ"` fanout mapping.
+- Added the `algochains-mcp-server` (signals) vs `algochains-library-mcp` (backtesting) shared-`algochains`-alias collision note.
+
 ---
 
 ## [22.7.0] — 2026-06-29
