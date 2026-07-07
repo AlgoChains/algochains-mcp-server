@@ -463,3 +463,15 @@ These fail on a clean checkout regardless of setup — do not treat them as setu
   `@pytest.mark.asyncio` test unsets the loop, those raise
   `RuntimeError: There is no current event loop`. So the full-suite failure count is
   inflated vs running a single file; prefer per-file runs when validating a change.
+
+## Broker connect, package alias & the MNQ strategy_name (added 2026-07-06)
+
+- **Connect a real broker** (Tradovate / Alpaca) at **https://algochains.ai/account/brokers/** — the
+  server-side *Broker Hub*; no local daemon required. The hosted **virtual paper** account needs no
+  broker at all. (Tradovate futures = the flagship MNQ path.)
+- **MNQ signal key:** the live bot HMAC-posts `strategy_name = "MNQ Upgraded Scalper"` (with spaces);
+  the fanout maps that to `bot = "MNQ"`, which `get_signal_stream(bots=["MNQ"])` filters on — so tell
+  subscribers to follow bot **`MNQ`**.
+- **Two AlgoChains MCPs collide under a shared `algochains` alias:** THIS package
+  (`algochains-mcp-server` — trading/signals) vs **`algochains-library-mcp`** (natural-language
+  backtesting beta). If a user runs both, namespace them (e.g. `algochains` + `algochains-backtest`).

@@ -72,7 +72,10 @@ No Alpaca account. No real money.
 | `cancel_paper_order` | Cancel a pending paper order |
 | `get_my_paper_positions` | Open and recently filled self-directed paper orders |
 
-All 9 tools require only the `sub_live_…` key — no `OWNER_API_TOKEN`, no broker credentials.
+All 16 subscriber tools require only the `sub_live_…` key (env `ALGOCHAINS_SUBSCRIBER_KEY`) — no `OWNER_API_TOKEN`, no broker credentials.
+
+To place trades in your *own* broker (Tradovate/Alpaca) rather than the hosted virtual paper account,
+connect it at **https://algochains.ai/account/brokers/** (server-side Broker Hub — no local daemon to run).
 
 ### Subscriber key format
 
