@@ -138,6 +138,54 @@ def test_no_duplicate_tool_literals_in_server_source():
     )
 
 
+def test_docs_state_exact_tool_count():
+    """Docs/manifest must state the EXACT full-mode tool count (== len(TOOLS)).
+
+    Guards against the 525/503/482 doc drift reconciled in docs/reconcile-tool-count.
+    README.md, AGENTS.md, and server.json all carry a stated full-mode total in
+    prose; nothing previously tied them to the registry, so they silently drifted.
+    This asserts every "<N> tools ... full" style total equals the real count.
+
+    When you intentionally add/remove tools, update the docs and this test's
+    expectation flows automatically because it reads len(TOOLS) at runtime.
+    """
+    import re
+    from pathlib import Path
+
+    try:
+        import algochains_mcp.server as srv
+        expected = len(srv.TOOLS)
+    except Exception as exc:  # optional deps missing in CI — fall back to source scan
+        src = (Path(__file__).resolve().parents[1]
+               / "src" / "algochains_mcp" / "server.py").read_text(encoding="utf-8")
+        # Count Tool(name="…") literals inside the TOOLS = [ … ] block.
+        expected = len(re.findall(r'Tool\(\s*name=["\']', src))
+        assert expected > 0, f"Could not derive tool count from source: {exc}"
+
+    root = Path(__file__).resolve().parents[1]
+    # (file, list of substrings that must contain the exact count, e.g. "533 full", "533 tools")
+    checks = {
+        "README.md": [r"tools-(\d+)%20full", r"(\d+) tools across \d+ domains",
+                      r"any of the (\d+) tools", r"the documented (\d+)-tool surface"],
+        "AGENTS.md": [r"across (\d+) tools in \d+ domains",
+                      r"across all (\d+) tools", r"Set it to `full`\s*\n\s*for (\d+)\."],
+        "server.json": [r"(\d+) tools across \d+ domains", r"full \((\d+) tools\)"],
+    }
+    mismatches: list[str] = []
+    for fname, patterns in checks.items():
+        text = (root / fname).read_text(encoding="utf-8")
+        for pat in patterns:
+            for m in re.finditer(pat, text):
+                got = int(m.group(1))
+                if got != expected:
+                    mismatches.append(f"{fname}: pattern {pat!r} found {got}, expected {expected}")
+    assert not mismatches, (
+        f"Documented full-mode tool count drifted from len(TOOLS)={expected}:\n"
+        + "\n".join(f"  {mm}" for mm in mismatches)
+        + "\nUpdate the stated count in the file(s) above to match the registry."
+    )
+
+
 def test_server_file_non_empty():
     """server.py must not be zero bytes.
 
