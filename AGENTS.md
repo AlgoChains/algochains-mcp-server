@@ -14,7 +14,7 @@ names, auth requirements, or safety rules.
 > 3. Walk them through the subscriber funnel: `get_checkout_url` → `accept_subscriber_terms` → `join_bot` → `get_my_portfolio`
 > 4. **Do NOT suggest Tradovate, Alpaca, or any broker credentials** unless the user explicitly says they want live trading
 >
-> The subscriber virtual paper path unlocks 9 real tools — real signals, real P&L tracking, self-directed paper orders — with only a `sub_live_…` key. No broker account. No real money.
+> The subscriber virtual paper path unlocks **16 real subscriber tools** — real signals, real P&L tracking, self-directed paper orders — with only a `sub_live_…` key. No broker account. No real money. A $50k virtual paper account is auto-provisioned on signup.
 
 ---
 
@@ -133,10 +133,10 @@ hard-coded in this repository.**
 | Tradovate live | Tradovate OAuth via `TRADOVATE_*` env vars | Futures order execution |
 | OANDA | `OANDA_*` env vars | Forex |
 | Interactive Brokers | `IBKR_*` env vars | Multi-asset live |
-| Subscriber key (production) | `X-Api-Key: <SUBSCRIBER_API_KEY>` header — set `ALGOCHAINS_SUBSCRIBER_KEY` in env for local stdio | Local onboarding/status tools plus the HTTP bridge subscriber surface: signal stream, fills, P&L, paper orders, portfolio, and daemon callbacks |
-| Subscriber key (sandbox) | `X-Api-Key: <SUBSCRIBER_API_KEY>` header — set `ALGOCHAINS_SUBSCRIBER_KEY` in env for local stdio | Same scopes as production; hits dry-run portfolio only |
+| Subscriber key (production) | `ALGOCHAINS_SUBSCRIBER_KEY=sub_live_…` (canonical). `ALGOCHAINS_SUB_KEY` is accepted as a back-compat alias by BOTH the Python server and the TS CLI (fixed in #242 / v22.7.1). Sent as `X-Api-Key` on the HTTP bridge. | The 16 subscriber tools: local onboarding/status tools plus the HTTP bridge subscriber surface — signal stream, fills, P&L, paper orders, portfolio, and daemon callbacks |
+| Subscriber key (sandbox) | `ALGOCHAINS_SUBSCRIBER_KEY=sub_test_…` (or `ALGOCHAINS_SUB_KEY`) | Same scopes as production; hits dry-run portfolio only |
 | Owner token | `OWNER_API_TOKEN` | Tier 2–3 tools (order exec, bot restart, emergency stop) |
-| Bridge key | `ALGOCHAINS_BRIDGE_API_KEY` | Read-only team access to a bridge you operate |
+| Owner / developer bridge key | `ALGOCHAINS_BRIDGE_KEY` (a.k.a. `ALGOCHAINS_BRIDGE_API_KEY`) — this is the **owner / developer** key, **not** a subscriber key. Do not set it for subscriber flows. | Read-only team / developer access to a bridge you operate |
 
 ### Stripe APP — Zero-Browser Developer Tier (free 14-day trial)
 
@@ -466,12 +466,27 @@ These fail on a clean checkout regardless of setup — do not treat them as setu
 
 ## Broker connect, package alias & the MNQ strategy_name (added 2026-07-06)
 
-- **Connect a real broker** (Tradovate / Alpaca) at **https://algochains.ai/account/brokers/** — the
-  server-side *Broker Hub*; no local daemon required. The hosted **virtual paper** account needs no
-  broker at all. (Tradovate futures = the flagship MNQ path.)
+- **Connect a real broker** server-side at **https://algochains.ai/account/brokers/** — the
+  *Broker Hub*; no local daemon required. The hosted **virtual paper** account ($50k virtual,
+  auto-provisioned on signup) needs no broker at all.
+  - **Tradovate** (flagship MNQ futures path) — connect with email+password OAuth **or** your own
+    API Key + Secret as a fallback.
+  - **Alpaca** (equities/crypto/options), **OANDA** (forex), **FTMO / MT5** (prop).
+  - **Robinhood futures** — coming soon.
+- **Submit-your-own-algo:** a submitted strategy paper-trades on AlgoChains, then **auto-graduates
+  to live** when `live_sharpe_30d >= 0.80 × backtest_oos_sharpe`, and is **retired** if
+  `live_sharpe_30d < 1.0`. Anti-overfit caps on the accepted OOS Sharpe per timeframe (min trades):
+  daily ≤ 5 (≥ 20 trades), hourly ≤ 7 (≥ 50), 15-min ≤ 10 (≥ 80), 5-min ≤ 12 (≥ 100).
+- **Optional Managed Hosting — $49/mo:** GCP Cloud Run, scale-to-zero, per-tenant, so devs don't run
+  their own infra.
+- **API surface:** downloadable **OpenAPI 3.1** + Postman collection at
+  `algochains.ai/docs/openapi.json` | `.yaml` | `algochains.ai/docs/postman-collection.json`.
+  Base URL `https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint); subscriber header
+  is `X-Api-Key`.
 - **MNQ signal key:** the live bot HMAC-posts `strategy_name = "MNQ Upgraded Scalper"` (with spaces);
   the fanout maps that to `bot = "MNQ"`, which `get_signal_stream(bots=["MNQ"])` filters on — so tell
   subscribers to follow bot **`MNQ`**.
-- **Two AlgoChains MCPs collide under a shared `algochains` alias:** THIS package
-  (`algochains-mcp-server` — trading/signals) vs **`algochains-library-mcp`** (natural-language
-  backtesting beta). If a user runs both, namespace them (e.g. `algochains` + `algochains-backtest`).
+- **⚠️ Two AlgoChains MCPs collide under a shared `algochains` alias:** THIS package
+  (`algochains-mcp-server` — trading/signals, what subscribers install) vs **`algochains-library-mcp`**
+  (Roo's natural-language backtesting MCP, beta). Do **not** co-register both under the same
+  `algochains` alias — namespace them (e.g. `algochains` + `algochains-backtest`).
