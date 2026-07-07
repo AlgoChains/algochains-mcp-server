@@ -6,7 +6,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [Unreleased]
+## [22.7.1] — 2026-07-07
 
 ### Fixed — subscriber key env alias (2026-07-07)
 
