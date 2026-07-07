@@ -1,15 +1,15 @@
 """
 AlgoChains MCP Server v22.5 — institutional-grade trading platform.
 
-485 tools across the full owner surface, with smart tiered exposure:
+533 tools across the full owner surface, with smart tiered exposure:
 
   SMART MODE (default, ALGOCHAINS_TOOL_MODE=smart):
-    148 curated tools exposed directly — trading, data, strategy, intent, meta-tools.
+    181 curated tools exposed directly — trading, data, strategy, intent, meta-tools.
     Remaining tools discoverable via discover_tools → execute_dynamic_tool.
     ~4K tokens vs ~40K+. Works within Cursor (80-tool limit) and Windsurf.
 
   FULL MODE (ALGOCHAINS_TOOL_MODE=full):
-    All 485 tools exposed. For clients with their own lazy loading (Claude Code).
+    All 533 tools exposed. For clients with their own lazy loading (Claude Code).
 
 V20.0 additions: Account Protection (13 pre-trade guards), Builder SDK (3.09B+ row
 data warehouse, 7-gate MCPT validation pipeline), memory-safe architecture (OOM
@@ -433,7 +433,7 @@ from algochains_mcp import __version__ as _server_version
 
 SERVER_INSTRUCTIONS = (
     f"AlgoChains MCP Server v{_server_version} — The Ultimate Algo Quant Stack. "
-    "~525 tools across 21 domains: market data, trading, strategy building, ML/AI, execution, "
+    "~533 tools across 21 domains: market data, trading, strategy building, ML/AI, execution, "
     "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
     "Onyx RAG intelligence, Graphiti temporal knowledge graph, MCP 2025-11-25 spec compliance, "
     "SaaS hardening, and autonomous marketplace pipeline (research→backtest→validate→stage). "
@@ -441,8 +441,8 @@ SERVER_INSTRUCTIONS = (
     "graphiti_health read-only Tier-1, graphiti_add_episode WRITE_LOCAL discover-only) — advisory "
     "agent_memory authority over Neo4j, NEVER broker truth, fails closed graphiti_unavailable. "
     "Real data only — all tools connect to live brokers, real tick feeds, and real APIs. "
-    "In smart mode (default), ~52 Tier-1 tools exposed (SEC-2026: send_waitlist_invite + upsert_bot_performance moved to ORDER_EXEC). "
-    "Use 'discover_tools' to find 280+ additional tools on demand. "
+    "In smart mode (default), 181 Tier-1 tools exposed (SEC-2026: send_waitlist_invite + upsert_bot_performance moved to ORDER_EXEC). "
+    "Use 'discover_tools' to find 350+ additional tools on demand. "
     "V22.4: get_bot_health now includes e2e_sentinel lifecycle state for MNQ signal→order→bracket→fill traceability. "
     "V22.2: get_bot_health now includes ml_env_flags (MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, "
     "MASSIVE_HALT_GUARD) and cc_health (Command Center watchdog state from cc_health_state.json). "
@@ -461,7 +461,7 @@ SERVER_INSTRUCTIONS = (
     "encrypted key vault, desktop tower dispatcher (dispatch_tower_job). "
     "LIVE: 4 futures bots (MNQ/CL/MES/NQ, owner-only), Alpaca paper trader (equities+crypto, subscribable). "
     "Command Center: algochains-command-center (Next.js, port 3333). "
-    "Set ALGOCHAINS_TOOL_MODE=full to expose all ~525 tools."
+    "Set ALGOCHAINS_TOOL_MODE=full to expose all ~533 tools."
 )
 
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
@@ -3098,7 +3098,7 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════
     # V17: Dynamic Toolsets — Meta-Tools (3 tools)
     # ═══════════════════════════════════════════════════════════════
-    Tool(name="discover_tools", description="Search for relevant AlgoChains tools using natural language. Returns the top-K most relevant tools with descriptions. Use this FIRST to find which tools are available for your task — 90%+ context reduction vs listing all 150+ tools.",
+    Tool(name="discover_tools", description="Search for relevant AlgoChains tools using natural language. Returns the top-K most relevant tools with descriptions. Use this FIRST to find which tools are available for your task — 90%+ context reduction vs listing all 533 tools.",
          inputSchema={"type": "object", "properties": {"query": {"type": "string", "description": "Natural language description of what you want to do"}, "top_k": {"type": "integer", "default": 10}, "category": {"type": "string", "description": "Filter: trading, market_data, strategy, ml, analytics, alt_data, defi, cloud"}}, "required": ["query"]},
          annotations=ANNOT_SEARCH),
     Tool(name="get_tool_details", description="Get full details for a specific tool including its input schema, parameter types, and usage examples. Call after discover_tools to get the full spec before execution.",
@@ -4106,7 +4106,7 @@ TOOLS = [
          }, "required": []},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="generate_ide_config",
-         description="Generate the MCP config file (mcporter.json / mcp.json) for your IDE based on your connected brokers and data providers. IDEs: cursor | windsurf | claude | vscode. Mode: smart (default, 25 tools) | full (262 tools). Output includes install instructions.",
+         description="Generate the MCP config file (mcporter.json / mcp.json) for your IDE based on your connected brokers and data providers. IDEs: cursor | windsurf | claude | vscode. Mode: smart (default, 181 tools) | full (533 tools). Output includes install instructions.",
          inputSchema={"type": "object", "properties": {"ide": {"type": "string", "enum": ["cursor", "windsurf", "claude", "vscode"]}, "tool_mode": {"type": "string", "enum": ["smart", "full"], "default": "smart"}}, "required": ["ide"]},
          annotations=ANNOT_READ_ONLY),
 
@@ -5010,8 +5010,8 @@ TOOLS = [
 #   - Cursor hard limit: 80 tools. Windsurf: context-bound.
 #
 # Modes (ALGOCHAINS_TOOL_MODE env var):
-#   "smart"  — Tier 1 only (~52 core tools after SEC-2026 audit). Discoverable via meta-tools. DEFAULT.
-#   "full"   — All 227 tools exposed. For clients that manage their own filtering.
+#   "smart"  — Tier 1 only (181 core tools after SEC-2026 audit). Discoverable via meta-tools. DEFAULT.
+#   "full"   — All 533 tools exposed. For clients that manage their own filtering.
 #
 # Tier 1 tools are the minimum set to be productive:
 #   - 3 meta-tools (discover, detail, execute) — gateway to everything else
@@ -5318,13 +5318,13 @@ async def list_tools() -> list[Tool]:
             _FULL_MODE_WARNED = True
             logger.warning(
                 "ALGOCHAINS_TOOL_MODE=full — DEVELOPMENT MODE ACTIVE. "
-                "All 338 tools are exposed for direct stdio call. "
+                "All 533 tools are exposed for direct stdio call. "
                 "ORDER_EXEC+ tools still require owner_token + ALGOCHAINS_REQUIRE_CONFIRMATION=0. "
                 "Do NOT run live production bots with ALGOCHAINS_TOOL_MODE=full. "
                 "Set ALGOCHAINS_TOOL_MODE=smart for production (default)."
             )
         return TOOLS_ANNOTATED
-    # Smart mode: expose only Tier 1 (21 tools ≈ 4K tokens vs 40K+ for all)
+    # Smart mode: expose only Tier 1 (181 tools ≈ 4K tokens vs 40K+ for all)
     return TOOLS_TIER1
 
 
@@ -12497,7 +12497,7 @@ def _print_ide_config(target: str) -> None:
             f.write("\n")
 
         print(f"\n  ✓  Config written to: {path}")
-        print(f"     Restart {t.title().replace('-', ' ')} to connect AlgoChains (482 tools, smart mode).")
+        print(f"     Restart {t.title().replace('-', ' ')} to connect AlgoChains (181 tools, smart mode).")
 
     print(f"\n  Config block added:")
     print(config_json)

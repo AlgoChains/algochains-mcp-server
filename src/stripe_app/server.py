@@ -29,7 +29,7 @@ app = FastAPI(title="AlgoChains Stripe APP", version="1.0.0")
 # ── Stripe APP spec: product info ─────────────────────────────────────────────
 APP_INFO = {
     "name": "AlgoChains",
-    "description": "AI-native algorithmic trading CLI — 482 MCP tools, strategy marketplace, live futures bots",
+    "description": "AI-native algorithmic trading CLI — 533 MCP tools, strategy marketplace, live futures bots",
     "homepage_url": "https://algochains.ai",
     "logo_url": "https://algochains.ai/logo.png",
     "support_url": "https://algochains.ai/support",
@@ -44,7 +44,7 @@ APP_INFO = {
         {
             "id": "paper-tier",
             "name": "AlgoChains Paper Trading",
-            "description": "Full 482-tool access with Alpaca paper execution, strategy validation pipeline",
+            "description": "Full 533-tool access with Alpaca paper execution, strategy validation pipeline",
             "pricing": "monthly",
             "price_usd_cents": 2900,
         },

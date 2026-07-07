@@ -26,7 +26,7 @@ algochains place-order --broker alpaca --symbol AAPL --side buy --qty 10  # Requ
 
 ### MCPorter Direct
 ```bash
-npx mcporter list algochains              # 242 tools
+npx mcporter list algochains              # 533 tools
 npx mcporter list algochains --schema     # Full tool docs
 npx mcporter call algochains.discover_tools query="sentiment"
 npx mcporter call algochains.detect_market_regime
@@ -35,7 +35,7 @@ npx mcporter call algochains.detect_market_regime
 ### TypeScript SDK
 ```typescript
 import type { AlgoChainsClient } from "@algochains/sdk";
-// Types at: packages/sdk/src/types.d.ts (1,404 lines, 242 tools)
+// Types at: packages/sdk/src/types.d.ts (1,404 lines, 533 tools)
 ```
 
 ## Multi-MCP Composition Pattern

@@ -58,7 +58,7 @@ _GOALS = {
         "label": "Build on the API (ac_live_* key)",
         "steps": [
             "1. Visit algochains.ai or run `stripe projects link algochains` for a developer key",
-            "2. Set the ac_live_* key; call discover_tools() to explore 503 tools",
+            "2. Set the ac_live_* key; call discover_tools() to explore 533 tools",
             "3. get_my_usage() — monitor metered usage + overage",
         ],
         "next_call": "discover_tools",
@@ -69,7 +69,7 @@ _GOALS = {
             "1. detect_market_regime() — what's the market environment right now?",
             "2. get_quote(symbol='AAPL') — live prices",
             "3. get_marketplace_listings() — browse validated strategies",
-            "4. discover_tools(query='...') — find any of the 503 tools",
+            "4. discover_tools(query='...') — find any of the 533 tools",
         ],
         "next_call": "detect_market_regime",
     },
@@ -90,7 +90,7 @@ def get_started(goal: str | None = None) -> dict[str, Any]:
             return {"goal": g, **_GOALS[g], "note": "Signals are published for you to review and act on — no automated execution."}
     # No/unknown goal → menu
     return {
-        "welcome": "AlgoChains MCP — 503 trading tools, live futures signal bots, hosted paper account.",
+        "welcome": "AlgoChains MCP — 533 trading tools, live futures signal bots, hosted paper account.",
         "choose_a_goal": {k: v["label"] for k, v in _GOALS.items()},
         "how": "Call get_started(goal='subscriber'|'creator'|'developer'|'explore').",
         "fastest_win": "get_started(goal='explore') → detect_market_regime()",
@@ -133,7 +133,7 @@ def get_system_status() -> dict[str, Any]:
     status: dict[str, Any] = {
         "platform": "operational",
         "live_signal_bots": ["MNQ", "CL", "MES", "NQ"],
-        "tool_count": 503,
+        "tool_count": 533,
         "as_of": datetime.now(timezone.utc).isoformat(),
     }
     try:

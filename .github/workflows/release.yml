@@ -408,7 +408,7 @@ jobs:
           PublisherUrl: https://algochains.ai
           PackageName: AlgoChains CLI
           PackageUrl: https://github.com/AlgoChains/algochains-mcp-server
-          ShortDescription: AI-native algorithmic trading CLI with 482 MCP tools
+          ShortDescription: AI-native algorithmic trading CLI with 533 MCP tools
           License: MIT
           ManifestType: locale
           ManifestVersion: 1.6.0
