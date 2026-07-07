@@ -2,7 +2,7 @@
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
 [![Tools](https://img.shields.io/badge/tools-525%20full%20%7C%20188%20smart-green?style=flat-square)](#tool-domains)
-[![Version](https://img.shields.io/badge/version-22.7.0-blueviolet?style=flat-square)](#whats-new)
+[![Version](https://img.shields.io/badge/version-22.7.1-blueviolet?style=flat-square)](#whats-new)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-GOTCHAS__AND__BUGS.md-red?style=flat-square)](docs/GOTCHAS_AND_BUGS.md)
@@ -80,8 +80,18 @@ connect it at **https://algochains.ai/account/brokers/** (server-side Broker Hub
 ### Subscriber key format
 
 Keys always start with `sub_live_` (production) or `sub_test_` (sandbox). Set the key
-as `ALGOCHAINS_SUBSCRIBER_KEY` in your `.env` — the server resolves your `subscriber_id`
-server-side via Supabase. Your key never touches this repo.
+as `ALGOCHAINS_SUBSCRIBER_KEY` (canonical) in your `.env` — the server resolves your
+`subscriber_id` server-side via Supabase. Your key never touches this repo.
+
+`ALGOCHAINS_SUB_KEY` is accepted as a **back-compat alias** by both the Python server and
+the TS CLI (fixed in #242 / v22.7.1), but prefer `ALGOCHAINS_SUBSCRIBER_KEY`. Note:
+`ALGOCHAINS_BRIDGE_KEY` is the **owner / developer** key — it is *not* a subscriber key.
+On the HTTP bridge the subscriber key is sent as the `X-Api-Key` header; the base URL is
+`https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint). There are **16
+subscriber tools** in total (`get_signal_stream`, `get_my_pnl`, `get_my_fills`,
+`get_my_assignments`, `get_my_portfolio`, `get_marketplace_listings`, `place_paper_order`,
+`cancel_paper_order`, `get_my_paper_positions`, `report_fill`, `heartbeat`, `ack_signal`,
+`join_bot`, `get_subscriber_status`, `accept_subscriber_terms`, `get_my_usage`).
 
 ### Subscriber quick-start prompts
 
@@ -379,6 +389,13 @@ OWNER_API_TOKEN=your-owner-token-here
 
 ## What's New in v22.x
 
+### v22.7.1 (2026-07-07) — Subscriber key alias fix
+- Both `ALGOCHAINS_SUBSCRIBER_KEY` (canonical) and `ALGOCHAINS_SUB_KEY` (back-compat alias)
+  are now accepted by **both** the Python server and the TS CLI (#242). Previously the CLI
+  told users to set `ALGOCHAINS_SUB_KEY` while the server only read `ALGOCHAINS_SUBSCRIBER_KEY`,
+  so a subscriber could auth to one component but not the other.
+- Corrected subscriber tool count to **16** and documented the server-side Broker Hub.
+
 ### v22.4 (2026-04-06) — UX & Team Onboarding
 - Complete README rewrite (plain English, team access)
 - `scripts/quickstart.py` — interactive setup wizard with health checks
@@ -609,11 +626,17 @@ Tower dispatch:
 
 ## Supported Brokers
 
+Connect brokers **server-side** at [algochains.ai/account/brokers/](https://algochains.ai/account/brokers/)
+(the Broker Hub — no local daemon to run). A **$50k virtual paper account** is auto-provisioned on
+signup, so you can start with no broker at all.
+
 | Broker | Asset Classes | Status |
 |--------|--------------|--------|
-| **Tradovate** | Futures (MNQ, CL, MES, NQ, ES, GC) | ✅ Live |
+| **Tradovate** | Futures (MNQ, CL, MES, NQ, ES, GC) | ✅ Live — email+password OAuth, **or** your own API Key + Secret as a fallback |
 | **Alpaca** | Equities, ETFs, Options, Crypto | ✅ Live + Paper |
 | **OANDA** | Forex (50+ pairs) | ✅ Live |
+| **FTMO / MT5** | Prop-firm accounts (MetaTrader 5) | ✅ Live |
+| **Robinhood** | Futures | ⏳ Coming soon |
 | **Interactive Brokers** | Stocks, Futures, Options, Forex | ✅ Live (`ib_async`) |
 | **Kalshi** | Prediction markets (US events) | ✅ Live |
 | **E*TRADE** | Equities, Options, ETFs | ✅ OAuth 1.0a |
@@ -624,6 +647,48 @@ Tower dispatch:
 # Check all broker credential status at once
 check_all_broker_credentials()   # masked — never exposes values
 ```
+
+---
+
+## Submit Your Own Algo, Managed Hosting & API
+
+### Submit-your-own-algo → auto-graduation
+
+Submit a strategy and it **paper-trades on AlgoChains**, then **auto-graduates to live**
+once its rolling live performance tracks its backtest:
+
+- **Graduate to live** when `live_sharpe_30d >= 0.80 × backtest_oos_sharpe`.
+- **Retire** when `live_sharpe_30d < 1.0`.
+- **Anti-overfit OOS-Sharpe caps per timeframe** (with minimum trade counts):
+
+  | Timeframe | Max accepted OOS Sharpe | Min trades |
+  |-----------|:-----------------------:|:----------:|
+  | Daily | 5 | 20 |
+  | Hourly | 7 | 50 |
+  | 15-min | 10 | 80 |
+  | 5-min | 12 | 100 |
+
+See [MARKETPLACE_CREATOR_GUIDE.md](MARKETPLACE_CREATOR_GUIDE.md) for the full publishing flow.
+
+### Optional Managed Hosting — $49/mo
+
+Don't want to run infra? Managed Hosting runs your tenant on **GCP Cloud Run
+(scale-to-zero, per-tenant)** for **$49/mo**.
+
+### API — OpenAPI 3.1 + Postman
+
+Downloadable, always current:
+
+- OpenAPI 3.1 JSON — `https://algochains.ai/docs/openapi.json`
+- OpenAPI 3.1 YAML — `https://algochains.ai/docs/openapi.yaml`
+- Postman collection — `https://algochains.ai/docs/postman-collection.json`
+
+Base URL `https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint). Subscriber
+requests authenticate with the `X-Api-Key` header.
+
+> **⚠️ Namespace note:** Do **not** co-register this package (`algochains-mcp-server` —
+> trading/signals) alongside **`algochains-library-mcp`** (Roo's NL backtesting MCP) under the
+> same `algochains` alias. Give them distinct aliases (e.g. `algochains` + `algochains-backtest`).
 
 ---
 
