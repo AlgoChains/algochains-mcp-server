@@ -27,8 +27,8 @@ These items align agents and OpenClaw-style automation with what the Mac/tower s
 
 ## 2. Gap analysis — what is still missing for “autonomous genius”
 
-The MCP server already exposes a very large surface (478 tools in full mode,
-148 tools in smart mode): brokers, marketplace, validation, Onyx, Massive query,
+The MCP server already exposes a very large surface (533 tools in full mode,
+181 tools in smart mode): brokers, marketplace, validation, Onyx, Massive query,
 backtests, `get_bot_health` + `signal_health`, `dispatch_tower_job`, etc. Gaps
 below are **what an autonomous agent still cannot see or do in one coherent
 pass** without extra scripting or multiple repos.

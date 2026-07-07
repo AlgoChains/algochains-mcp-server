@@ -35,7 +35,7 @@ jobs:
           EOF
 
       # Gate 1: Tool count must not decrease.
-      # Floor is conservatively below the current ground-truth (476 full, 150 smart).
+      # Floor is conservatively below the current ground-truth (533 full, 181 smart).
       # Bump both together when intentionally adding or removing tool families.
       - name: "Gate 1: Full-Mode Tool Count (≥460)"
         run: |

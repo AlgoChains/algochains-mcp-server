@@ -672,7 +672,7 @@ def generate_mcporter_config(
     Includes all connected brokers and providers from onboarding state.
 
     IDE options: cursor | windsurf | claude | vscode
-    tool_mode: 'smart' (25 core tools) or 'full' (all 262 tools)
+    tool_mode: 'smart' (181 core tools) or 'full' (all 533 tools)
     """
     state = _load_state()
 
