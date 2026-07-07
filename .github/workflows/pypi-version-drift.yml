@@ -11,6 +11,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # Full history + tags: `git describe` needs the tagged commits to be
+          # reachable from HEAD. A shallow (fetch-depth: 1) checkout fetches the
+          # tag refs but not the commits they point to once HEAD advances past
+          # them, so `git describe --abbrev=0` returns empty and drift is falsely
+          # reported. fetch-depth: 0 pulls full history so tags resolve.
+          fetch-depth: 0
           fetch-tags: true
 
       - name: Compare git tag to PyPI latest version
@@ -20,8 +26,10 @@ jobs:
             | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['info']['version'])" \
             || echo "UNAVAILABLE")
 
-          # Get latest git tag (strip leading v)
-          GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "NO_TAG")
+          # Get latest git tag (strip leading v). Treat an empty result as
+          # NO_TAG so an unreachable/shallow tag can't masquerade as drift.
+          GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+          GIT_TAG=${GIT_TAG:-NO_TAG}
 
           echo "PyPI latest:  $PYPI_VERSION"
           echo "Git latest:   $GIT_TAG"
