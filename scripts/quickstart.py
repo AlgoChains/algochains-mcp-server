@@ -536,7 +536,6 @@ def check_onyx_connectivity() -> bool:
 # ── IDE config generators ────────────────────────────────────────────────────
 
 def _mcp_server_args() -> dict:
-    src = Path(__file__).resolve().parent.parent / "src"
     env = {
         k: v
         for k, v in os.environ.items()
@@ -566,11 +565,21 @@ def _mcp_server_args() -> dict:
         "ALGOCHAINS_BRIDGE_URL",
         os.getenv("ALGOCHAINS_BRIDGE_URL", "https://mcp.algochains.ai"),
     )
+    env.setdefault("ALGOCHAINS_TOOL_MODE", "smart")
+    # Use the installed CLI entry point — not sys.executable -m algochains_mcp.
+    # macOS Command Line Tools python often lacks the package and causes:
+    #   "No module named algochains_mcp"
     return {
-        "command": sys.executable,
-        "args": ["-m", "algochains_mcp"],
-        "cwd": str(src.parent),
+        "command": "algochains-mcp",
         "env": env,
+    }
+
+
+def _stdio_mcp_entry(srv: dict) -> dict:
+    """Stdio-only MCP block for desktop IDEs (Cursor, Claude Desktop, Windsurf)."""
+    return {
+        "command": srv["command"],
+        "env": srv["env"],
     }
 
 
@@ -578,11 +587,7 @@ def generate_cursor_config() -> str:
     srv = _mcp_server_args()
     config = {
         "mcpServers": {
-            "algochains": {
-                "command": srv["command"],
-                "args": srv["args"],
-                "env": srv["env"],
-            }
+            "algochains": _stdio_mcp_entry(srv),
         }
     }
     output_path = Path.home() / ".cursor" / "mcp.json"
@@ -602,11 +607,7 @@ def generate_claude_desktop_config() -> str:
     srv = _mcp_server_args()
     config = {
         "mcpServers": {
-            "algochains": {
-                "command": srv["command"],
-                "args": srv["args"],
-                "env": srv["env"],
-            }
+            "algochains": _stdio_mcp_entry(srv),
         }
     }
     if sys.platform == "darwin":
@@ -632,11 +633,7 @@ def generate_windsurf_config() -> str:
     srv = _mcp_server_args()
     config = {
         "mcpServers": {
-            "algochains": {
-                "command": srv["command"],
-                "args": srv["args"],
-                "env": srv["env"],
-            }
+            "algochains": _stdio_mcp_entry(srv),
         }
     }
     output_path = Path.home() / ".codeium" / "windsurf" / "mcp_config.json"

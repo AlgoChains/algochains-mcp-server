@@ -32,32 +32,47 @@ Keys use the prefix `ac_live_` (production) or `ac_test_` (sandbox).
 
 ---
 
-## 3. Configure your MCP client (bridge-first — recommended)
+## 3. Configure your MCP client
 
-Developer keys connect to the **hosted bridge**. You do not need broker credentials.
-The bridge accepts developer keys via `X-Api-Key` or `Authorization: Bearer`.
-Use `X-Api-Key` in examples and MCP client configs unless your proxy rewrites
-headers.
+Developer keys connect to the **hosted bridge** at `https://api.algochains.ai/api/mcp`.
+That endpoint uses a custom JSON shape (`{"tool","arguments"}`) for the AlgoChains SDK
+and CLI — **not** standard MCP Streamable HTTP.
 
-### Cursor / Claude / Windsurf IDE config
+### Cursor / Claude Desktop / Windsurf (stdio — required)
 
-Add to your MCP server config (`~/.cursor/mcp.json` or equivalent):
+Desktop IDEs spawn the local `algochains-mcp` process over **stdio**. Do **not** point
+Cursor at `api.algochains.ai/api/mcp` — Cursor's MCP client expects Streamable HTTP at
+`/mcp`, and the bridge API will return 404 or fail protocol negotiation.
+
+Install and generate config:
+
+```bash
+pip install algochains-mcp-server
+algochains-mcp --generate-config cursor   # writes ~/.cursor/mcp.json
+```
+
+The generated block uses **command only** (no `url`, no `transport`):
 
 ```json
 {
   "mcpServers": {
-    "algochains-dev": {
-      "transport": "http",
-      "url": "https://api.algochains.ai/api/mcp",
-      "headers": {
-        "X-Api-Key": "ac_live_YOUR_KEY_HERE"
+    "algochains": {
+      "command": "algochains-mcp",
+      "env": {
+        "ALGOCHAINS_TOOL_MODE": "smart",
+        "ALGOCHAINS_BRIDGE_KEY": "ac_live_YOUR_KEY_HERE"
       }
     }
   }
 }
 ```
 
-### Python client (via MCP SDK)
+Put your developer key in `ALGOCHAINS_BRIDGE_KEY` (or `ALGOCHAINS_DEVELOPER_KEY`) in the
+`env` block. Restart the IDE after editing.
+
+### Python / SDK client (HTTP bridge)
+
+For programmatic access outside desktop IDEs, call the hosted bridge directly:
 
 ```python
 import os
