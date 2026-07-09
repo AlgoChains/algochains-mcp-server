@@ -1,0 +1,26 @@
+{
+  "tenant_001": {
+    "tenant_id": "tenant_001",
+    "logo_url": "https://example.com/logo.png",
+    "primary_color": "#0066FF",
+    "company_name": "",
+    "custom_domain": "",
+    "favicon_url": "",
+    "accent_color": "",
+    "support_email": "",
+    "updated_at": "2026-07-09T11:28:54.152222+00:00",
+    "created_at": "2026-06-18T01:19:22.570904+00:00"
+  },
+  "tenant_002": {
+    "tenant_id": "tenant_002",
+    "logo_url": "",
+    "primary_color": "#FF0000",
+    "company_name": "",
+    "custom_domain": "",
+    "favicon_url": "",
+    "accent_color": "",
+    "support_email": "",
+    "updated_at": "2026-07-09T11:28:54.153356+00:00",
+    "created_at": "2026-06-18T01:19:22.572082+00:00"
+  }
+}

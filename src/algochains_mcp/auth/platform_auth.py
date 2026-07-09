@@ -92,7 +92,12 @@ async def _sync_algochains_core_insert(*, developer_api_key_id: str, user_name: 
                 },
             )
     except Exception as exc:
-        logger.warning("_sync_algochains_core_insert: failed for id=%s — %s", developer_api_key_id, exc)
+        # Log only the exception type — the exception object/message can echo
+        # request internals (e.g. httpx error strings sometimes include the
+        # request body), and that body contains the raw plaintext key.
+        logger.warning(
+            "_sync_algochains_core_insert: failed for id=%s — %s", developer_api_key_id, type(exc).__name__
+        )
 
 
 async def _sync_algochains_core_delete(*, developer_api_key_id: str) -> None:
@@ -108,7 +113,9 @@ async def _sync_algochains_core_delete(*, developer_api_key_id: str) -> None:
                 headers={**_service_headers(), "Prefer": "return=minimal"},
             )
     except Exception as exc:
-        logger.warning("_sync_algochains_core_delete: failed for id=%s — %s", developer_api_key_id, exc)
+        logger.warning(
+            "_sync_algochains_core_delete: failed for id=%s — %s", developer_api_key_id, type(exc).__name__
+        )
 
 
 def _save_session(data: dict[str, Any]) -> None:

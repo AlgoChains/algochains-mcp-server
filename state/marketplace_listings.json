@@ -1,0 +1,36 @@
+{
+  "9162bbbb3fe8": {
+    "id": "9162bbbb3fe8",
+    "strategy_id": "strat_001",
+    "description": "RSI momentum strategy",
+    "pricing": {
+      "type": "monthly",
+      "price": 99
+    },
+    "tags": [
+      "momentum",
+      "equity"
+    ],
+    "subscribers": 2,
+    "status": "active",
+    "published_at": "2026-06-18T01:19:22.567317+00:00",
+    "updated_at": "2026-07-09T11:28:54.150666+00:00"
+  },
+  "987a05b5467e": {
+    "id": "987a05b5467e",
+    "strategy_id": "strat_001",
+    "description": "RSI momentum strategy",
+    "pricing": {
+      "type": "monthly",
+      "price": 99
+    },
+    "tags": [
+      "momentum",
+      "equity"
+    ],
+    "subscribers": 0,
+    "status": "active",
+    "published_at": "2026-07-09T11:28:54.147828+00:00",
+    "updated_at": "2026-07-09T11:28:54.147828+00:00"
+  }
+}

@@ -173,7 +173,10 @@ async def provision(request: Request):
                                 },
                             )
                     except Exception as sync_exc:
-                        log.warning("Stripe APP: algochains-core mirror failed: %s", sync_exc)
+                        # Log only the exception type — the request body for this
+                        # call contains the raw plaintext key, and some HTTP client
+                        # error strings echo request internals.
+                        log.warning("Stripe APP: algochains-core mirror failed: %s", type(sync_exc).__name__)
                 else:
                     log.error(
                         "Stripe APP: key storage failed HTTP %s: %s",

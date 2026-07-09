@@ -1,0 +1,20 @@
+{
+  "678703b3e137": {
+    "id": "678703b3e137",
+    "strategy_id": "strat_001",
+    "listing_id": "9162bbbb3fe8",
+    "tenant_id": "tenant_001",
+    "allocation": 25000,
+    "status": "active",
+    "subscribed_at": "2026-06-18T01:19:22.569714+00:00"
+  },
+  "547c94f314a3": {
+    "id": "547c94f314a3",
+    "strategy_id": "strat_001",
+    "listing_id": "9162bbbb3fe8",
+    "tenant_id": "tenant_001",
+    "allocation": 25000,
+    "status": "active",
+    "subscribed_at": "2026-07-09T11:28:54.150666+00:00"
+  }
+}
