@@ -145,6 +145,17 @@ OWNER_TOOLS = {
     "submit_to_marketplace",
     "get_circuit_breaker_status",
     "get_onboarding_status",
+    # Prop-fund autopilot (Track B, Django "Prop Accounts" GUI) — owner-only,
+    # server-to-server from Django's backend. These were missing from the
+    # bridge whitelist entirely (audit finding 2026-07-08): the tools existed
+    # in prop_fund_autopilot.py and were reachable over stdio MCP, but any
+    # HTTP bridge call — even with a valid owner key — was rejected with
+    # "Tool not available", because evaluate_bridge_tool() only allows tools
+    # present in PUBLIC_TOOLS or OWNER_TOOLS regardless of auth.
+    "get_prop_mode_status",
+    "run_prop_fund_autopilot",
+    "onboard_prop_account",
+    "deploy_bot_in_prop_mode",
     # Numerai tournament tools — owner-only (tournament credentials required).
     # Read tools: anyone with owner key. Upload: gated by NUMERAI_ALLOW_LIVE=1 in handler.
     "numerai_status",

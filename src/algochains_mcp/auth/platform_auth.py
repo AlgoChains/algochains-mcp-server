@@ -124,6 +124,49 @@ def _aal_level(session: dict) -> str:
         return "aal1"
 
 
+async def validate_live_token(access_token: str) -> dict[str, Any]:
+    """
+    Validate a caller-supplied access_token live against Supabase Auth.
+
+    Unlike _load_session(), which trusts whatever is cached in the single
+    global session file, this hits GET {SUPABASE_URL}/auth/v1/user with the
+    token the caller actually presented — the only way to know who is really
+    calling in a process with no per-request caller identity. Sensitive
+    key-lifecycle / OAuth-binding actions must use this, not _load_session(),
+    to decide "who is this".
+
+    Returns {"user_id": ..., "aal": "aal1"|"aal2", "email": ...} on success,
+    or {"error": ...} on failure.
+    """
+    if not access_token:
+        return {"error": "access_token is required."}
+
+    err = _need_supabase()
+    if err:
+        return err
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{_SUPABASE_URL}/auth/v1/user",
+                headers=_auth_headers(access_token),
+            )
+        if resp.status_code != 200:
+            return {"error": "Token validation failed — token is invalid or expired."}
+        data = resp.json()
+        user_id = data.get("id", "")
+        if not user_id:
+            return {"error": "Token validation failed — no user_id in response."}
+        return {
+            "user_id": user_id,
+            "email": data.get("email", ""),
+            "aal": _aal_level({"access_token": access_token}),
+        }
+    except Exception as exc:
+        return {"error": f"Token validation request failed: {exc}"}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ACCOUNT TOOLS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -553,6 +596,7 @@ def _check_aal2(session: dict) -> dict | None:
 
 
 async def create_developer_key(
+    access_token: str,
     name: str = "default",
     scopes: list[str] | None = None,
     env: str = "live",
@@ -560,7 +604,10 @@ async def create_developer_key(
 ) -> dict[str, Any]:
     """
     Mint a new ac_live_* / ac_test_* developer API key.
-    Requires an AAL2 (MFA-verified) session.
+    Requires a live-validated, AAL2 (MFA-verified) access_token belonging to
+    the caller — the cached global session file is never trusted for this
+    decision, since any caller on the same process could otherwise mint a
+    key for whoever's session happens to be cached.
     The plaintext key is returned ONCE ONLY — store it immediately.
     Uses key_contract.build_insert_payload() to ensure writer parity.
     """
@@ -576,24 +623,30 @@ async def create_developer_key(
             "hint": "Add SUPABASE_SERVICE_KEY to .env to enable key creation.",
         }
 
-    session = _load_session()
-    if not session.get("access_token"):
-        return {"error": "Not logged in. Call login_algochains first."}
-
-    aal_err = _check_aal2(session)
-    if aal_err:
-        return aal_err
+    validated = await validate_live_token(access_token)
+    if "error" in validated:
+        return validated
+    if validated["aal"] != "aal2":
+        return {
+            "error": "requires_mfa_challenge",
+            "message": (
+                "Developer key operations require an AAL2 (MFA-verified) session. "
+                "Call enroll_mfa (if not enrolled) or challenge_mfa + verify_mfa to upgrade."
+            ),
+            "current_aal": validated["aal"],
+            "required_aal": "aal2",
+        }
 
     if env not in ("live", "test"):
         return {"error": "env must be 'live' or 'test'"}
 
     # Resolve clerk_user_id: prefer Clerk ID from user metadata, fall back to email
-    user_meta = session.get("user_meta", {}) or {}
+    user_meta = validated.get("user_meta", {}) or {}
     clerk_user_id = (
         user_meta.get("clerk_user_id")
         or user_meta.get("clerk_id")
-        or session.get("email", "")
-        or session.get("user_id", "unknown")
+        or validated.get("email", "")
+        or validated.get("user_id", "unknown")
     )
 
     plaintext = generate_platform_key(env)
@@ -605,7 +658,7 @@ async def create_developer_key(
         override_scopes=scopes,  # validated against tier max inside build_insert_payload
     )
     # Also store Supabase Auth user_id as secondary link
-    supabase_uid = session.get("user_id", "")
+    supabase_uid = validated.get("user_id", "")
     if supabase_uid:
         payload["user_id"] = supabase_uid
 
@@ -643,22 +696,22 @@ async def create_developer_key(
         return {"error": f"Key creation request failed: {exc}"}
 
 
-async def list_developer_keys() -> dict[str, Any]:
+async def list_developer_keys(access_token: str) -> dict[str, Any]:
     """List developer keys for the current user (masked — no plaintext)."""
     err = _need_supabase()
     if err:
         return err
 
-    session = _load_session()
-    if not session.get("access_token"):
-        return {"error": "Not logged in."}
+    validated = await validate_live_token(access_token)
+    if "error" in validated:
+        return validated
 
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
                 f"{_SUPABASE_URL}/rest/v1/developer_api_keys?select=id,key_prefix,name,scopes,env,last_used_at,revoked_at,created_at",
-                headers=_auth_headers(session["access_token"]),
+                headers=_auth_headers(access_token),
             )
         if resp.status_code == 200:
             keys = resp.json()
@@ -684,10 +737,12 @@ async def list_developer_keys() -> dict[str, Any]:
         return {"error": f"Key list request failed: {exc}"}
 
 
-async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str, Any]:
+async def rotate_developer_key(
+    access_token: str, key_id: str, name: str | None = None
+) -> dict[str, Any]:
     """
     Atomically rotate a developer key. Revokes old key and mints a new one.
-    Requires AAL2 session. New plaintext returned ONCE ONLY.
+    Requires a live-validated, AAL2 access_token. New plaintext returned ONCE ONLY.
     """
     err = _need_supabase()
     if err:
@@ -696,15 +751,21 @@ async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str
     if not _SUPABASE_SERVICE_KEY:
         return {"error": "SUPABASE_SERVICE_KEY required for key rotation."}
 
-    session = _load_session()
-    if not session.get("access_token"):
-        return {"error": "Not logged in."}
+    validated = await validate_live_token(access_token)
+    if "error" in validated:
+        return validated
+    if validated["aal"] != "aal2":
+        return {
+            "error": "requires_mfa_challenge",
+            "message": (
+                "Developer key operations require an AAL2 (MFA-verified) session. "
+                "Call enroll_mfa (if not enrolled) or challenge_mfa + verify_mfa to upgrade."
+            ),
+            "current_aal": validated["aal"],
+            "required_aal": "aal2",
+        }
 
-    aal_err = _check_aal2(session)
-    if aal_err:
-        return aal_err
-
-    caller_user_id = session.get("user_id", "")
+    caller_user_id = validated["user_id"]
     import httpx
     try:
         # 1. Fetch existing key metadata — scope to caller's user_id to prevent IDOR
@@ -736,7 +797,9 @@ async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str
             return {"error": f"Could not revoke old key (HTTP {r.status_code}) — rotation aborted."}
 
         # 3. Mint new key (after revoke — caller must save; if this fails, key was already revoked)
-        new_result = await create_developer_key(name=new_name, scopes=scopes, env=env)
+        new_result = await create_developer_key(
+            access_token=access_token, name=new_name, scopes=scopes, env=env
+        )
         if new_result.get("status") != "ok":
             return {
                 "error": "Old key revoked but new key minting failed. Contact support with old_key_id.",
@@ -757,8 +820,8 @@ async def rotate_developer_key(key_id: str, name: str | None = None) -> dict[str
         return {"error": f"Key rotation failed: {exc}"}
 
 
-async def revoke_developer_key(key_id: str) -> dict[str, Any]:
-    """Soft-delete (revoke) a developer key. Requires AAL2 session."""
+async def revoke_developer_key(access_token: str, key_id: str) -> dict[str, Any]:
+    """Soft-delete (revoke) a developer key. Requires a live-validated AAL2 access_token."""
     err = _need_supabase()
     if err:
         return err
@@ -766,15 +829,21 @@ async def revoke_developer_key(key_id: str) -> dict[str, Any]:
     if not _SUPABASE_SERVICE_KEY:
         return {"error": "SUPABASE_SERVICE_KEY required."}
 
-    session = _load_session()
-    if not session.get("access_token"):
-        return {"error": "Not logged in."}
+    validated = await validate_live_token(access_token)
+    if "error" in validated:
+        return validated
+    if validated["aal"] != "aal2":
+        return {
+            "error": "requires_mfa_challenge",
+            "message": (
+                "Developer key operations require an AAL2 (MFA-verified) session. "
+                "Call enroll_mfa (if not enrolled) or challenge_mfa + verify_mfa to upgrade."
+            ),
+            "current_aal": validated["aal"],
+            "required_aal": "aal2",
+        }
 
-    aal_err = _check_aal2(session)
-    if aal_err:
-        return aal_err
-
-    caller_user_id = session.get("user_id", "")
+    caller_user_id = validated["user_id"]
     import httpx
     try:
         # Scope PATCH to caller's user_id to prevent IDOR — other users' keys are invisible

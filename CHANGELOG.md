@@ -44,6 +44,24 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [22.6.1] — 2026-07-08
+
+### Fixed — JSON Schema validity for `array` tool params (strict-client compatibility)
+
+- Added the required `items` sub-schema to every `"type": "array"` tool parameter
+  that was missing one. Strict MCP clients (VS Code / the built-in schema
+  validator) reject an `array` param without `items` per JSON Schema, which made
+  the offending tools fail validation and also blocked disabling them in the
+  Tools picker. Affected params, all now `"items": {"type": "object"}`:
+  - `get_footprint_chart.tick_data` (the reported failure)
+  - `create_strategy.indicators`
+  - `build_prop_fund_inputs.fills_override`
+  - `run_prop_fund_autopilot.fills_override`
+- No behavioral change to any handler — the fix is schema-only. Verified via an
+  AST walk that no `array` schema in `server.py` is now missing `items`.
+
+---
+
 ## [22.6.0] — 2026-06-13
 
 ### Added — Revenue platform (WS1–WS6), legal defense & onboarding

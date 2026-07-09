@@ -2332,7 +2332,7 @@ TOOLS = [
     # V8: Strategy Builder SDK (8 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="create_strategy", description="Create a new AI-native declarative strategy specification (StrategySpec). Define indicators, entry/exit rules, position sizing in JSON.",
-         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "timeframe": {"type": "string"}, "asset_class": {"type": "string", "enum": ["equity", "forex", "crypto", "futures"]}, "indicators": {"type": "array"}, "entry_rules": {"type": "object"}, "exit_rules": {"type": "object"}, "position_sizing": {"type": "object"}}, "required": ["name", "symbols", "timeframe", "indicators", "entry_rules", "exit_rules"]},
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "timeframe": {"type": "string"}, "asset_class": {"type": "string", "enum": ["equity", "forex", "crypto", "futures"]}, "indicators": {"type": "array", "items": {"type": "object"}}, "entry_rules": {"type": "object"}, "exit_rules": {"type": "object"}, "position_sizing": {"type": "object"}}, "required": ["name", "symbols", "timeframe", "indicators", "entry_rules", "exit_rules"]},
         annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(name="validate_strategy", description="Validate a StrategySpec for schema correctness, parameter ranges, and internal consistency.",
@@ -3355,7 +3355,7 @@ TOOLS = [
     # V21: Order Flow & Institutional Data
     # ═══════════════════════════════════════════════════════════════
     Tool(name="get_footprint_chart", description="Compute footprint chart for a symbol: bid/ask volume at each price level per candle, detecting absorption (sellers absorbed at support), imbalance (>3:1 ratio), and delta exhaustion. Uses real Databento tick data.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "5min", "description": "Bar timeframe: 1min, 5min, 15min, 1hour"}, "bars": {"type": "integer", "default": 20, "description": "Number of bars to compute"}, "tick_data": {"type": "array", "description": "Optional: provide raw tick data array; otherwise fetches from Databento"}}, "required": ["symbol"]},
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "5min", "description": "Bar timeframe: 1min, 5min, 15min, 1hour"}, "bars": {"type": "integer", "default": 20, "description": "Number of bars to compute"}, "tick_data": {"type": "array", "items": {"type": "object"}, "description": "Optional: provide raw tick data array; otherwise fetches from Databento"}}, "required": ["symbol"]},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="compute_cumulative_delta", description="Compute cumulative delta (net buy vs sell pressure) from OHLCV bars or raw ticks. Detects bullish/bearish divergence between price and delta — a leading indicator of reversals.",
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "5min"}, "bars": {"type": "integer", "default": 50}}, "required": ["symbol"]},
@@ -4825,7 +4825,7 @@ TOOLS = [
              "symbol": {"type": "string", "description": "Root symbol, e.g. MNQ"},
              "lookback_days": {"type": "integer", "default": 90},
              "account_id": {"type": "integer", "description": "Tradovate account id (defaults to primary)"},
-             "fills_override": {"type": "array", "description": "Optional pre-pulled fills list for offline analysis"},
+             "fills_override": {"type": "array", "items": {"type": "object"}, "description": "Optional pre-pulled fills list for offline analysis"},
          }, "required": ["strategy_name", "symbol"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="onboard_prop_account",
@@ -4868,8 +4868,8 @@ TOOLS = [
              "symbol": {"type": "string", "default": "MNQ"},
              "lookback_days": {"type": "integer", "default": 90},
              "account_id": {"type": "integer"},
-             "fund_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional filter, e.g. ['apex_50k_eod','mffu_core_50k']"},
-             "fills_override": {"type": "array"},
+            "fund_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional filter, e.g. ['apex_50k_eod','mffu_core_50k']"},
+            "fills_override": {"type": "array", "items": {"type": "object"}},
          }, "required": []},
          annotations=ANNOT_READ_SAFE),
     Tool(name="check_prop_fund_rules_freshness",

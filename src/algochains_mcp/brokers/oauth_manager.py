@@ -236,7 +236,7 @@ async def _sb_get_token(broker: str, user_id: str) -> Optional[dict]:
 
 async def generate_auth_url(
     broker: str,
-    user_id: str,
+    access_token: str,
     redirect_uri: Optional[str] = None,
 ) -> dict[str, Any]:
     """
@@ -245,11 +245,22 @@ async def generate_auth_url(
     The user opens this URL in their browser, logs into their broker,
     and is redirected back to redirect_uri with a ?code= parameter.
 
+    user_id is derived from a live-validated access_token, never accepted
+    as a free-form argument — otherwise any caller could bind a victim's
+    user_id to broker tokens of the caller's choosing (state poisoning).
+
     Returns:
         auth_url: The URL to redirect the user to
         state:    CSRF state token (must be verified on callback)
         expires_at: When this auth URL expires (10 minutes)
     """
+    from ..auth.platform_auth import validate_live_token
+
+    validated = await validate_live_token(access_token)
+    if "error" in validated:
+        return {"success": False, "error": validated["error"]}
+    user_id = validated["user_id"]
+
     cfg = BROKER_OAUTH_CONFIGS.get(broker)
     if not cfg:
         return {

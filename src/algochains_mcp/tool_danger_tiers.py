@@ -274,6 +274,15 @@ _TOOL_TIERS: dict[str, int] = {
     "massive_screener": TIER_READ_ONLY,
     # Ingestion (read/list)
     "list_ingested_data": TIER_READ_ONLY,
+    # Prop-fund autopilot (Track B): onboard/deploy are plan-then-confirm,
+    # local-state-only writes (no broker calls, never auto-launches the bot —
+    # deploy_bot_in_prop_mode writes a config JSON and prints the launch
+    # command for a human operator to run manually). Analysis/status reads
+    # mutate nothing.
+    "get_prop_mode_status": TIER_READ_ONLY,
+    "run_prop_fund_autopilot": TIER_READ_ONLY,
+    "onboard_prop_account": TIER_WRITE_LOCAL,
+    "deploy_bot_in_prop_mode": TIER_WRITE_LOCAL,
 
     # ── Tier 1: WRITE_LOCAL ───────────────────────────────────────────────────
     # These write to internal server state only
