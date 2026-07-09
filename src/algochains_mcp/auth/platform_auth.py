@@ -94,8 +94,11 @@ async def _sync_algochains_core_insert(*, developer_api_key_id: str, user_name: 
     except Exception:
         # Deliberately do not log the exception object/message: this request's
         # body contains the raw plaintext key, and some HTTP client error
-        # strings echo request internals.
-        logger.warning("_sync_algochains_core_insert: failed for id=%s", developer_api_key_id)
+        # strings echo request internals. Log a fixed string only — CodeQL's
+        # clear-text-logging check flags any argument whose *name* contains
+        # "key" (a heuristic, not real dataflow), so avoid passing the
+        # developer_api_key_id variable into this call at all.
+        logger.warning("_sync_algochains_core_insert: mirror write failed")
 
 
 async def _sync_algochains_core_delete(*, developer_api_key_id: str) -> None:
@@ -111,7 +114,7 @@ async def _sync_algochains_core_delete(*, developer_api_key_id: str) -> None:
                 headers={**_service_headers(), "Prefer": "return=minimal"},
             )
     except Exception:
-        logger.warning("_sync_algochains_core_delete: failed for id=%s", developer_api_key_id)
+        logger.warning("_sync_algochains_core_delete: mirror delete failed")
 
 
 def _save_session(data: dict[str, Any]) -> None:
