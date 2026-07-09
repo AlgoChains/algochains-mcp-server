@@ -142,17 +142,46 @@ async def provision(request: Request):
                         "apikey": supabase_key,
                         "Authorization": f"Bearer {supabase_key}",
                         "Content-Type": "application/json",
-                        "Prefer": "return=minimal",
+                        # return=representation (not minimal) so we get the row id
+                        # back to mirror into algochains-core below.
+                        "Prefer": "return=representation",
                     },
                     json=payload,
                 )
-            if resp.status_code in (200, 201, 204):
-                key_stored = True
-            else:
-                log.error(
-                    "Stripe APP: key storage failed HTTP %s: %s",
-                    resp.status_code, resp.text[:200],
-                )
+                if resp.status_code in (200, 201, 204):
+                    key_stored = True
+                    # Unify: mirror this key into algochains-core so it also
+                    # grants access to algochains-library-mcp. Best-effort —
+                    # same httpx client/connection, still inside the `async
+                    # with` block so the client isn't already closed.
+                    try:
+                        row = resp.json()
+                        row_id = row[0].get("id") if isinstance(row, list) and row else None
+                        if row_id:
+                            await client.post(
+                                f"{supabase_url}/rest/v1/algochains-core",
+                                headers={
+                                    "apikey": supabase_key,
+                                    "Authorization": f"Bearer {supabase_key}",
+                                    "Content-Type": "application/json",
+                                    "Prefer": "return=minimal",
+                                },
+                                json={
+                                    "user_name": email or clerk_user_id,
+                                    "api_key": raw_key,
+                                    "developer_api_key_id": row_id,
+                                },
+                            )
+                    except Exception:
+                        # Deliberately do not log the exception object/message: the
+                        # request body for this call contains the raw plaintext key,
+                        # and some HTTP client error strings echo request internals.
+                        log.warning("Stripe APP: algochains-core mirror failed")
+                else:
+                    log.error(
+                        "Stripe APP: key storage failed HTTP %s: %s",
+                        resp.status_code, resp.text[:200],
+                    )
         except Exception as exc:
             log.error("Stripe APP: key storage exception: %s", exc)
 
@@ -166,7 +195,7 @@ async def provision(request: Request):
         "resource_id": f"ac_{stripe_customer_id[:12]}_{product_id}",
         "credentials": {
             "ALGOCHAINS_API_KEY": raw_key,
-            "ALGOCHAINS_BRIDGE_URL": "https://api.algochains.ai/api/mcp",
+            "ALGOCHAINS_BRIDGE_URL": "https://mcp.algochains.ai/api/mcp",
         },
         "next_steps": [
             "export ALGOCHAINS_API_KEY=<your key>",

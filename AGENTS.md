@@ -175,6 +175,45 @@ now mint developer keys through one shared module so every row in
 - **Service-role env:** the bridge needs `SUPABASE_SERVICE_ROLE_KEY` (accepts
   `SUPABASE_SERVICE_KEY` as a fallback) to resolve keys.
 
+### `algochains-core` unification (2026-07-09)
+
+All three writers above also mirror the same raw key into the separate
+`public."algochains-core"` table (columns: `id`, `created_at`, `user_name`,
+`api_key`, `developer_api_key_id`), which is the pre-existing allow-list that
+gates **algochains-library-mcp** — the standalone backtesting-library MCP
+package on PyPI (`uvx --from algochains-library-mcp`). One unified
+`ac_live_*`/`ac_test_*` key now works across: the MCP bridge, the trading
+platform, **and** the backtesting library.
+
+- Insert helper: `_sync_algochains_core_insert()` in
+  `src/algochains_mcp/auth/platform_auth.py` (also duplicated in Django's
+  `home/services/developer_key_service.py` and inline in
+  `src/stripe_app/server.py`'s `/app/provision`). Best-effort — logs and
+  swallows failures rather than blocking the primary key operation.
+- Delete helper: `_sync_algochains_core_delete()` — called on revoke so a
+  revoked platform key can't still reach algochains-library-mcp. `/app/
+  deprovision` is currently a stub in the Stripe app (doesn't revoke the
+  underlying key at all yet), so this path isn't wired there.
+- Schema: `developer_api_key_id uuid` FK column added via control-tower
+  migration `20260709010000_algochains_core_key_unification.sql`. Pre-existing
+  manually-added rows (~18, e.g. "Roo Fernando", "Eric Walker", "Jeremy")
+  keep `developer_api_key_id = NULL` — their original raw keys were never
+  captured anywhere, so they can't be retroactively linked or migrated.
+- **Unverified:** algochains-library-mcp's source isn't checked out in any
+  repo in this org's workspace, so it's unconfirmed whether its auth layer
+  accepts the `ac_live_`/`ac_test_` format vs. expecting its own historical
+  ~32-char unprefixed keys. If a unified key doesn't work against that
+  package, check its auth code directly — it may need a matching update to
+  accept the new format (or a prefix-stripping compatibility shim).
+- **Distribution (2026-07-09):** the Claude Desktop `.mcpb` extension for this
+  package is hosted by Django_Algochains at
+  `https://algochains.ai/mcp/algochains-library-mcp.mcpb`
+  ([view](Django_Algochains/home/views_public.py) `algochains_library_mcpb`,
+  [url](Django_Algochains/django_project/urls.py) name
+  `algochains_library_mcpb`) and surfaced from the homepage Connect dropdown,
+  Start modal, and the API reference / Broker Hub docs. Requested by Roo so
+  PyPI step 2 on the package page can link straight to it.
+
 ### `owner_token` pattern
 
 Tier 2 and Tier 3 tools require the owner token. **Always ask the user for explicit
@@ -482,8 +521,8 @@ These fail on a clean checkout regardless of setup — do not treat them as setu
   their own infra.
 - **API surface:** downloadable **OpenAPI 3.1** + Postman collection at
   `algochains.ai/docs/openapi.json` | `.yaml` | `algochains.ai/docs/postman-collection.json`.
-  Base URL `https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint); subscriber header
-  is `X-Api-Key`.
+  Base URL `https://mcp.algochains.ai` (`api.algochains.ai` is a different service and does
+  not answer `/api/mcp`); subscriber header is `X-Api-Key`.
 - **MNQ signal key:** the live bot HMAC-posts `strategy_name = "MNQ Upgraded Scalper"` (with spaces);
   the fanout maps that to `bot = "MNQ"`, which `get_signal_stream(bots=["MNQ"])` filters on — so tell
   subscribers to follow bot **`MNQ`**.
@@ -491,6 +530,10 @@ These fail on a clean checkout regardless of setup — do not treat them as setu
   (`algochains-mcp-server` — trading/signals, what subscribers install) vs **`algochains-library-mcp`**
   (Roo's natural-language backtesting MCP, beta). Do **not** co-register both under the same
   `algochains` alias — namespace them (e.g. `algochains` + `algochains-backtest`).
+  Claude Desktop users can install `algochains-library-mcp` as a downloadable extension
+  instead of the CLI: `https://algochains.ai/mcp/algochains-library-mcp.mcpb`
+  (also linked from the [PyPI page](https://pypi.org/project/algochains-library-mcp/), step 2,
+  and from the homepage Connect dropdown / Start modal).
 
 ## Prop funds (Track B) — US futures prop-firm evaluation pipeline (added 2026-07-08)
 

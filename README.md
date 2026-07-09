@@ -87,7 +87,8 @@ as `ALGOCHAINS_SUBSCRIBER_KEY` (canonical) in your `.env` — the server resolve
 the TS CLI (fixed in #242 / v22.7.1), but prefer `ALGOCHAINS_SUBSCRIBER_KEY`. Note:
 `ALGOCHAINS_BRIDGE_KEY` is the **owner / developer** key — it is *not* a subscriber key.
 On the HTTP bridge the subscriber key is sent as the `X-Api-Key` header; the base URL is
-`https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint). There are **16
+`https://mcp.algochains.ai` (`api.algochains.ai` is a different service — AlgoChains' Data
+API — and does not answer `/api/mcp`). There are **16
 subscriber tools** in total (`get_signal_stream`, `get_my_pnl`, `get_my_fills`,
 `get_my_assignments`, `get_my_portfolio`, `get_marketplace_listings`, `place_paper_order`,
 `cancel_paper_order`, `get_my_paper_positions`, `report_fill`, `heartbeat`, `ack_signal`,
@@ -683,8 +684,8 @@ Downloadable, always current:
 - OpenAPI 3.1 YAML — `https://algochains.ai/docs/openapi.yaml`
 - Postman collection — `https://algochains.ai/docs/postman-collection.json`
 
-Base URL `https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint). Subscriber
-requests authenticate with the `X-Api-Key` header.
+Base URL `https://mcp.algochains.ai` (`api.algochains.ai` is a different service and does not
+answer `/api/mcp`). Subscriber requests authenticate with the `X-Api-Key` header.
 
 > **⚠️ Namespace note:** Do **not** co-register this package (`algochains-mcp-server` —
 > trading/signals) alongside **`algochains-library-mcp`** (Roo's NL backtesting MCP) under the

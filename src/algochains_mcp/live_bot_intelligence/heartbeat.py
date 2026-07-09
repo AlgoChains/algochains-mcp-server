@@ -41,11 +41,12 @@ BOT_SCRIPT_NAMES: dict[str, tuple[str, ...]] = {
 
 @dataclass
 class SystemHeartbeat:
-    # Mac state
-    mac_alive: bool = False
-    mac_last_seen_ago_sec: float = 0.0
+    # Mac state — use None when heartbeat file is missing (not false/0 sentinels)
+    mac_alive: bool | None = None
+    mac_last_seen_ago_sec: float | None = None
     mac_bots_running: str = ""
     mac_heartbeat_source: str = ""
+    mac_heartbeat_status: str = "missing"  # "missing" | "stale" | "fresh"
     # Desktop state
     desktop_mode: str = "unknown"  # "primary" | "standby" | "mac"
     desktop_bots_running: int = 0
@@ -183,7 +184,13 @@ def get_system_heartbeat() -> SystemHeartbeat:
         age = time.time() - mac_unix
         hb.mac_last_seen_ago_sec = round(age, 1)
         hb.mac_alive = age < 900  # 15 min threshold
+        hb.mac_heartbeat_status = "fresh" if hb.mac_alive else "stale"
         hb.mac_bots_running = mac_data.get("bots_running", "")
+    else:
+        # Missing file: do not coerce to false/0 (reads as "dead but seen 0s ago")
+        hb.mac_alive = None
+        hb.mac_last_seen_ago_sec = None
+        hb.mac_heartbeat_status = "missing"
 
     # Determine this node identity
     hb.this_node = "desktop" if _is_desktop() else "macbook"
@@ -191,10 +198,12 @@ def get_system_heartbeat() -> SystemHeartbeat:
     # Determine role
     if hb.this_node == "macbook":
         hb.desktop_mode = "mac"  # We ARE the Mac
-    elif hb.mac_alive:
+    elif hb.mac_alive is True:
         hb.desktop_mode = "standby"  # Mac is alive, desktop is backup
-    else:
+    elif hb.mac_alive is False:
         hb.desktop_mode = "primary"  # Mac is offline, desktop is trading
+    else:
+        hb.desktop_mode = "unknown"  # Heartbeat missing — do not assume primary
 
     # Count local bots
     running = scan_running_bot_keys()

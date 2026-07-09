@@ -34,3 +34,4 @@ node_modules/
 src/cli/package-lock.json
 state/guardrail_prefs.json
 state/platform_session.json
+state/*.json

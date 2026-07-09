@@ -69,14 +69,14 @@ or auto-fill consent on the subscriber's behalf.
 List the subscriber surface and required scopes:
 
 ```bash
-curl -sS https://api.algochains.ai/tools \
+curl -sS https://mcp.algochains.ai/tools \
   -H "X-Api-Key: <SUBSCRIBER_API_KEY>"
 ```
 
 Call a subscriber tool:
 
 ```bash
-curl -sS https://api.algochains.ai/api/mcp \
+curl -sS https://mcp.algochains.ai/api/mcp \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: <SUBSCRIBER_API_KEY>" \
   -d '{
@@ -88,7 +88,7 @@ curl -sS https://api.algochains.ai/api/mcp \
 Join a bot after consent:
 
 ```bash
-curl -sS https://api.algochains.ai/api/mcp \
+curl -sS https://mcp.algochains.ai/api/mcp \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: <SUBSCRIBER_API_KEY>" \
   -d '{
@@ -105,7 +105,7 @@ curl -sS https://api.algochains.ai/api/mcp \
 Stream copy-trade signals over Server-Sent Events:
 
 ```bash
-curl -N https://api.algochains.ai/api/signals/stream?bots=MNQ \
+curl -N https://mcp.algochains.ai/api/signals/stream?bots=MNQ \
   -H "X-Api-Key: <SUBSCRIBER_API_KEY>"
 ```
 

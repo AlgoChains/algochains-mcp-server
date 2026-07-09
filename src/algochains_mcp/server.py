@@ -3807,7 +3807,7 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_bot_heartbeat_openclaw",
-         description="Read the bot heartbeat state from OpenClaw — shows which bots are alive, last-seen timestamps, and LIVE/STALE status. Written by autonomous_watchdog.py every 5 minutes.",
+         description="Read ~/.openclaw/bot_heartbeat.json. This file is MNQ-only and fill-triggered (written by FUTURES_SCALPER_UPGRADED._track_openclaw_feedback on slippage/fill feedback), NOT by autonomous_watchdog every 5 minutes. Schema is typically {ts, bot, symbol}. For fleet process liveness use get_bot_health / get_all_bot_ops_status; for failover primary use control-tower logs/bot_heartbeat.json.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_agent_evaluations",
@@ -6151,11 +6151,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 _sh_data = _json_gh.loads(_sh_path.read_text())
                 _bot_key_map = {
                     "mnq": "MNQ_Upgraded_Scalper",
-                    "cl":  "CL_Futures_Scalper",
+                    "cl":  "CL_Scalper",
                     "mes": "MES_EMA_Swing",
                     "nq":  "NQ_EMA_Swing",
                 }
-                _legacy_bot_key_map = {"cl": "CL_Swing_Scalper"}
+                _legacy_bot_key_map = {
+                    "cl": "CL_Futures_Scalper",  # older writers / health aliases
+                }
                 def _bounded_slice(_entry: dict, _name: str) -> dict | None:
                     _value = _entry.get(_name)
                     if not isinstance(_value, dict):

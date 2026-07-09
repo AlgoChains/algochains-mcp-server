@@ -85,7 +85,7 @@ export async function keysTest(opts: { key?: string; json?: boolean }): Promise<
   if (!opts.json) {
     console.log(`\n${BOLD}Testing bridge connection${RESET}`);
     console.log(`${DIM}Key: ${apiKey.substring(0, 12)}***${RESET}`);
-    console.log(`${DIM}Bridge: ${process.env.ALGOCHAINS_BRIDGE_URL ?? "https://api.algochains.ai"}${RESET}\n`);
+    console.log(`${DIM}Bridge: ${process.env.ALGOCHAINS_BRIDGE_URL ?? "https://mcp.algochains.ai"}${RESET}\n`);
   }
 
   await callMcp("test_bridge_connection", { api_key: apiKey }, opts.json ?? false);
