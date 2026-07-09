@@ -116,6 +116,7 @@ Use this table to route a user request to the correct tool family.
 | **Meta** | `discover_tools`, `get_tool_details`, `execute_dynamic_tool`, `mcp_tool_manifest`, `get_system_heartbeat`, `get_api_usage` | Use first when unsure which domain to target |
 | **Onboarding** | `start_onboarding`, `get_broker_setup_guide`, `validate_broker_connection`, `run_onboarding_smoke_test` | First-run setup flow |
 | **Skills / Openclaw** | `list_skills`, `get_skill_detail`, `search_skills`, `get_skills_for_task`, `get_openclaw_memory`, `get_openclaw_state_summary` | AlgoChains skill registry |
+| **Prop funds (Track B)** | `list_prop_funds`, `get_prop_fund_rules`, `evaluate_strategy_for_prop_fund`, `build_prop_fund_inputs`, `run_prop_fund_autopilot`, `get_prop_mode_status`, `get_prop_fund_monitor_status`, `get_prop_fund_broker_options`, `check_prop_fund_rules_freshness`, `request_prop_payout`, `onboard_prop_account`, `deploy_bot_in_prop_mode` | See "Prop funds (Track B)" section near the end of this file — US futures prop-firm (Apex/TopStep-style) evaluation pipeline for the live MNQ scalper. All Tier 0 (`READ_ONLY`) except `onboard_prop_account`/`deploy_bot_in_prop_mode` (Tier 1, `WRITE_LOCAL`, plan-then-confirm). Served from a separate owner-keyed HTTP bridge instance, not the customer-facing bridge. |
 
 ---
 
@@ -490,3 +491,48 @@ These fail on a clean checkout regardless of setup — do not treat them as setu
   (`algochains-mcp-server` — trading/signals, what subscribers install) vs **`algochains-library-mcp`**
   (Roo's natural-language backtesting MCP, beta). Do **not** co-register both under the same
   `algochains` alias — namespace them (e.g. `algochains` + `algochains-backtest`).
+
+## Prop funds (Track B) — US futures prop-firm evaluation pipeline (added 2026-07-08)
+
+**What it is:** a read-mostly pipeline that scores the live MNQ scalper's real trading
+stats (pulled from Tradovate fills — never synthetic data) against the rules of supported
+US futures prop firms (Apex, TopStep-style evaluations), then optionally onboards a real
+evaluation account and generates a `PROP_MODE` launch config for a *second*, independent bot
+session. Source: `src/algochains_mcp/brokers/prop_fund_manager.py` (fund catalog + rules),
+`prop_fund_autopilot.py` (onboarding/deploy/payout logic), `prop_fund_drawdown_monitor.py`
+(live account monitoring).
+
+**Tool call order (evaluation → onboarding → deploy):**
+```python
+list_prop_funds()                                  # browse the catalog
+get_prop_fund_rules(fund_key="apex_50k_eod")        # full rules for one fund
+run_prop_fund_autopilot(strategy_name="FUTURES_SCALPER_UPGRADED", symbol="MNQ")
+  # ^ pulls real Tradovate fills, scores against every fund, returns a GO/NO-GO
+  #   recommendation + drawdown simulations. Read-only.
+check_prop_fund_rules_freshness()                   # refuse to onboard against stale rules
+onboard_prop_account(fund_key=..., account_id=..., broker=..., starting_balance=...,
+                     credentials_ref="TRADOVATE_APEX_50K_ACCESS_TOKEN", confirm=False)
+  # confirm=False → plan preview only. confirm=True → writes local monitor/autopilot
+  # state ONLY. Never stores credentials — credentials_ref just names an env var the
+  # bot reads at launch. Rejects onboarding if rules are stale/unverified.
+deploy_bot_in_prop_mode(account_id=..., confirm=False)
+  # confirm=False → plan preview. confirm=True → writes config/prop_mode/<account_id>.json
+  # and returns the exact launch command. NEVER launches the bot — a human must run
+  # that command manually (see algochains-control-tower/PROP_FUND_SECOND_BOT_SESSION_RUNBOOK.md).
+request_prop_payout(account_id=..., current_balance=...)  # read-only eligibility check
+```
+
+**Danger tiers:** everything above is `READ_ONLY` except `onboard_prop_account` and
+`deploy_bot_in_prop_mode`, which are `WRITE_LOCAL` (local-state writes only, no broker
+calls, no auto-launch) — see `tool_danger_tiers.py`. Both are plan-then-confirm: call once
+with `confirm=False` to preview, then again with `confirm=True` to commit.
+
+**Where the customer-facing UI lives:** Django_Algochains exposes an owner-gated GUI at
+`/account/brokers/prop/` (dashboard, fund browser, evaluation panel, onboarding form, deploy
+form) that talks to a **separate, owner-keyed HTTP bridge instance** — not the
+customer-facing `http_bridge.py` container most subscribers hit. This second bridge runs
+next to the real `algochains-control-tower` checkout (so it can read live Tradovate fills
+and write `config/prop_mode/`), reachable only via an SSH reverse tunnel + `socat` relay.
+See `Django_Algochains/brokers/prop_bridge_client.py` for the client and
+`Django_Algochains/brokers/views_prop.py` for the views. This is currently an internal ops
+surface (owner-only), not yet rolled out to subscribers.
