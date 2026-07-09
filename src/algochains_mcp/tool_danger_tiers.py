@@ -283,6 +283,18 @@ _TOOL_TIERS: dict[str, int] = {
     "run_prop_fund_autopilot": TIER_READ_ONLY,
     "onboard_prop_account": TIER_WRITE_LOCAL,
     "deploy_bot_in_prop_mode": TIER_WRITE_LOCAL,
+    # Fund browser / evaluation panel reads (Phase 1, Django /account/brokers/prop/).
+    # Pure catalog data + scoring against a strategy's already-fetched live stats —
+    # no broker calls, no writes.
+    "list_prop_funds": TIER_READ_ONLY,
+    "evaluate_strategy_for_prop_fund": TIER_READ_ONLY,
+    "simulate_prop_fund_evaluation": TIER_READ_ONLY,
+    "get_prop_fund_rules": TIER_READ_ONLY,
+    "get_prop_fund_monitor_status": TIER_READ_ONLY,
+    "get_prop_fund_broker_options": TIER_READ_ONLY,
+    "build_prop_fund_inputs": TIER_READ_ONLY,
+    "check_prop_fund_rules_freshness": TIER_READ_ONLY,
+    "request_prop_payout": TIER_READ_ONLY,
 
     # ── Tier 1: WRITE_LOCAL ───────────────────────────────────────────────────
     # These write to internal server state only

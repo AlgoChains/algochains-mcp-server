@@ -156,6 +156,17 @@ OWNER_TOOLS = {
     "run_prop_fund_autopilot",
     "onboard_prop_account",
     "deploy_bot_in_prop_mode",
+    # Fund browser / evaluation panel (Phase 1) — read-only catalog + scoring tools
+    # backing /account/brokers/prop/ in Django.
+    "list_prop_funds",
+    "evaluate_strategy_for_prop_fund",
+    "simulate_prop_fund_evaluation",
+    "get_prop_fund_rules",
+    "get_prop_fund_monitor_status",
+    "get_prop_fund_broker_options",
+    "build_prop_fund_inputs",
+    "check_prop_fund_rules_freshness",
+    "request_prop_payout",
     # Numerai tournament tools — owner-only (tournament credentials required).
     # Read tools: anyone with owner key. Upload: gated by NUMERAI_ALLOW_LIVE=1 in handler.
     "numerai_status",
