@@ -116,7 +116,7 @@ Use this table to route a user request to the correct tool family.
 | **Meta** | `discover_tools`, `get_tool_details`, `execute_dynamic_tool`, `mcp_tool_manifest`, `get_system_heartbeat`, `get_api_usage` | Use first when unsure which domain to target |
 | **Onboarding** | `start_onboarding`, `get_broker_setup_guide`, `validate_broker_connection`, `run_onboarding_smoke_test` | First-run setup flow |
 | **Skills / Openclaw** | `list_skills`, `get_skill_detail`, `search_skills`, `get_skills_for_task`, `get_openclaw_memory`, `get_openclaw_state_summary` | AlgoChains skill registry |
-| **Prop funds (Track B)** | `list_prop_funds`, `get_prop_fund_rules`, `evaluate_strategy_for_prop_fund`, `build_prop_fund_inputs`, `run_prop_fund_autopilot`, `get_prop_mode_status`, `get_prop_fund_monitor_status`, `get_prop_fund_broker_options`, `check_prop_fund_rules_freshness`, `request_prop_payout`, `onboard_prop_account`, `deploy_bot_in_prop_mode` | See "Prop funds (Track B)" section near the end of this file — US futures prop-firm (Apex/TopStep-style) evaluation pipeline for the live MNQ scalper. All Tier 0 (`READ_ONLY`) except `onboard_prop_account`/`deploy_bot_in_prop_mode` (Tier 1, `WRITE_LOCAL`, plan-then-confirm). Served from a separate owner-keyed HTTP bridge instance, not the customer-facing bridge. |
+| **Prop funds (Track B)** | `list_prop_funds`, `get_prop_fund_rules`, `evaluate_strategy_for_prop_fund`, `simulate_prop_fund_evaluation`, `build_prop_fund_inputs`, `run_prop_fund_autopilot`, `get_prop_mode_status`, `get_prop_fund_monitor_status`, `get_prop_fund_broker_options`, `check_prop_fund_rules_freshness`, `request_prop_payout`, `onboard_prop_account`, `deploy_bot_in_prop_mode` | See "Prop funds (Track B)" section near the end of this file — US futures prop-firm (Apex/TopStep-style) evaluation pipeline for the live MNQ scalper. All Tier 0 (`READ_ONLY`) except `onboard_prop_account`/`deploy_bot_in_prop_mode` (Tier 1, `WRITE_LOCAL`, plan-then-confirm). Served from a separate owner-keyed HTTP bridge instance, not the customer-facing bridge. |
 
 ---
 
@@ -510,6 +510,11 @@ run_prop_fund_autopilot(strategy_name="FUTURES_SCALPER_UPGRADED", symbol="MNQ")
   # ^ pulls real Tradovate fills, scores against every fund, returns a GO/NO-GO
   #   recommendation + drawdown simulations. Read-only.
 check_prop_fund_rules_freshness()                   # refuse to onboard against stale rules
+# granular alternatives to run_prop_fund_autopilot's all-in-one scoring, useful for the
+# Django evaluation panel's step-by-step UI:
+build_prop_fund_inputs(strategy_name=..., symbol=...)          # assemble real metrics only
+evaluate_strategy_for_prop_fund(fund_key=..., metrics=...)      # score one fund
+simulate_prop_fund_evaluation(fund_key=..., metrics=...)        # drawdown/day-by-day sim
 onboard_prop_account(fund_key=..., account_id=..., broker=..., starting_balance=...,
                      credentials_ref="TRADOVATE_APEX_50K_ACCESS_TOKEN", confirm=False)
   # confirm=False → plan preview only. confirm=True → writes local monitor/autopilot
