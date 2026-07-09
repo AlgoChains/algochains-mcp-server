@@ -95,7 +95,7 @@ STEP 5 — Create developer API key
 STEP 6 — Test bridge connection
   Call: test_bridge_connection(api_key="<KEY FROM STEP 5>")
 
-  Expected: status: "ok", bridge: "api.algochains.ai" or similar.
+  Expected: status: "ok", bridge: "mcp.algochains.ai" or similar.
   If it fails: check that the key starts with "ac_live_" and has not been revoked.
 
 ---
@@ -229,7 +229,7 @@ per environment and store it as a repo secret:
 # .github/workflows/my_workflow.yml
 env:
   AC_DEV_KEY: ${{ secrets.AC_DEV_KEY_TEST }}
-  ALGOCHAINS_BRIDGE_URL: https://api.algochains.ai
+  ALGOCHAINS_BRIDGE_URL: https://mcp.algochains.ai
 
 steps:
   - name: Test bridge connectivity

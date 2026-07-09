@@ -54,7 +54,8 @@ never touches this repo.
 
 ## 3. Endpoint & auth
 
-- **Base URL:** `https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint).
+- **Base URL:** `https://mcp.algochains.ai` (`api.algochains.ai` is a different service —
+  AlgoChains' Data API — and does not answer `/api/mcp`).
 - **Header:** subscriber requests authenticate with `X-Api-Key: <your sub_live_… key>`.
 
 ---

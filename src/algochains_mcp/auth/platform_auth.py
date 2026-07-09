@@ -34,7 +34,7 @@ _SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 _SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 _SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 _BRIDGE_URL = os.environ.get(
-    "ALGOCHAINS_BRIDGE_URL", "https://api.algochains.ai"
+    "ALGOCHAINS_BRIDGE_URL", "https://mcp.algochains.ai"
 ).rstrip("/")
 
 # Session file (gitignored)
@@ -66,6 +66,49 @@ def _load_session() -> dict[str, Any]:
     except Exception:
         pass
     return {}
+
+
+async def _sync_algochains_core_insert(*, developer_api_key_id: str, user_name: str, raw_key: str) -> None:
+    """
+    Unify access: mirror a freshly-minted ac_live_/ac_test_ key into
+    public."algochains-core" — the separate, pre-existing allow-list table
+    that gates algochains-library-mcp (the backtesting-library MCP package).
+    Best-effort — never raises, so a mirror failure can't block key creation.
+    Kept in parity with Django's home/services/developer_key_service.py.
+    """
+    if not (_SUPABASE_URL and _SUPABASE_SERVICE_KEY):
+        return
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                f"{_SUPABASE_URL}/rest/v1/algochains-core",
+                headers={**_service_headers(), "Prefer": "return=minimal"},
+                json={
+                    "user_name": user_name,
+                    "api_key": raw_key,
+                    "developer_api_key_id": developer_api_key_id,
+                },
+            )
+    except Exception as exc:
+        logger.warning("_sync_algochains_core_insert: failed for id=%s — %s", developer_api_key_id, exc)
+
+
+async def _sync_algochains_core_delete(*, developer_api_key_id: str) -> None:
+    """Remove the algochains-core mirror row(s) for a revoked developer key."""
+    if not (_SUPABASE_URL and _SUPABASE_SERVICE_KEY):
+        return
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.delete(
+                f"{_SUPABASE_URL}/rest/v1/algochains-core?developer_api_key_id=eq.{developer_api_key_id}",
+                headers={**_service_headers(), "Prefer": "return=minimal"},
+            )
+    except Exception as exc:
+        logger.warning("_sync_algochains_core_delete: failed for id=%s — %s", developer_api_key_id, exc)
 
 
 def _save_session(data: dict[str, Any]) -> None:
@@ -673,6 +716,15 @@ async def create_developer_key(
         if resp.status_code in (200, 201):
             row = resp.json()
             row_id = row[0].get("id") if isinstance(row, list) else row.get("id")
+
+            # Unify: mirror this key into algochains-core so it also grants
+            # access to algochains-library-mcp. Best-effort, non-blocking.
+            if row_id:
+                await _sync_algochains_core_insert(
+                    developer_api_key_id=str(row_id),
+                    user_name=validated.get("email") or clerk_user_id,
+                    raw_key=plaintext,
+                )
             return {
                 "status": "ok",
                 "key": plaintext,  # SHOWN ONCE ONLY
@@ -855,6 +907,8 @@ async def revoke_developer_key(access_token: str, key_id: str) -> dict[str, Any]
                 json={"revoked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
             )
         if resp.status_code in (200, 204):
+            # Unify: remove the mirrored algochains-core access too.
+            await _sync_algochains_core_delete(developer_api_key_id=key_id)
             return {"status": "ok", "message": f"Key {key_id} revoked."}
         return {"error": "Revocation failed or key not found/access denied.", "status_code": resp.status_code}
     except Exception as exc:
