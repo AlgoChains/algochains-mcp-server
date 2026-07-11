@@ -2,6 +2,7 @@
 Configuration for the AlgoChains MCP Server.
 Reads from environment variables / .env file.
 """
+
 from __future__ import annotations
 
 import os
@@ -16,11 +17,22 @@ def _env(key: str, default: str = "") -> str:
     return os.environ.get(key, default)
 
 
+def _first_env(*keys: str, default: str = "") -> str:
+    """Return the first configured alias without exposing values in logs."""
+    for key in keys:
+        value = _env(key)
+        if value:
+            return value
+    return default
+
+
 @dataclass
 class AlpacaConfig:
     api_key: str = field(default_factory=lambda: _env("ALPACA_API_KEY"))
     secret_key: str = field(default_factory=lambda: _env("ALPACA_SECRET_KEY"))
-    base_url: str = field(default_factory=lambda: _env("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
+    base_url: str = field(
+        default_factory=lambda: _env("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+    )
     paper: bool = True
 
 
@@ -34,7 +46,9 @@ class IBKRConfig:
 @dataclass
 class OandaConfig:
     account_id: str = field(default_factory=lambda: _env("OANDA_ACCOUNT_ID"))
-    access_token: str = field(default_factory=lambda: _env("OANDA_ACCESS_TOKEN"))
+    access_token: str = field(
+        default_factory=lambda: _first_env("OANDA_ACCESS_TOKEN", "OANDA_API_KEY", "OANDA_API_TOKEN")
+    )
     environment: str = field(default_factory=lambda: _env("OANDA_ENVIRONMENT", "practice"))
 
 
@@ -53,7 +67,7 @@ class QuantConnectConfig:
 
 @dataclass
 class TradovateConfig:
-    cid: str = field(default_factory=lambda: _env("TRADOVATE_CID"))
+    cid: str = field(default_factory=lambda: _first_env("TRADOVATE_CID", "TRADOVATE_CLIENT_ID"))
     secret: str = field(default_factory=lambda: _env("TRADOVATE_SECRET"))
     env: str = field(default_factory=lambda: _env("TRADOVATE_ENV", "live"))
     device_id: str = field(default_factory=lambda: _env("TRADOVATE_DEVICE_ID", ""))
@@ -66,40 +80,58 @@ class TradovateConfig:
     oauth_sec: str = field(default_factory=lambda: _env("TRADOVATE_OAUTH_CLIENT_SECRET", ""))
     # Pre-existing access token (written by tradovate_token_guardian.py).
     # If set and not expired, connector skips re-auth and uses it directly.
-    access_token: str = field(default_factory=lambda: (
-        lambda raw: (raw.splitlines()[0].strip() if raw.splitlines() else "")
-    )(
-        _env("TRADOVATE_ACCESS_TOKEN", "")
-        .strip("'\"")           # guardian sometimes writes quoted values
-        .replace("Bearer ", "") # strip prefix if present
-    ))
+    access_token: str = field(
+        default_factory=lambda: (
+            lambda raw: raw.splitlines()[0].strip() if raw.splitlines() else ""
+        )(
+            _env("TRADOVATE_ACCESS_TOKEN", "")
+            .strip("'\"")  # guardian sometimes writes quoted values
+            .replace("Bearer ", "")  # strip prefix if present
+        )
+    )
 
     @property
     def base_url(self) -> str:
-        return "https://live.tradovateapi.com" if self.env == "live" \
+        return (
+            "https://live.tradovateapi.com"
+            if self.env == "live"
             else "https://demo.tradovateapi.com"
+        )
 
     @property
     def ws_url(self) -> str:
-        return "wss://live.tradovateapi.com/v1/websocket" if self.env == "live" \
+        return (
+            "wss://live.tradovateapi.com/v1/websocket"
+            if self.env == "live"
             else "wss://demo.tradovateapi.com/v1/websocket"
+        )
 
 
 @dataclass
 class MassiveConfig:
     api_key: str = field(default_factory=lambda: _env("MASSIVE_API_KEY"))
-    base_url: str = field(default_factory=lambda: _env("MASSIVE_API_BASE_URL", "https://api.massive.com"))
-    llms_txt_url: str = field(default_factory=lambda: _env("MASSIVE_LLMS_TXT_URL", "https://massive.com/docs/rest/llms.txt"))
+    base_url: str = field(
+        default_factory=lambda: _env("MASSIVE_API_BASE_URL", "https://api.massive.com")
+    )
+    llms_txt_url: str = field(
+        default_factory=lambda: _env(
+            "MASSIVE_LLMS_TXT_URL", "https://massive.com/docs/rest/llms.txt"
+        )
+    )
     max_tables: int = field(default_factory=lambda: int(_env("MASSIVE_MAX_TABLES", "50")))
     max_rows: int = field(default_factory=lambda: int(_env("MASSIVE_MAX_ROWS", "50000")))
 
 
 @dataclass
 class MarketplaceConfig:
-    django_url: str = field(default_factory=lambda: _env("ALGOCHAINS_DJANGO_URL", "https://algochains.ai"))
+    django_url: str = field(
+        default_factory=lambda: _env("ALGOCHAINS_DJANGO_URL", "https://algochains.ai")
+    )
     listing_api_key: str = field(default_factory=lambda: _env("LISTING_API_KEY"))
     ingest_api_key: str = field(default_factory=lambda: _env("METRICS_INGEST_API_KEY"))
-    creator_username: str = field(default_factory=lambda: _env("ALGOCHAINS_CREATOR_USERNAME", "tyler"))
+    creator_username: str = field(
+        default_factory=lambda: _env("ALGOCHAINS_CREATOR_USERNAME", "tyler")
+    )
 
 
 @dataclass
@@ -134,9 +166,15 @@ class SupabaseConfig:
 @dataclass
 class EmailConfig:
     resend_api_key: str = field(default_factory=lambda: _env("RESEND_API_KEY"))
-    from_support: str = field(default_factory=lambda: _env("SUPPORT_FROM_EMAIL", "support@algochains.ai"))
-    from_waitlist: str = field(default_factory=lambda: _env("WAITLIST_FROM_EMAIL", "waitlist@algochains.ai"))
-    from_noreply: str = field(default_factory=lambda: _env("VERIFICATION_FROM_EMAIL", "noreply@algochains.ai"))
+    from_support: str = field(
+        default_factory=lambda: _env("SUPPORT_FROM_EMAIL", "support@algochains.ai")
+    )
+    from_waitlist: str = field(
+        default_factory=lambda: _env("WAITLIST_FROM_EMAIL", "waitlist@algochains.ai")
+    )
+    from_noreply: str = field(
+        default_factory=lambda: _env("VERIFICATION_FROM_EMAIL", "noreply@algochains.ai")
+    )
 
 
 @dataclass

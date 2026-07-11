@@ -19,15 +19,21 @@ A subscriber can ONLY ever see / write their own rows. The bridge resolves
 their `subscriber_id` from the API key; this module never trusts a
 subscriber-supplied id.
 """
+
 from __future__ import annotations
 
 import logging
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+PAPER_CONTRACT_VERSION = "paper-subscriber.v1"
+PAPER_ENVIRONMENT = "paper"
+PAPER_SOURCE = "supabase"
+PAPER_STARTING_BALANCE_USD = 50_000.0
+PAPER_EXECUTOR_SLA_SECONDS = 120
 
 
 def _service_client():
@@ -40,16 +46,36 @@ def _service_client():
 
 
 def _err(msg: str, **extra: Any) -> dict[str, Any]:
-    out = {"error": msg}
+    out = {
+        "ok": False,
+        "error": msg,
+        "error_code": msg,
+        "contract_version": PAPER_CONTRACT_VERSION,
+        "environment": PAPER_ENVIRONMENT,
+        "source": PAPER_SOURCE,
+    }
     out.update(extra)
     return out
+
+
+def _contract_meta(*, now: datetime | None = None) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "contract_version": PAPER_CONTRACT_VERSION,
+        "environment": PAPER_ENVIRONMENT,
+        "source": PAPER_SOURCE,
+        "as_of": (now or datetime.now(timezone.utc)).isoformat(),
+    }
+
+
+class PaperDataUnavailable(RuntimeError):
+    """Raised when a required paper data dependency cannot be queried."""
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 PAPER_ACCOUNT_SELECT = (
-    "starting_balance_usd,current_balance_usd,realized_pnl_usd,"
-    "fills_count,last_reset_at,updated_at"
+    "starting_balance_usd,current_balance_usd,realized_pnl_usd,fills_count,last_reset_at,updated_at"
 )
 
 
@@ -118,52 +144,11 @@ def _list_active_assignments(sb, subscriber_id: str) -> list[dict[str, Any]]:
         return list(getattr(resp, "data", None) or [])
     except Exception as exc:
         log.warning("list assignments failed: %s", exc)
-        return []
-
-
-def _money(value: Any) -> float | None:
-    """Round currency values consistently without binary-float cent drift."""
-    if value is None:
-        return None
-    try:
-        return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-    except (InvalidOperation, ValueError, TypeError):
-        return None
-
-
-def _fetch_paper_account(sb, subscriber_id: str) -> dict[str, Any] | None:
-    try:
-        resp = (
-            sb.table("subscriber_paper_accounts")
-            .select(
-                "starting_balance_usd,current_balance_usd,realized_pnl_usd,"
-                "fills_count,last_reset_at,updated_at"
-            )
-            .eq("subscriber_id", subscriber_id)
-            .maybe_single()
-            .execute()
-        )
-        data = getattr(resp, "data", None)
-        return data if isinstance(data, dict) else None
-    except Exception as exc:
-        log.warning("paper account lookup failed: %s", exc)
-        return None
-
-
-def _paper_pnl_from_account(paper_account: dict[str, Any] | None) -> float | None:
-    if not paper_account:
-        return None
-    realized = _money(paper_account.get("realized_pnl_usd"))
-    if realized is not None:
-        return realized
-    current = _money(paper_account.get("current_balance_usd"))
-    starting = _money(paper_account.get("starting_balance_usd"))
-    if current is None or starting is None:
-        return None
-    return _money(Decimal(str(current)) - Decimal(str(starting)))
+        raise PaperDataUnavailable("assignments_unavailable") from exc
 
 
 # ─── tools ──────────────────────────────────────────────────────────────────
+
 
 def get_signal_stream(
     subscriber_id: str,
@@ -181,14 +166,22 @@ def get_signal_stream(
     if sb is None:
         return _err("supabase_unavailable")
 
-    assignments = _list_active_assignments(sb, subscriber_id)
+    try:
+        assignments = _list_active_assignments(sb, subscriber_id)
+    except PaperDataUnavailable:
+        return _err("assignments_unavailable")
     if not assignments:
-        return {"signals": [], "assignments": []}
+        return {**_contract_meta(), "signals": [], "assignments": []}
     allowed_bots = {a["bot"] for a in assignments if not a.get("paused")}
     if bots:
         allowed_bots = allowed_bots.intersection({b.upper() for b in bots})
     if not allowed_bots:
-        return {"signals": [], "assignments": assignments, "note": "all_paused_or_filtered"}
+        return {
+            **_contract_meta(),
+            "signals": [],
+            "assignments": assignments,
+            "note": "all_paused_or_filtered",
+        }
 
     try:
         q = (
@@ -207,6 +200,7 @@ def get_signal_stream(
         return _err("query_failed", detail=str(exc))
 
     return {
+        **_contract_meta(),
         "signals": signals,
         "assignments": assignments,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -244,8 +238,6 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
 
     pnl_today = sum(float(r.get("pnl_usd") or 0) for r in today_rows)
     pnl_week = sum(float(r.get("pnl_usd") or 0) for r in week_rows)
-    paper_account = _fetch_paper_account(sb, subscriber_id)
-    paper_pnl = _paper_pnl_from_account(paper_account)
     by_bot: dict[str, float] = {}
     fills_today = 0
     for r in today_rows:
@@ -257,13 +249,13 @@ def get_my_pnl(subscriber_id: str) -> dict[str, Any]:
     paper_account = _get_paper_account(sb, subscriber_id)
 
     return {
+        **_contract_meta(now=now),
         "subscriber_id": subscriber_id,
         "pnl_today_usd": round(pnl_today, 2),
         "pnl_7d_usd": round(pnl_week, 2),
         "fills_today": fills_today,
         "pnl_today_by_bot": {k: round(v, 2) for k, v in by_bot.items()},
         **_paper_pnl_aliases(paper_account),
-        "as_of": now.isoformat(),
     }
 
 
@@ -279,7 +271,9 @@ def get_my_fills(
     try:
         q = (
             sb.table("subscriber_fills")
-            .select("id,bot,symbol,side,qty,fill_price,pnl_usd,fill_kind,tradovate_order_id,filled_at,signal_id,error_msg")
+            .select(
+                "id,bot,symbol,side,qty,fill_price,pnl_usd,fill_kind,tradovate_order_id,filled_at,signal_id,error_msg"
+            )
             .eq("subscriber_id", subscriber_id)
             .order("filled_at", desc=True)
             .limit(min(max(limit, 1), 500))
@@ -289,7 +283,11 @@ def get_my_fills(
         resp = q.execute()
     except Exception as exc:
         return _err("query_failed", detail=str(exc))
-    return {"fills": list(getattr(resp, "data", None) or [])}
+    return {
+        **_contract_meta(),
+        "subscriber_id": subscriber_id,
+        "fills": list(getattr(resp, "data", None) or []),
+    }
 
 
 def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
@@ -305,7 +303,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
     assignments_payload = get_my_assignments(subscriber_id)
     assignments = assignments_payload.get("assignments") or []
 
-    paper_account = _fetch_paper_account(sb, subscriber_id)
+    paper_account = _get_paper_account(sb, subscriber_id)
     paper_pnl = pnl.get("paper_pnl_usd")
 
     open_entries: list[dict[str, Any]] = []
@@ -326,6 +324,7 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
             log.warning("get_my_portfolio open entries: %s", exc)
 
     return {
+        **_contract_meta(),
         "subscriber_id": subscriber_id,
         "paper_account": paper_account,
         "assignments": assignments,
@@ -337,7 +336,6 @@ def get_my_portfolio(subscriber_id: str) -> dict[str, Any]:
         "paper_pnl_rollup_usd": paper_pnl,
         "fills_today": pnl.get("fills_today"),
         **_paper_pnl_aliases(paper_account),
-        "as_of": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -391,7 +389,7 @@ def place_paper_order(
     except Exception as exc:
         return _err("insert_failed", detail=str(exc))
     rows = list(getattr(resp, "data", None) or [])
-    return {"ok": True, "order": rows[0] if rows else None}
+    return {**_contract_meta(), "subscriber_id": subscriber_id, "order": rows[0] if rows else None}
 
 
 def cancel_paper_order(subscriber_id: str, *, order_id: str) -> dict[str, Any]:
@@ -420,7 +418,12 @@ def cancel_paper_order(subscriber_id: str, *, order_id: str) -> dict[str, Any]:
         ).eq("id", order_id).eq("subscriber_id", subscriber_id).execute()
     except Exception as exc:
         return _err("cancel_failed", detail=str(exc))
-    return {"ok": True, "order_id": order_id, "status": "cancelled"}
+    return {
+        **_contract_meta(),
+        "subscriber_id": subscriber_id,
+        "order_id": order_id,
+        "status": "cancelled",
+    }
 
 
 def get_my_paper_positions(subscriber_id: str) -> dict[str, Any]:
@@ -446,9 +449,93 @@ def get_my_paper_positions(subscriber_id: str) -> dict[str, Any]:
     except Exception as exc:
         return _err("query_failed", detail=str(exc))
     return {
+        **_contract_meta(),
         "pending_orders": pending,
         "recent_filled_orders": recent,
-        "as_of": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _age_seconds(value: Any, now: datetime) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - parsed.astimezone(timezone.utc)).total_seconds())
+
+
+def get_paper_route_health(subscriber_id: str) -> dict[str, Any]:
+    """Report executor heartbeat and pending-order SLA without inventing health."""
+    sb = _service_client()
+    if sb is None:
+        return _err("supabase_unavailable")
+
+    now = datetime.now(timezone.utc)
+    account = _get_paper_account(sb, subscriber_id)
+    if account is None:
+        return _err("paper_account_missing")
+
+    try:
+        heartbeat_resp = (
+            sb.table("subscriber_heartbeats")
+            .select("last_seen,daemon_version,fills_today,pnl_today_usd,notes")
+            .eq("subscriber_id", subscriber_id)
+            .maybe_single()
+            .execute()
+        )
+        heartbeat_row = getattr(heartbeat_resp, "data", None)
+        pending_resp = (
+            sb.table("subscriber_paper_orders")
+            .select("id,status,created_at,updated_at")
+            .eq("subscriber_id", subscriber_id)
+            .eq("status", "pending")
+            .order("created_at")
+            .limit(100)
+            .execute()
+        )
+        pending_orders = list(getattr(pending_resp, "data", None) or [])
+    except Exception as exc:
+        return _err("paper_route_health_query_failed", detail=str(exc))
+
+    heartbeat_age = _age_seconds(
+        heartbeat_row.get("last_seen") if isinstance(heartbeat_row, dict) else None,
+        now,
+    )
+    pending_ages = [
+        age
+        for age in (_age_seconds(order.get("created_at"), now) for order in pending_orders)
+        if age is not None
+    ]
+    oldest_pending_age = max(pending_ages) if pending_ages else None
+
+    if heartbeat_age is None:
+        health = "unavailable"
+        reason = "executor_heartbeat_missing"
+    elif heartbeat_age > PAPER_EXECUTOR_SLA_SECONDS:
+        health = "stale"
+        reason = "executor_heartbeat_stale"
+    elif oldest_pending_age is not None and oldest_pending_age > PAPER_EXECUTOR_SLA_SECONDS:
+        health = "degraded"
+        reason = "pending_order_sla_breached"
+    else:
+        health = "healthy"
+        reason = None
+
+    return {
+        **_contract_meta(now=now),
+        "subscriber_id": subscriber_id,
+        "health": health,
+        "reason": reason,
+        "executor_sla_seconds": PAPER_EXECUTOR_SLA_SECONDS,
+        "heartbeat": heartbeat_row if isinstance(heartbeat_row, dict) else None,
+        "heartbeat_age_seconds": round(heartbeat_age, 3) if heartbeat_age is not None else None,
+        "pending_order_count": len(pending_orders),
+        "oldest_pending_age_seconds": (
+            round(oldest_pending_age, 3) if oldest_pending_age is not None else None
+        ),
     }
 
 
@@ -482,7 +569,11 @@ def get_my_assignments(subscriber_id: str) -> dict[str, Any]:
         )
     except Exception as exc:
         return _err("query_failed", detail=str(exc))
-    return {"assignments": list(getattr(resp, "data", None) or [])}
+    return {
+        **_contract_meta(),
+        "subscriber_id": subscriber_id,
+        "assignments": list(getattr(resp, "data", None) or []),
+    }
 
 
 def report_fill(
@@ -538,10 +629,20 @@ def report_fill(
     except Exception as exc:
         msg = str(exc).lower()
         if "23505" in msg or "duplicate key" in msg or "uniq_sf_subscriber_signal_kind" in msg:
-            return {"ok": True, "fill_id": None, "duplicate": True}
+            return {
+                **_contract_meta(),
+                "subscriber_id": subscriber_id,
+                "fill_id": None,
+                "duplicate": True,
+            }
         return _err("insert_failed", detail=str(exc))
     rows = getattr(resp, "data", None) or []
-    return {"ok": True, "fill_id": (rows[0].get("id") if rows else None)}
+    return {
+        **_contract_meta(),
+        "subscriber_id": subscriber_id,
+        "fill_id": (rows[0].get("id") if rows else None),
+        "duplicate": False,
+    }
 
 
 def heartbeat(
@@ -572,11 +673,13 @@ def heartbeat(
     if notes is not None:
         payload["notes"] = notes
     try:
-        resp = sb.table("subscriber_heartbeats").upsert(payload, on_conflict="subscriber_id").execute()
+        resp = (
+            sb.table("subscriber_heartbeats").upsert(payload, on_conflict="subscriber_id").execute()
+        )
     except Exception as exc:
         return _err("upsert_failed", detail=str(exc))
     rows = getattr(resp, "data", None) or []
-    return {"ok": True, "row": rows[0] if rows else None}
+    return {**_contract_meta(), "subscriber_id": subscriber_id, "row": rows[0] if rows else None}
 
 
 def ack_signal(subscriber_id: str, *, signal_id: str) -> dict[str, Any]:
@@ -615,7 +718,7 @@ def ack_signal(subscriber_id: str, *, signal_id: str) -> dict[str, Any]:
         sb.table("subscriber_fills").insert(payload).execute()
     except Exception as exc:
         return _err("insert_failed", detail=str(exc))
-    return {"ok": True}
+    return {**_contract_meta(), "subscriber_id": subscriber_id}
 
 
 # ─── dispatcher ─────────────────────────────────────────────────────────────
@@ -630,6 +733,7 @@ SUBSCRIBER_TOOL_HANDLERS = {
     "place_paper_order": place_paper_order,
     "cancel_paper_order": cancel_paper_order,
     "get_my_paper_positions": get_my_paper_positions,
+    "get_paper_route_health": get_paper_route_health,
     "report_fill": report_fill,
     "heartbeat": heartbeat,
     "ack_signal": ack_signal,
@@ -647,6 +751,7 @@ SUBSCRIBER_TOOL_SCOPES = {
     "place_paper_order": "paper_trade",
     "cancel_paper_order": "paper_trade",
     "get_my_paper_positions": "paper_trade",
+    "get_paper_route_health": "paper_trade",
     "report_fill": "report_fill",
     "heartbeat": "heartbeat",
     "ack_signal": "report_fill",
