@@ -7,12 +7,12 @@ to the MCP server over HTTP instead of stdio.
 
 Usage:
     # Start the HTTP server (in addition to or instead of stdio):
-    algochains-mcp-http --host 0.0.0.0 --port 8080
+    algochains-mcp-http --host 127.0.0.1 --port 8080
 
     # Or programmatically:
     from algochains_mcp.http_transport import create_http_app
     app = create_http_app()
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="127.0.0.1", port=8080)
 
 MCP 2025-11-05 Streamable HTTP spec:
     POST /mcp          — JSON-RPC request (immediate response or SSE stream)
@@ -47,7 +47,14 @@ SESSION_TTL_SECONDS = 3600  # 1 hour idle timeout
 
 
 def _get_transport_secret() -> str | None:
-    return os.environ.get("ALGOCHAINS_HTTP_TRANSPORT_SECRET")
+    return (os.environ.get("ALGOCHAINS_HTTP_TRANSPORT_SECRET") or "").strip() or None
+
+
+def _allow_unauthenticated_dev() -> bool:
+    """Return whether the explicit local-development auth bypass is enabled."""
+    return os.environ.get(
+        "ALGOCHAINS_HTTP_ALLOW_UNAUTHENTICATED_DEV", ""
+    ).strip().lower() in ("1", "true", "yes")
 
 
 def _get_cors_origins() -> list[str]:
@@ -57,11 +64,17 @@ def _get_cors_origins() -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
-def _verify_bearer_token(authorization: str | None) -> bool:
+def _verify_bearer_token(
+    authorization: str | None,
+    *,
+    allow_unauthenticated_dev: bool = False,
+) -> bool:
     """Verify Authorization: Bearer <token> header."""
     secret = _get_transport_secret()
     if not secret:
-        return True  # No secret configured — open access (dev mode)
+        # Fail closed unless the operator explicitly opted into an insecure
+        # local-development mode. An unset secret must never imply open access.
+        return allow_unauthenticated_dev or _allow_unauthenticated_dev()
     if not authorization or not authorization.startswith("Bearer "):
         return False
     token = authorization[len("Bearer "):]
@@ -125,7 +138,11 @@ async def _cleanup_stale_sessions() -> None:
             logger.info("Cleaned up stale session %s", sid)
 
 
-def create_http_app(mcp_server: Any | None = None) -> Any:
+def create_http_app(
+    mcp_server: Any | None = None,
+    *,
+    allow_unauthenticated_dev: bool = False,
+) -> Any:
     """Create a FastAPI app that wraps the MCP server with HTTP/SSE transport.
 
     Args:
@@ -144,6 +161,16 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
             "FastAPI and uvicorn are required for HTTP transport. "
             "Install with: pip install 'algochains-mcp[http]'"
         )
+    # This module uses postponed annotations while FastAPI is an optional
+    # dependency imported inside this factory. Expose the request/response
+    # classes so FastAPI can resolve route annotations instead of treating
+    # ``request`` as a required query parameter (422).
+    globals().update(
+        Request=Request,
+        Response=Response,
+        StreamingResponse=StreamingResponse,
+        JSONResponse=JSONResponse,
+    )
 
     if mcp_server is None:
         from algochains_mcp.server import app as mcp_server  # type: ignore
@@ -205,7 +232,10 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
                 pass  # fall through to static-secret path
 
         # Path 2 — static transport secret (existing behavior / dev mode).
-        if not _verify_bearer_token(authz):
+        if not _verify_bearer_token(
+            authz,
+            allow_unauthenticated_dev=allow_unauthenticated_dev,
+        ):
             # RFC 9728 §5.1: include the resource_metadata discovery pointer so
             # MCP clients (Claude.ai) can find the authorization server.
             raise HTTPException(
@@ -371,7 +401,6 @@ async def _dispatch_jsonrpc(mcp_server: Any, body: dict, session_id: str) -> dic
             }
         elif method == "tools/list":
             # Delegate to the server's list_tools handler
-            cursor = params.get("cursor")
             tools_list = await mcp_server._mcp_server.list_tools()
             result = {
                 "tools": [
@@ -415,8 +444,35 @@ async def _dispatch_jsonrpc(mcp_server: Any, body: dict, session_id: str) -> dic
         }
 
 
-def run_http_server(host: str = "0.0.0.0", port: int = 8080) -> None:
+def run_http_server(
+    host: str | None = None,
+    port: int | None = None,
+    allow_unauthenticated_dev: bool | None = None,
+) -> None:
     """Entry point for algochains-mcp-http CLI command."""
+    if host is None and port is None and allow_unauthenticated_dev is None:
+        import argparse
+
+        parser = argparse.ArgumentParser(description="AlgoChains MCP HTTP Server")
+        parser.add_argument("--host", default="127.0.0.1")
+        parser.add_argument("--port", type=int, default=8080)
+        parser.add_argument(
+            "--allow-unauthenticated-dev",
+            action="store_true",
+            help=(
+                "Explicitly allow unauthenticated MCP requests for local development. "
+                "Never use on a public or shared interface."
+            ),
+        )
+        args = parser.parse_args()
+        host = args.host
+        port = args.port
+        allow_unauthenticated_dev = args.allow_unauthenticated_dev
+    else:
+        host = host or "127.0.0.1"
+        port = port or 8080
+
+    allow_dev = bool(allow_unauthenticated_dev) or _allow_unauthenticated_dev()
     try:
         import uvicorn
     except ImportError:
@@ -425,14 +481,19 @@ def run_http_server(host: str = "0.0.0.0", port: int = 8080) -> None:
             "Install with: pip install 'algochains-mcp[http]'"
         )
 
-    http_app = create_http_app()
+    http_app = create_http_app(allow_unauthenticated_dev=allow_dev)
     secret = _get_transport_secret()
     if secret:
         logger.info("HTTP transport: Bearer token authentication ENABLED")
-    else:
+    elif allow_dev:
         logger.warning(
+            "HTTP transport: unauthenticated DEVELOPMENT mode explicitly enabled. "
+            "Bind only to 127.0.0.1."
+        )
+    else:
+        logger.error(
             "HTTP transport: No ALGOCHAINS_HTTP_TRANSPORT_SECRET set — "
-            "open access (set this in production!)"
+            "MCP requests will be rejected (fail-closed)."
         )
     logger.info("Starting AlgoChains MCP HTTP server on http://%s:%d", host, port)
     logger.info("MCP endpoint: http://%s:%d/mcp", host, port)
@@ -441,10 +502,4 @@ def run_http_server(host: str = "0.0.0.0", port: int = 8080) -> None:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="AlgoChains MCP HTTP Server")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8080)
-    args = parser.parse_args()
-    run_http_server(host=args.host, port=args.port)
+    run_http_server()

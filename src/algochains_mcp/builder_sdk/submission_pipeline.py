@@ -21,7 +21,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
 
 logger = logging.getLogger("algochains_mcp.builder_sdk")
 
@@ -52,6 +52,7 @@ class StrategySubmission:
     submitter_id: str = ""
     asset_class: str = "stock"
     price_monthly: float = 29.99
+    verification_artifact: dict = field(default_factory=dict)
 
     def validate(self) -> list[str]:
         errors = []
@@ -89,6 +90,10 @@ class StrategySubmission:
                 "walk_forward_folds": self.wf_folds,
             },
             "strategy_file": None,
+            "artifact_verification": {
+                "artifact_id": self.verification_artifact.get("artifact_id", ""),
+                "sha256": self.verification_artifact.get("sha256", ""),
+            },
         }
 
 
@@ -103,6 +108,8 @@ class SubmissionResult:
     gate_results: dict = field(default_factory=dict)
     feedback: list[str] = field(default_factory=list)
     next_steps: str = ""
+    dry_run: bool = True
+    staged: bool = False
 
     def to_dict(self) -> dict:
         return self.__dict__
@@ -148,21 +155,83 @@ class SubmissionPipeline:
 
         if result.passed:
             key_ok = bool((self.api_key or "").strip())
-            skip_check = os.environ.get(
-                "ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", ""
-            ).lower() in ("1", "true", "yes")
-            if key_ok:
-                await self._stage_listing(submission, result)
-            elif not skip_check:
-                result.passed = False
-                result.status = "rejected"
+            if not key_ok:
+                # Tier-1 callers may validate submitted metrics, but without a
+                # listing credential this must remain a side-effect-free dry run.
+                result.status = "validated_dry_run"
+                result.dry_run = True
+                result.staged = False
                 result.feedback.append(
-                    "LISTING_API_KEY is not set — cannot stage marketplace listing. "
-                    "Generate a key in Django admin. Dev-only: ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK=1."
+                    "Validation passed in dry-run mode; no marketplace listing was staged."
                 )
-                result.next_steps = "Set LISTING_API_KEY in the MCP environment and resubmit."
+                result.next_steps = (
+                    "An owner must provide LISTING_API_KEY plus a verified local "
+                    "artifact before marketplace staging."
+                )
+            else:
+                artifact_ok, artifact_error = self._verify_artifact(
+                    submission.verification_artifact
+                )
+                if not artifact_ok:
+                    result.passed = False
+                    result.status = "staging_blocked"
+                    result.dry_run = True
+                    result.staged = False
+                    result.feedback.append(artifact_error)
+                    result.next_steps = (
+                        "Provide a validation artifact under "
+                        "ALGOCHAINS_VERIFIED_ARTIFACT_DIR with its exact SHA-256."
+                    )
+                elif await self._stage_listing(submission, result):
+                    result.status = "staged"
+                    result.dry_run = False
+                    result.staged = True
+                else:
+                    result.passed = False
+                    result.status = "staging_failed"
+                    result.dry_run = False
+                    result.staged = False
+                    result.next_steps = (
+                        "Resolve the listing API error, then resubmit the verified artifact."
+                    )
 
         return result
+
+    @staticmethod
+    def _verify_artifact(artifact: dict) -> tuple[bool, str]:
+        """Verify a staged listing against a local, allowlisted artifact."""
+        if not isinstance(artifact, dict):
+            return False, "Verified artifact is required before marketplace staging."
+
+        configured_root = (os.getenv("ALGOCHAINS_VERIFIED_ARTIFACT_DIR") or "").strip()
+        if not configured_root:
+            return False, (
+                "ALGOCHAINS_VERIFIED_ARTIFACT_DIR is not configured; "
+                "marketplace staging fails closed."
+            )
+
+        raw_path = str(artifact.get("path") or "").strip()
+        expected_sha = str(artifact.get("sha256") or "").strip().lower()
+        if not raw_path or len(expected_sha) != 64:
+            return False, "Artifact path and a 64-character SHA-256 are required."
+        if any(ch not in "0123456789abcdef" for ch in expected_sha):
+            return False, "Artifact SHA-256 must be lowercase hexadecimal."
+
+        root = Path(configured_root).expanduser().resolve()
+        path = Path(raw_path).expanduser().resolve()
+        if not path.is_relative_to(root):
+            return False, "Artifact path is outside ALGOCHAINS_VERIFIED_ARTIFACT_DIR."
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False, "Verified artifact file is missing or empty."
+
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if not hmac.compare_digest(digest.hexdigest(), expected_sha):
+            return False, "Artifact SHA-256 does not match the local file."
+
+        return True, ""
 
     def _validate_gates(self, sub: StrategySubmission) -> SubmissionResult:
         """Run through 7 validation gates."""
@@ -279,7 +348,7 @@ class SubmissionPipeline:
             next_steps = (
                 "Strategy queued for 30-day paper trading. "
                 "You will be notified when paper trading completes. "
-                f"Estimated listing date: ~30 days from now."
+                "Estimated listing date: ~30 days from now."
             )
         else:
             next_steps = (
@@ -299,7 +368,7 @@ class SubmissionPipeline:
 
     async def _stage_listing(
         self, sub: StrategySubmission, result: SubmissionResult
-    ) -> None:
+    ) -> bool:
         """Stage a validated strategy for marketplace listing."""
         payload = sub.to_listing_payload()
         payload["tier"] = result.tier
@@ -319,17 +388,19 @@ class SubmissionPipeline:
                 )
                 if resp.status_code in (200, 201):
                     result.feedback.append("Listing staged on marketplace")
+                    return True
                 elif resp.status_code == 404:
                     result.feedback.append(
-                        "Listing API not yet available — staged locally"
+                        "Listing API not available (404); nothing was staged."
                     )
                 else:
                     result.feedback.append(
-                        f"Listing staging returned {resp.status_code} — will retry"
+                        f"Listing staging returned {resp.status_code}; nothing was staged."
                     )
         except Exception as e:
             logger.warning("Could not stage listing: %s", e)
-            result.feedback.append("Listing staged locally (API unavailable)")
+            result.feedback.append("Listing API unavailable; nothing was staged.")
+        return False
 
     def create_signal_signature(self, signal_data: dict) -> str:
         """Create HMAC-SHA256 signature for marketplace signal propagation."""

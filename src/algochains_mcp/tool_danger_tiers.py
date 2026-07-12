@@ -274,15 +274,16 @@ _TOOL_TIERS: dict[str, int] = {
     "massive_screener": TIER_READ_ONLY,
     # Ingestion (read/list)
     "list_ingested_data": TIER_READ_ONLY,
-    # Prop-fund autopilot (Track B): onboard/deploy are plan-then-confirm,
-    # local-state-only writes (no broker calls, never auto-launches the bot —
-    # deploy_bot_in_prop_mode writes a config JSON and prints the launch
-    # command for a human operator to run manually). Analysis/status reads
-    # mutate nothing.
-    "get_prop_mode_status": TIER_READ_ONLY,
-    "run_prop_fund_autopilot": TIER_READ_ONLY,
-    "onboard_prop_account": TIER_WRITE_LOCAL,
-    "deploy_bot_in_prop_mode": TIER_WRITE_LOCAL,
+    # Prop-fund account state and autopilot analysis are owner-only. The run and
+    # input builder read real broker fills/P&L; status exposes account metadata;
+    # onboard/deploy mutate live-account configuration. Keep the public fund
+    # catalog/scoring tools below, but gate every account-bound path.
+    "get_prop_mode_status": TIER_ORDER_EXEC,
+    "run_prop_fund_autopilot": TIER_ORDER_EXEC,
+    "build_prop_fund_inputs": TIER_ORDER_EXEC,
+    "onboard_prop_account": TIER_ORDER_EXEC,
+    "deploy_bot_in_prop_mode": TIER_ORDER_EXEC,
+    "request_prop_payout": TIER_ORDER_EXEC,
     # Fund browser / evaluation panel reads (Phase 1, Django /account/brokers/prop/).
     # Pure catalog data + scoring against a strategy's already-fetched live stats —
     # no broker calls, no writes.
@@ -292,9 +293,7 @@ _TOOL_TIERS: dict[str, int] = {
     "get_prop_fund_rules": TIER_READ_ONLY,
     "get_prop_fund_monitor_status": TIER_READ_ONLY,
     "get_prop_fund_broker_options": TIER_READ_ONLY,
-    "build_prop_fund_inputs": TIER_READ_ONLY,
     "check_prop_fund_rules_freshness": TIER_READ_ONLY,
-    "request_prop_payout": TIER_READ_ONLY,
 
     # ── Tier 1: WRITE_LOCAL ───────────────────────────────────────────────────
     # These write to internal server state only
