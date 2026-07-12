@@ -3956,7 +3956,7 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="get_learn_hub_health", description="Check AlgoChains Learn Hub health: HTTP status of /learn/, /learn/feed.xml RSS MIME, and learn.algochains.ai subdomain redirect. Read-only — does NOT deploy. Use to verify the live Learn Hub is up and public (no login required).",
-         inputSchema={"type": "object", "properties": {"base_url": {"type": "string", "description": "Base URL to check (default: https://algochains.ai)", "default": "https://algochains.ai"}}, "required": []},
+         inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     # ═══════════════════════════════════════════════════════════════
     # V22: Live Bot Intelligence — real metrics, heartbeat, academic citations
@@ -9509,7 +9509,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_learn_hub_health":
         try:
             import httpx as _httpx
-            _base = (args.get("base_url") or "https://algochains.ai").rstrip("/")
+            # Tier-1 callers must not choose the request destination. Ignoring
+            # legacy base_url arguments also protects dynamic callers that
+            # bypass the published tool schema.
+            _base = "https://algochains.ai"
             _results: dict = {"base_url": _base, "checks": {}}
             async with _httpx.AsyncClient(timeout=10, follow_redirects=False) as _hc:
                 # Hub page — must be 200 (no login redirect)
