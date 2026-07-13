@@ -53,13 +53,13 @@ auth = [
 ]
 polygon = ["polygon-api-client>=1.14.0"]
 yahoo = ["yfinance>=0.2.40"]
-alphavantage = ["alpha-vantage>=2.3.1"]
+alphavantage = ["alpha-vantage>=3.0.0"]
 finnhub = ["finnhub-python>=2.4.20"]
 twelvedata = ["twelvedata>=1.2.10"]
 data-all = [
     "yfinance>=0.2.40",
     "polygon-api-client>=1.14.0",
-    "alpha-vantage>=2.3.1",
+    "alpha-vantage>=3.0.0",
     "finnhub-python>=2.4.20",
     "twelvedata>=1.2.10",
 ]
