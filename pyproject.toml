@@ -30,11 +30,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-alpaca = ["alpaca-py>=0.30.0"]
+alpaca = ["alpaca-py>=0.43.5"]
 ibkr = ["ib-async>=1.0.0"]
 oanda = ["v20>=3.0.25"]
 all = [
-    "alpaca-py>=0.30.0",
+    "alpaca-py>=0.43.5",
     "ib-async>=1.0.0",
     "v20>=3.0.25",
 ]
