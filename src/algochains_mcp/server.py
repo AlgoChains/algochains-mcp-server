@@ -433,6 +433,12 @@ from algochains_mcp import __version__ as _server_version
 
 SERVER_INSTRUCTIONS = (
     f"AlgoChains MCP Server v{_server_version} — The Ultimate Algo Quant Stack. "
+    "LIVE-OPS ROUTING (mandatory): bot health/status → get_bot_health; "
+    "owner P&L → portfolio_summary; subscriber paper P&L → get_my_pnl/get_my_portfolio; "
+    "flat/positions → get_positions; brackets/unprotected → check_unprotected_positions; "
+    "working orders → get_orders; live quote now → get_quote. "
+    "NEVER use web search or chat memory for live AlgoChains ops — fail closed if tools fail. "
+    "See docs/LIVE_OPS_TOOL_ROUTING.md. "
     "~533 tools across 21 domains: market data, trading, strategy building, ML/AI, execution, "
     "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
     "Onyx RAG intelligence, Graphiti temporal knowledge graph, MCP 2025-11-25 spec compliance, "
@@ -1509,7 +1515,12 @@ TOOLS = [
     ),
     Tool(
         name="get_positions",
-        description="Get all open positions from a broker.",
+        description=(
+            "broker_truth / live ops — open positions from a connected broker "
+            "(flat check, exposure, unrealized P&L only). "
+            "Use for 'am I flat', 'open positions', 'exposure'. "
+            "Do NOT substitute web search or memory. unrealized_pnl ≠ realized session P&L."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -1542,7 +1553,10 @@ TOOLS = [
     ),
     Tool(
         name="get_orders",
-        description="Get orders from a broker, optionally filtered by status.",
+        description=(
+            "broker_truth / live ops — working/open/closed orders from a connected broker. "
+            "Use for 'working orders', 'pending orders'. Do NOT use web search."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -1577,7 +1591,12 @@ TOOLS = [
     ),
     Tool(
         name="portfolio_summary",
-        description="Get a unified portfolio summary across ALL connected brokers — total equity, positions, and P&L.",
+        description=(
+            "broker_truth / live ops — unified portfolio across connected brokers "
+            "(equity, positions, P&L). Use for owner 'today's P&L' / 'how did we do'. "
+            "Do NOT invent numbers from web search or memory. "
+            "Subscribers should use get_my_pnl / get_my_portfolio instead."
+        ),
         inputSchema={"type": "object", "properties": {}},
     
         annotations=ANNOT_READ_EXTERNAL,
@@ -1585,7 +1604,11 @@ TOOLS = [
     # ── Market Data ─────────────────────────────────────────────
     Tool(
         name="get_quote",
-        description="Get current quote (bid/ask/last) for a symbol from a broker.",
+        description=(
+            "broker_truth / live ops — right-now bid/ask/last for a symbol from a connected broker. "
+            "Use for 'MNQ price right now' / live quote. "
+            "Do NOT scrape CME/Yahoo via web search. For historical OHLCV bars use data/backtest tools."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -1646,11 +1669,11 @@ TOOLS = [
     Tool(
         name="get_bot_health",
         description=(
-            "Return a unified health snapshot for all four live futures bots (MNQ, CL, MES, NQ) "
-            "and the Kalshi daemon. For each bot: process up? last log mtime, last signal ts, "
-            "current regime, error count in last 100 log lines, token expiry (if Tradovate). "
-            "Includes E2E sentinel lifecycle state for MNQ execution traceability. "
-            "Pure read-only — reads logs/, state/, and ps aux on the control tower host."
+            "broker_truth / live ops — unified health for live futures bots (MNQ, CL, MES, NQ) "
+            "and Kalshi: process up?, log mtime, last signal, regime, recent errors, token expiry, "
+            "e2e_sentinel. Use for 'MNQ health check', 'is the bot running', 'bot status'. "
+            "Do NOT use web search (CME/Yahoo) for bot liveness — that is market news, not AlgoChains processes. "
+            "For live market price use get_quote. Pure read-only on control-tower host (logs/, state/, ps)."
         ),
         inputSchema={
             "type": "object",
@@ -4042,7 +4065,13 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Symbol to flatten: MNQ | CL | MES | NQ"}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"}}, "required": ["symbol", "owner_token"]},
          annotations=ANNOT_DESTRUCTIVE),
     Tool(name="check_unprotected_positions",
-         description="Cross-check ALL open Tradovate positions vs working orders to identify unprotected exposure (position open, no stop/target orders). Returns status OK | UNPROTECTED_EXPOSURE. Run before any P&L report or after any bot restart. Prevents repeat of Apr 14 2026 -$4.9k incident.",
+         description=(
+             "broker_truth / live ops — cross-check ALL open Tradovate positions vs working orders "
+             "to find unprotected exposure (position open, no stop/target). "
+             "Use for 'unprotected?', 'do I have stops?', 'bracket check'. Do NOT use web search. "
+             "Returns OK | UNPROTECTED_EXPOSURE. Run before P&L reports and after restarts "
+             "(prevents Apr 14 2026 -$4.9k class)."
+         ),
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="bracket_integrity_check",

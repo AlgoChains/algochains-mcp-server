@@ -2,7 +2,7 @@
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
 [![Tools](https://img.shields.io/badge/tools-533%20full%20%7C%20181%20smart-green?style=flat-square)](#tool-domains)
-[![Version](https://img.shields.io/badge/version-22.7.1-blueviolet?style=flat-square)](#whats-new)
+[![Version](https://img.shields.io/badge/version-22.7.2-blueviolet?style=flat-square)](#whats-new)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-GOTCHAS__AND__BUGS.md-red?style=flat-square)](docs/GOTCHAS_AND_BUGS.md)
@@ -196,6 +196,10 @@ AlgoChains runs 4 live futures bots on Tradovate. Their state, fills, ML pipelin
 
 ### `get_bot_health` — Full e2e Signal→Order→Fill Trace
 
+> **Routing:** “MNQ health / is the bot running / bot status” → **`get_bot_health`**.
+> Do **not** web-search CME/Yahoo for bot liveness. For “MNQ price right now” use `get_quote`.
+> Full agent table: [docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md).
+
 ```python
 # Returns: process state, position, bracket status, AI pipeline health,
 #          ml_env_flags (MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, MASSIVE_HALT_GUARD),
@@ -212,6 +216,21 @@ status = get_all_bot_ops_status()
 ```
 
 No credentials needed if you have `ALGOCHAINS_BRIDGE_API_KEY`. Read-only.
+
+### Agent live-ops routing (mandatory)
+
+| Ask | Tool |
+|-----|------|
+| Bot health / running? | `get_bot_health` |
+| Session / portfolio P&L (owner) | `portfolio_summary` |
+| Paper P&L (subscriber) | `get_my_pnl` / `get_my_portfolio` |
+| Flat / open positions | `get_positions` |
+| Stops / unprotected | `check_unprotected_positions` |
+| Working orders | `get_orders` |
+| Live quote now | `get_quote` |
+| Market news / headlines | web/news tools — **not** `get_bot_health` |
+
+Never invent broker numbers. Ghost-P&L and persona rules: **[docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md)**.
 
 ---
 
@@ -389,6 +408,12 @@ OWNER_API_TOKEN=your-owner-token-here
 ---
 
 ## What's New in v22.x
+
+### v22.7.2 (2026-07-13) — Live-ops tool routing for agents
+
+- Added [docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md): intent → MCP tool map so agents never substitute web search for bot health, P&L, positions, brackets, orders, or live quotes.
+- README + `AGENTS.md` routing/safety clarity; tool descriptions hardened for LLM selection.
+- Synced package/registry version metadata to **22.7.2**.
 
 ### v22.7.1 (2026-07-07) — Subscriber key alias fix
 - Both `ALGOCHAINS_SUBSCRIBER_KEY` (canonical) and `ALGOCHAINS_SUB_KEY` (back-compat alias)
@@ -724,6 +749,7 @@ AlgoChains MCP Server
 
 | File | Purpose |
 |------|---------|
+| [docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md) | **Agent routing:** bot health / P&L / positions / brackets / quotes — never web-search for live ops |
 | [SAFETY_MODEL.md](SAFETY_MODEL.md) | Is this safe? Failure modes, guardrails, team access |
 | [CHANGELOG.md](CHANGELOG.md) | Full version history |
 | [docs/GOTCHAS_AND_BUGS.md](docs/GOTCHAS_AND_BUGS.md) | Confirmed bugs, gotchas, operational surprises |
