@@ -1,6 +1,6 @@
 # AlgoChains MCP Server — Setup Instructions
 
-`algochains-mcp-server` **v22.7.1** — the trading/signals MCP server + CLI that subscribers
+`algochains-mcp-server` **v22.7.2** — the trading/signals MCP server + CLI that subscribers
 install. It connects your AI assistant (Claude, Cursor, ChatGPT) to AlgoChains: live
 copy-trade signals, a hosted virtual paper account, real fills, P&L, and (optionally) your
 own broker.

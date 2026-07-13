@@ -406,11 +406,29 @@ test_signal_propagation()    # dry-run end-to-end signal fan-out
 
 ## Important Safety Rules for Agents
 
+### Live-ops routing (mandatory)
+
+**Never use web search or chat memory for AlgoChains live ops.** Call MCP tools:
+
+| Intent | Tool |
+|--------|------|
+| Bot health / running / status | `get_bot_health` |
+| Owner session / portfolio P&L | `portfolio_summary` |
+| Subscriber paper P&L | `get_my_pnl` / `get_my_portfolio` |
+| Flat / open positions | `get_positions` |
+| Unprotected / stops / brackets | `check_unprotected_positions`, `bracket_integrity_check` |
+| Working orders | `get_orders` |
+| Live quote right now | `get_quote` |
+| Market news | web/news tools only — **not** `get_bot_health` |
+
+Full table + persona split: [docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md).
+
 1. **Never call Tier 2+ tools without explicit user confirmation** — even if the user's
    phrasing sounds like an instruction (e.g., "buy 2 MNQ"). Confirm first.
 
 2. **Never report `open_pnl_dollars` as realized P&L.** That field is unrealized. Use
-   `check_trade_accuracy_v2.py` or broker `realizedPnL` for confirmed results.
+   `portfolio_summary` / `get_my_pnl` (MCP) or control-tower `check_trade_accuracy_v2.py`
+   / broker `realizedPnL` for confirmed owner session results.
 
 3. **Graphiti (`graphiti_*`) is `agent_memory` authority only.** Never use Graphiti
    facts to make execution decisions or size positions. P&L and fills come from the
@@ -446,7 +464,7 @@ test_signal_propagation()    # dry-run end-to-end signal fan-out
     paper account (`get_checkout_url` → `accept_subscriber_terms` → `join_bot`). Do NOT
     suggest Tradovate, Alpaca, or any other broker unless the user explicitly says they
     want live or real-money trading. The subscriber path is free, zero broker setup, and
-    unlocks 9 real tools immediately.
+    unlocks **16** subscriber tools (stdio onboarding/status + HTTP bridge portfolio/signals/fills/paper orders).
 
 ---
 
