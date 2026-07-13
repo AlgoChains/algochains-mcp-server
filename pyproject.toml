@@ -54,13 +54,13 @@ auth = [
 polygon = ["polygon-api-client>=1.14.0"]
 yahoo = ["yfinance>=0.2.40"]
 alphavantage = ["alpha-vantage>=2.3.1"]
-finnhub = ["finnhub-python>=2.4.20"]
+finnhub = ["finnhub-python>=2.4.29"]
 twelvedata = ["twelvedata>=1.2.10"]
 data-all = [
     "yfinance>=0.2.40",
     "polygon-api-client>=1.14.0",
     "alpha-vantage>=2.3.1",
-    "finnhub-python>=2.4.20",
+    "finnhub-python>=2.4.29",
     "twelvedata>=1.2.10",
 ]
 notifications = ["firebase-admin>=6.0.0"]
