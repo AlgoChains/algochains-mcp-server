@@ -65,3 +65,23 @@ def test_onyx_doc_filter_skips_sensitive_directory_candidates(tmp_path, monkeypa
 
     assert result["success"] is False
     assert result["rejected"][0]["path"] == str(hidden_dir / "secrets.json")
+
+
+def test_connect_onyx_docs_rejects_path_outside_ingest_root(tmp_path, monkeypatch):
+    """2026-07-13: Tier-1 callers must not ingest arbitrary host paths into shared RAG."""
+    from algochains_mcp import data_ingestion
+
+    jail = tmp_path / "onyx_ingest"
+    jail.mkdir()
+    outside = tmp_path / "research_report.md"
+    outside.write_text("secret research body", encoding="utf-8")
+    monkeypatch.setenv("ONYX_INGEST_ROOT", str(jail))
+    monkeypatch.setattr(data_ingestion, "_STATE_DIR", tmp_path)
+
+    result = data_ingestion.connect_onyx_docs([str(outside)], "general")
+    assert result.get("success") is False
+    rejected = result.get("rejected") or []
+    assert any("outside allowed Onyx ingest root" in (r.get("reason") or "") for r in rejected) or (
+        "outside allowed Onyx ingest root" in str(result.get("error", ""))
+        or "No indexable files" in str(result.get("error", ""))
+    )
