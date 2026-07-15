@@ -69,6 +69,10 @@ DEVELOPER_TOOLS: frozenset[str] = frozenset({
     # get_signal_health_summary was never implemented in server.py — replaced by
     # get_signal_trade_correlation (real, read-only signal->trade traceability audit).
     "get_signal_trade_correlation",
+
+    # AlgoClaw sandboxed agent runtime (WRITE_LOCAL — app-owned workspace only)
+    "start_sandboxed_agent",
+    "reserve_llm_budget",
 })
 
 # ─── Scope requirements per tool ─────────────────────────────────────────────
@@ -88,6 +92,10 @@ DEVELOPER_TOOL_SCOPES: dict[str, str] = {
     "get_factor_model": "read:market_data",
     "run_hmm_regime_detection": "read:signals",
     "get_signal_trade_correlation": "read:signals",
+    # AlgoClaw sandbox / spend scopes (fail closed until key has claim)
+    "start_sandboxed_agent": "agent:sandbox",
+    "reserve_llm_budget": "spend:llm_budget",
+    "run_host_action": "agent:host",
 }
 
 # ─── Hard-blocked tools (never allowed for developer tier) ───────────────────

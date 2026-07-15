@@ -69,6 +69,7 @@ def _ensure_dirs() -> None:
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     _CUSTOM_DATA_DIR.mkdir(parents=True, exist_ok=True)
     _CUSTOM_STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
+    (_STATE_DIR / "onyx_ingest").mkdir(parents=True, exist_ok=True)
 
 
 def _load_registry() -> dict:
@@ -331,12 +332,50 @@ _SENSITIVE_DOC_NAMES = {
 _SENSITIVE_DOC_SUBSTRINGS = ("credential", "password", "private_key", "secret", "token")
 
 
+def _onyx_ingest_roots() -> list[Path]:
+    """Allowed roots for connect_onyx_docs (fail-closed outside these).
+
+    Configure via ONYX_INGEST_ROOT or ALGOCHAINS_ONYX_INGEST_ROOTS (':'/';'-separated).
+    Defaults to state/onyx_ingest under ALGOCHAINS_STATE_DIR — operators must
+    copy/symlink docs into that jail before ingest. Sensitive-name denylist
+    remains defense-in-depth.
+    """
+    raw = (
+        os.getenv("ALGOCHAINS_ONYX_INGEST_ROOTS")
+        or os.getenv("ONYX_INGEST_ROOT")
+        or ""
+    ).strip()
+    roots: list[Path] = []
+    if raw:
+        for part in raw.replace(";", ":").split(":"):
+            part = part.strip()
+            if part:
+                roots.append(Path(part).expanduser().resolve())
+    else:
+        roots.append((_STATE_DIR / "onyx_ingest").resolve())
+    return roots
+
+
+def _path_under_onyx_roots(path: Path, roots: list[Path] | None = None) -> bool:
+    resolved = path.resolve()
+    for root in roots or _onyx_ingest_roots():
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _onyx_doc_rejection_reason(path: Path) -> str | None:
     """Return why a path must not be ingested into shared Onyx search."""
     resolved = path.resolve()
     parts = [part.lower() for part in resolved.parts]
     name = resolved.name.lower()
 
+    if not _path_under_onyx_roots(resolved):
+        roots = ", ".join(str(r) for r in _onyx_ingest_roots())
+        return f"path outside allowed Onyx ingest root(s): {roots}"
     if resolved.suffix.lower() not in VALID_DOC_EXTENSIONS:
         return f"unsupported extension '{resolved.suffix or '<none>'}'"
     if any(part.startswith(".") for part in parts):
@@ -361,7 +400,9 @@ def connect_onyx_docs(
     expanded. Real Onyx API call is attempted; fails loudly if unreachable.
 
     Args:
-        doc_paths: List of absolute file or directory paths.
+        doc_paths: List of absolute file or directory paths under the
+                   configured Onyx ingest root (ONYX_INGEST_ROOT /
+                   ALGOCHAINS_ONYX_INGEST_ROOTS; default state/onyx_ingest).
         doc_type: One of: "strategy_research" | "blueprint" | "backtest" |
                   "whitepaper" | "general".
         onyx_url: Override ONYX_API_URL env var.

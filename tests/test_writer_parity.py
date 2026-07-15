@@ -185,6 +185,23 @@ class TestScopesForTier:
         assert "read:signals" in scopes
         assert "read:backtest" in scopes
         assert "write:backtest" in scopes
+        assert "agent:sandbox" in scopes
+        assert "spend:llm_budget" in scopes
+        assert "agent:host" not in scopes
+
+    def test_enterprise_has_agent_host(self):
+        scopes = scopes_for_tier("enterprise")
+        assert "agent:sandbox" in scopes
+        assert "spend:llm_budget" in scopes
+        assert "agent:host" in scopes
+
+    def test_developer_pro_cannot_override_agent_host(self):
+        scopes = scopes_for_tier(
+            "developer_pro",
+            override=["read:market_data", "agent:host", "agent:sandbox"],
+        )
+        assert "agent:sandbox" in scopes
+        assert "agent:host" not in scopes
 
     def test_enterprise_is_superset_of_developer_pro(self):
         pro = set(scopes_for_tier("developer_pro"))

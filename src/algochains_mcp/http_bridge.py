@@ -237,8 +237,12 @@ async def handle_mcp_request(
             }
         # Developer keys execute via the standard server.call_tool path — the
         # tool allowlist already guarantees tier 0/1 only. Tracing is preserved.
+        # Inject scopes/identity for sandbox + budget tools (stripped before audit hash).
         try:
             from algochains_mcp import server as _server
+            call_args = dict(arguments or {})
+            call_args["_developer_scopes"] = list(developer.scopes or ())
+            call_args["_clerk_user_id"] = getattr(developer, "clerk_user_id", "") or ""
             with trace_span(
                 "mcp.tool.call",
                 {
@@ -250,7 +254,7 @@ async def handle_mcp_request(
                     "algochains.arguments_hash": redacted_argument_hash(arguments),
                 },
             ) as span:
-                result = await _server.call_tool(tool_name, arguments)
+                result = await _server.call_tool(tool_name, call_args)
                 if span is not None:
                     span.set_attribute("algochains.tool.success", True)
             if result and hasattr(result[0], "text"):

@@ -3283,6 +3283,21 @@ TOOLS = [
     Tool(name="list_data_warehouses", description="List available AlgoChains data warehouses with row counts, schemas, and access requirements.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+
+    Tool(name="start_sandboxed_agent",
+         description="Start an AlgoClaw MCP-only agent session in an app-owned sandbox (path allowlist, no inherited broker/owner env, runtime quotas). Requires agent:sandbox scope. Fail closed without the scope.",
+         inputSchema={"type": "object", "properties": {
+             "task": {"type": "string", "description": "Agent task / objective"},
+             "max_runtime_sec": {"type": "integer", "default": 300}
+         }, "required": ["task"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="reserve_llm_budget",
+         description="Atomically reserve USD against the developer key's daily LLM budget (spend:llm_budget). Fail closed on ledger errors or exhaustion.",
+         inputSchema={"type": "object", "properties": {
+             "amount_usd": {"type": "number"},
+             "daily_cap_usd": {"type": "number", "description": "Optional override; defaults to entitlement/env cap"}
+         }, "required": ["amount_usd"]},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="run_builder_backtest", description="Run a backtest using the Builder SDK. Supports built-in strategies (SMA crossover, RSI, Bollinger Bands, etc.) or custom data. Returns Sharpe, MaxDD, win rate, profit factor, and marketplace readiness check.",
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "default": "custom"}, "timeframe": {"type": "string", "default": "1d"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "initial_capital": {"type": "number", "default": 100000}}, "required": ["symbol"]},
          annotations=ANNOT_COMPUTE),
@@ -5207,6 +5222,8 @@ TIER1_TOOL_NAMES = {
     # Kronos + Rithmic live tools (always Tier 1 — bot operators need these)
     "get_kronos_shadow_stats",
     "get_signal_trade_correlation",
+    "start_sandboxed_agent",
+    "reserve_llm_budget",
     "get_rithmic_live_accounts",
     "get_rithmic_live_pnl",
     "get_rithmic_live_positions",
@@ -8157,6 +8174,33 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         output = result.to_dict()
         output["marketplace_readiness"] = result.passes_marketplace_gates()
         return _text(output)
+
+    elif name == "start_sandboxed_agent":
+        from algochains_mcp.agent_sandbox import start_sandboxed_agent as _start_sb
+        scopes = tuple(arguments.pop("_developer_scopes", ()) or ())
+        clerk_user_id = str(arguments.pop("_clerk_user_id", "") or "")
+        # Prefer scopes injected by http_bridge; fail closed if absent.
+        if not scopes:
+            return _text({"ok": False, "error": "missing_scope:agent:sandbox", "authority": "agent_memory"})
+        return _text(_start_sb(
+            scopes=scopes,
+            task=str(arguments.get("task") or ""),
+            clerk_user_id=clerk_user_id,
+            max_runtime_sec=arguments.get("max_runtime_sec"),
+        ))
+
+    elif name == "reserve_llm_budget":
+        from algochains_mcp.agent_sandbox import reserve_llm_budget as _reserve
+        scopes = tuple(arguments.pop("_developer_scopes", ()) or ())
+        clerk_user_id = str(arguments.pop("_clerk_user_id", "") or "")
+        if not scopes:
+            return _text({"ok": False, "error": "missing_scope:spend:llm_budget", "authority": "agent_memory"})
+        return _text(_reserve(
+            scopes=scopes,
+            clerk_user_id=clerk_user_id,
+            amount_usd=float(arguments.get("amount_usd") or 0),
+            daily_cap_usd=arguments.get("daily_cap_usd"),
+        ))
 
     elif name == "submit_to_marketplace":
         pipeline = _get_submission_pipeline()
