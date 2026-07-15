@@ -177,7 +177,7 @@ def get_openclaw_memory(key_prefix: Optional[str] = None, limit: int = 50) -> di
             truncated[k] = v[:497] + "..."
         elif isinstance(v, (dict, list)):
             s = json.dumps(v)
-            truncated[k] = json.loads(s[:2000]) if len(s) > 2000 else v
+            truncated[k] = s[:1997] + "..." if len(s) > 2000 else v
         else:
             truncated[k] = v
 
