@@ -1,7 +1,7 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-533%20full%20%7C%20181%20smart-green?style=flat-square)](#tool-domains)
+[![Tools](https://img.shields.io/badge/tools-535%20full%20%7C%20181%20smart-green?style=flat-square)](#tool-domains)
 [![Version](https://img.shields.io/badge/version-22.7.2-blueviolet?style=flat-square)](#whats-new)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
@@ -10,7 +10,7 @@
 
 ---
 
-> **The only MCP server with live futures bots, real fill data, real-time ML inference, and 533 tools across 21 domains — all backed by real APIs, zero synthetic data.**
+> **The only MCP server with live futures bots, real fill data, real-time ML inference, and 535 tools across 21 domains — all backed by real APIs, zero synthetic data.**
 
 Connect your AI assistant (Claude, Cursor, ChatGPT) to your trading infrastructure in 3 commands. Ask Claude "What's my paper P&L today?" — it reads your AlgoChains virtual paper account and tells you. No broker required.
 
@@ -126,7 +126,7 @@ AlgoChains exposes tools in two tiers, controlled by `ALGOCHAINS_TOOL_MODE`:
 | Mode | Tools Exposed | Token Cost | When to Use |
 |------|:---:|:---:|-----|
 | **Smart** (default) | 181 curated | ~4K tokens | Cursor, Windsurf (80-tool limit), everyday use |
-| **Full** (`ALGOCHAINS_TOOL_MODE=full`) | 533 tools | ~40K tokens | Claude Code, full agentic sessions |
+| **Full** (`ALGOCHAINS_TOOL_MODE=full`) | 535 tools | ~40K tokens | Claude Code, full agentic sessions |
 
 **Smart mode includes:** all live bot tools, market data, signals, research/backtest, Onyx RAG, prop fund pipeline, position sizing, broker management, and order execution. Everything you need 95% of the time.
 
@@ -134,7 +134,7 @@ AlgoChains exposes tools in two tiers, controlled by `ALGOCHAINS_TOOL_MODE`:
 
 ### `discover_tools` — Find Any Tool Without Full Mode
 
-Even in smart mode, you can find and use any of the 533 tools:
+Even in smart mode, you can find and use any of the 535 tools:
 
 ```python
 # Ask the server to find the right tool for your task
@@ -145,13 +145,13 @@ discover_tools("walk-forward validation with leakage check")
 execute_dynamic_tool("walk_forward_test", {"symbol": "MNQ", "lookback_days": 252})
 ```
 
-This provides 99.6% token reduction vs exposing all 533 tools (arXiv:2603.20313).
+This provides 99.6% token reduction vs exposing all 535 tools (arXiv:2603.20313).
 
 ---
 
 ## Tool Domains
 
-All 533 tools organized across 21 domains:
+All 535 tools organized across 21 domains:
 
 | # | Domain | Smart | Full | Key Tools |
 |---|--------|:-----:|:----:|-----------|
@@ -426,7 +426,7 @@ OWNER_API_TOKEN=your-owner-token-here
 - Complete README rewrite (plain English, team access)
 - `scripts/quickstart.py` — interactive setup wizard with health checks
 - `SAFETY_MODEL.md` — answers "is this safe?" for every failure mode
-- `tool_danger_tiers.py` — machine-readable danger classification (0–3) for the documented 533-tool surface
+- `tool_danger_tiers.py` — machine-readable danger classification (0–3) for the documented 535-tool surface
 - HTTP bridge `/tools` endpoint now returns `danger_tier`, `safe_in_demo_mode`, etc.
 - `get_bot_health` includes `e2e_sentinel`, desktop inference SLO, and decision latency SLO slices for signal-to-fill traceability
 
@@ -476,7 +476,7 @@ Available immediately (no credentials):
 - `get_quote("AAPL")` — live price for any symbol
 - `detect_market_regime()` — trending / ranging / choppy
 - `get_macro_signals()` — macro environment analysis
-- `discover_tools()` — find any of the 533 tools
+- `discover_tools()` — find any of the 535 tools
 - `onyx_ask("any question")` — knowledge base search
 
 ### Option B — AlgoChains Hosted Paper (Free, No Broker Needed)
@@ -726,7 +726,7 @@ Your AI (Claude / Cursor / ChatGPT)
          │ MCP 2025-11-25 (stdio or HTTP + SSE)
          ▼
 AlgoChains MCP Server
-  ├── 533 tools / 181 smart-mode (21 domains)
+  ├── 535 tools / 181 smart-mode (21 domains)
   ├── Trading Guardrails (hard-coded limits, AI loop detection)
   ├── Account Protection (12 pre-trade guards)
   ├── Onyx RAG (semantic search — 400+ docs + 472 skills)
