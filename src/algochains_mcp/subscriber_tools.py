@@ -783,6 +783,16 @@ def report_fill(
         return _err("supabase_unavailable")
     if fill_kind not in ("entry", "exit", "modify", "reject"):
         return _err("invalid_fill_kind", got=fill_kind)
+    # Security: default-scoped subscribers must not forge authoritative P&L.
+    # Accept pnl_usd only when correlated to a signal/order (daemon callback).
+    # Uncorrelated self-reported fills store pnl as NULL and mark non-authoritative.
+    authoritative = bool(signal_id or tradovate_order_id)
+    stored_pnl = pnl_usd if authoritative else None
+    if pnl_usd is not None and not authoritative:
+        error_msg = (
+            (error_msg + " | " if error_msg else "")
+            + "unverified_self_reported_pnl_ignored"
+        )
     payload = {
         "subscriber_id": subscriber_id,
         "signal_id": signal_id,
@@ -792,7 +802,7 @@ def report_fill(
         "qty": int(qty),
         "fill_price": fill_price,
         "tradovate_order_id": tradovate_order_id,
-        "pnl_usd": pnl_usd,
+        "pnl_usd": stored_pnl,
         "fill_kind": fill_kind,
         "error_msg": error_msg,
         "bracket_id": bracket_id,
