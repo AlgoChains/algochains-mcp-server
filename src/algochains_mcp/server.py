@@ -1618,13 +1618,6 @@ TOOLS = [
             "required": ["broker", "symbol"],
         },
         # No outputSchema: TextContent JSON only (structuredContent gap breaks OpenClaw).
-                "bid": {"type": "number"},
-                "ask": {"type": "number"},
-                "last": {"type": "number"},
-                "volume": {"type": "number"},
-                "timestamp": {"type": "string"},
-            },
-        },
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
