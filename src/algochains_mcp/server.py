@@ -1617,17 +1617,7 @@ TOOLS = [
             },
             "required": ["broker", "symbol"],
         },
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "bid": {"type": "number"},
-                "ask": {"type": "number"},
-                "last": {"type": "number"},
-                "volume": {"type": "number"},
-                "timestamp": {"type": "string"},
-            },
-        },
+        # No outputSchema: TextContent JSON only (structuredContent gap breaks OpenClaw).
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
@@ -6057,9 +6047,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── Market Data ─────────────────────────────────────────
     elif name == "get_quote":
-        conn = _require_broker(registry, arguments["broker"])
-        quote = await conn.get_quote(arguments["symbol"])
-        return _text(quote.to_dict())
+        try:
+            conn = _require_broker(registry, arguments["broker"])
+            quote = await conn.get_quote(arguments["symbol"])
+            return _text(quote.to_dict())
+        except Exception as e:
+            return _text({
+                "error": str(e),
+                "ok": False,
+                "broker": arguments.get("broker"),
+                "symbol": arguments.get("symbol"),
+            })
 
     elif name == "search_tradovate_contracts":
         conn = _require_broker(registry, "tradovate")
