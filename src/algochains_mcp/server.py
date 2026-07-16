@@ -6048,7 +6048,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     # ── Market Data ─────────────────────────────────────────
     elif name == "get_quote":
         try:
-            conn = _require_broker(registry, arguments["broker"])
+            broker_name = arguments["broker"]
+            try:
+                conn = _require_broker(registry, broker_name)
+            except BrokerNotConnectedError:
+                results = await registry.connect_all()
+                if not results.get(broker_name):
+                    return _text({
+                        "error": f"Broker '{broker_name}' configured but connect failed",
+                        "ok": False,
+                        "broker": broker_name,
+                        "symbol": arguments.get("symbol"),
+                        "connect_result": results.get(broker_name),
+                    })
+                conn = _require_broker(registry, broker_name)
             quote = await conn.get_quote(arguments["symbol"])
             return _text(quote.to_dict())
         except Exception as e:
