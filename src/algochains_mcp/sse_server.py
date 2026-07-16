@@ -293,11 +293,21 @@ def _validate_origin(request: Request) -> bool:
 
 def _validate_api_key(request: Request) -> bool:
     if not SSE_API_KEY:
-        # When ALGOCHAINS_SSE_REQUIRE_KEY=1 is set, enforce even without a key
-        # configured — this prevents accidental open access on public interfaces.
-        if os.environ.get("ALGOCHAINS_SSE_REQUIRE_KEY", "0") == "1":
+        # Fail closed on non-localhost binds. Localhost stays open for dev unless
+        # ALGOCHAINS_SSE_REQUIRE_KEY=1. Explicit opt-in:
+        # ALGOCHAINS_SSE_ALLOW_UNAUTH=1 (dev-only, never on public interfaces).
+        host = (SSE_HOST or "").strip().lower()
+        localhost = host in ("127.0.0.1", "localhost", "::1", "")
+        allow_unauth = os.environ.get("ALGOCHAINS_SSE_ALLOW_UNAUTH", "0") == "1"
+        require_key = os.environ.get("ALGOCHAINS_SSE_REQUIRE_KEY", "0") == "1"
+        if require_key:
             return False
-        return True  # No key configured = open (dev mode)
+        if not localhost and not allow_unauth:
+            return False  # fail closed when exposed
+        if allow_unauth and not localhost:
+            # Still refuse unauth on non-localhost even if mis-set
+            return False
+        return True  # localhost dev mode only
     provided = (
         request.headers.get("x-api-key")
         # Reject query-param keys in production: they appear in access logs / Referer.
@@ -576,11 +586,9 @@ def run_sse_server(mcp_server: Optional[Server] = None) -> None:
             "Set ALGOCHAINS_SSE_KEY in production if exposing on a non-localhost interface."
         )
     if SSE_HOST not in ("127.0.0.1", "localhost", "::1") and not SSE_API_KEY:
-        logger.warning(
-            "⚠️  SSE server is bound to %s (non-localhost) with no ALGOCHAINS_SSE_KEY set. "
-            "Any client that can reach this host can use the MCP endpoint. "
-            "Set ALGOCHAINS_SSE_KEY to require authentication.",
-            SSE_HOST,
+        raise RuntimeError(
+            f"Refusing to start SSE on {SSE_HOST} without ALGOCHAINS_SSE_KEY. "
+            "Fail closed: set ALGOCHAINS_SSE_KEY, or bind 127.0.0.1 for local dev."
         )
 
     uvicorn.run(
