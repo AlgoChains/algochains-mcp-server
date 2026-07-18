@@ -199,12 +199,14 @@ platform, **and** the backtesting library.
   manually-added rows (~18, e.g. "Roo Fernando", "Eric Walker", "Jeremy")
   keep `developer_api_key_id = NULL` — their original raw keys were never
   captured anywhere, so they can't be retroactively linked or migrated.
-- **Unverified:** algochains-library-mcp's source isn't checked out in any
-  repo in this org's workspace, so it's unconfirmed whether its auth layer
-  accepts the `ac_live_`/`ac_test_` format vs. expecting its own historical
-  ~32-char unprefixed keys. If a unified key doesn't work against that
-  package, check its auth code directly — it may need a matching update to
-  accept the new format (or a prefix-stripping compatibility shim).
+- **Data API auth (2026-07-18):** `api.algochains.ai` `/research`/`/backtest`
+  (FAST-API-credentials) validates keys in two stages. Platform
+  `ac_live_`/`ac_test_` skip HMAC stage-1 and use the `algochains-core`
+  allow-list only (Roo: existing keys already exempt — do not re-mint).
+  Research-only HMAC keys (36-char body+sig) are minted via control-tower
+  `scripts/mint_algochains_core_api_key.py` — see
+  `docs/megaprompts/DATA_API_HMAC_KEYS_MEGAPROMPT.md` in control-tower.
+  Do not change `ac_live_` generation to append HMAC suffixes.
 - **Distribution (2026-07-09):** the Claude Desktop `.mcpb` extension for this
   package is hosted by Django_Algochains at
   `https://algochains.ai/mcp/algochains-library-mcp.mcpb`
