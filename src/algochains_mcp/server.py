@@ -4370,10 +4370,11 @@ TOOLS = [
     Tool(name="create_developer_key",
          description="Mint a new ac_live_* or ac_test_* developer API key. Requires AAL2 session (enroll_mfa + verify_mfa first). Plaintext key returned ONCE ONLY — save immediately.",
          inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "AAL2 access token from verify_mfa response"},
              "name": {"type": "string", "description": "Friendly name for the key", "default": "default"},
              "scopes": {"type": "array", "items": {"type": "string"}, "description": "e.g. ['read:market_data','read:signals']"},
              "env": {"type": "string", "enum": ["live", "test"], "default": "live"},
-         }, "required": []},
+         }, "required": ["access_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="list_developer_keys",
          description="List your developer API keys (masked — plaintext never returned after creation).",
@@ -4382,15 +4383,17 @@ TOOLS = [
     Tool(name="rotate_developer_key",
          description="Atomically rotate a developer key (revoke old, mint new). Requires AAL2 session. New plaintext returned ONCE ONLY.",
          inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "AAL2 access token from verify_mfa response"},
              "key_id": {"type": "string", "description": "UUID of the key to rotate"},
              "name": {"type": "string", "description": "Name for the new key (defaults to old key's name)"},
-         }, "required": ["key_id"]},
+         }, "required": ["access_token", "key_id"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="revoke_developer_key",
          description="Revoke (soft-delete) a developer API key. Requires AAL2 session.",
          inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "AAL2 access token from verify_mfa response"},
              "key_id": {"type": "string"},
-         }, "required": ["key_id"]},
+         }, "required": ["access_token", "key_id"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_developer_key_usage",
          description="Get usage metadata for a developer key (last used, scopes, active status).",
@@ -10580,6 +10583,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .auth.platform_auth import create_developer_key as _create_key
             return _text(await _create_key(
+                access_token=arguments.get("access_token", ""),
                 name=arguments.get("name", "default"),
                 scopes=arguments.get("scopes"),
                 env=arguments.get("env", "live"),
@@ -10598,6 +10602,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .auth.platform_auth import rotate_developer_key as _rotate_key
             return _text(await _rotate_key(
+                access_token=arguments.get("access_token", ""),
                 key_id=arguments["key_id"],
                 name=arguments.get("name"),
             ))
@@ -10607,7 +10612,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "revoke_developer_key":
         try:
             from .auth.platform_auth import revoke_developer_key as _revoke_key
-            return _text(await _revoke_key(key_id=arguments["key_id"]))
+            return _text(await _revoke_key(
+                access_token=arguments.get("access_token", ""),
+                key_id=arguments["key_id"],
+            ))
         except Exception as exc:
             return _text({"error": str(exc)})
 
