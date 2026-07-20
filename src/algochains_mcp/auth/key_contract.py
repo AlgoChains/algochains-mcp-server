@@ -183,3 +183,29 @@ def build_insert_payload(
         **({"created_by_ip": created_by_ip} if created_by_ip else {}),
         **({"user_agent": user_agent} if user_agent else {}),
     }
+
+
+def build_core_mirror_payload(
+    *,
+    raw_key: str,
+    developer_api_key_id: str,
+    user_name: str,
+    include_plaintext: bool = False,
+) -> dict:
+    """Build the transitional ``algochains-core`` mirror row.
+
+    Hash-only is the safe default. ``include_plaintext`` exists solely for a
+    time-bounded compatibility rollout and must be explicitly enabled by the
+    operator while an old algochains-library-mcp consumer is upgraded.
+    """
+    payload = {
+        "user_name": user_name,
+        "developer_api_key_id": developer_api_key_id,
+        "key_hash": hash_platform_key(raw_key),
+        "key_prefix": key_prefix_field(raw_key),
+        "is_active": True,
+        "revoked_at": None,
+    }
+    if include_plaintext:
+        payload["api_key"] = raw_key
+    return payload

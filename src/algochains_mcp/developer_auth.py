@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -112,6 +113,31 @@ def resolve_developer_key(raw_key: str | None) -> ResolvedDeveloper | None:
     except Exception as exc:
         log.warning("developer_auth: resolve_developer_api_key RPC failed — %s", exc)
         return None
+
+    if not rows and os.environ.get("ALGOCHAINS_CORE_HASH_LOOKUP_FALLBACK", "").lower() in {
+        "1", "true", "yes"
+    }:
+        # Temporary hash-only compatibility for consumers being moved off the
+        # historical plaintext algochains-core allow-list. Never query api_key.
+        try:
+            resp = (
+                sb.table("algochains-core")
+                .select("user_name,key_hash,key_prefix,is_active,revoked_at")
+                .eq("key_hash", key_hash)
+                .eq("is_active", True)
+                .is_("revoked_at", "null")
+                .limit(1)
+                .execute()
+            )
+            mirror_rows = getattr(resp, "data", None) or []
+            if mirror_rows:
+                rows = [{
+                    "clerk_user_id": mirror_rows[0].get("user_name"),
+                    "scopes": list(DEFAULT_DEVELOPER_SCOPES),
+                    "env": "test" if raw_key.startswith("ac_test_") else "live",
+                }]
+        except Exception as exc:
+            log.warning("developer_auth: hashed mirror fallback failed — %s", type(exc).__name__)
 
     if not rows:
         with _CACHE_LOCK:

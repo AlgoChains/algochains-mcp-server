@@ -133,3 +133,33 @@ class TestResolveDeveloperKey:
         result = resolve_developer_key("ac_live_badenv")
         assert result is not None
         assert result.env == "live"
+
+    @patch("algochains_mcp.developer_auth._service_client")
+    def test_optional_hashed_mirror_fallback_never_queries_plaintext(self, mock_client, monkeypatch):
+        monkeypatch.setenv("ALGOCHAINS_CORE_HASH_LOOKUP_FALLBACK", "1")
+        raw = "ac_test_hashed_mirror"
+        sb = self._mock_sb([])
+        query = MagicMock()
+        sb.table.return_value = query
+        query.select.return_value = query
+        query.eq.return_value = query
+        query.is_.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value = MagicMock(data=[{
+            "user_name": "legacy@example.com",
+            "key_hash": hash_developer_key(raw),
+            "key_prefix": raw[:12],
+            "is_active": True,
+            "revoked_at": None,
+        }])
+        mock_client.return_value = sb
+
+        result = resolve_developer_key(raw)
+
+        assert result is not None
+        assert result.clerk_user_id == "legacy@example.com"
+        assert result.env == "test"
+        query.select.assert_called_once_with(
+            "user_name,key_hash,key_prefix,is_active,revoked_at"
+        )
+        assert "api_key" not in str(query.mock_calls)
