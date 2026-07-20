@@ -12,6 +12,7 @@ Endpoints (Stripe APP spec):
   GET  /app/status/:id      → provisioning status
   POST /app/deprovision/:id → remove provisioned resource
 """
+import hashlib
 import hmac
 import json
 import logging
@@ -98,7 +99,11 @@ async def provision(request: Request):
       stripe projects link algochains
     We create a developer API key and return credentials.
     """
-    from algochains_mcp.auth.key_contract import generate_platform_key, build_insert_payload
+    from algochains_mcp.auth.key_contract import (
+        build_core_mirror_payload,
+        build_insert_payload,
+        generate_platform_key,
+    )
 
     body = await _verify_request(request)
     data: dict[str, Any] = json.loads(body)
@@ -166,11 +171,14 @@ async def provision(request: Request):
                                     "Content-Type": "application/json",
                                     "Prefer": "return=minimal",
                                 },
-                                json={
-                                    "user_name": email or clerk_user_id,
-                                    "api_key": raw_key,
-                                    "developer_api_key_id": row_id,
-                                },
+                                json=build_core_mirror_payload(
+                                    raw_key=raw_key,
+                                    developer_api_key_id=str(row_id),
+                                    user_name=email or clerk_user_id,
+                                    include_plaintext=os.getenv(
+                                        "ALGOCHAINS_CORE_PLAINTEXT_KEY_FALLBACK", ""
+                                    ).lower() in {"1", "true", "yes"},
+                                ),
                             )
                     except Exception:
                         # Deliberately do not log the exception object/message: the

@@ -377,9 +377,10 @@ class SubmissionPipeline:
 
         try:
             import httpx
+            from algochains_mcp.marketplace.contracts import LISTING_CREATE_PATH
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
-                    f"{self.django_url}/api/v1/listings/create/",
+                    f"{self.django_url}{LISTING_CREATE_PATH}",
                     json=payload,
                     headers={
                         "Authorization": f"Bearer {self.api_key}",

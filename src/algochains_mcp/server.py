@@ -4228,7 +4228,7 @@ TOOLS = [
 
     # ── Support Ticket System ──────────────────────────────────────────────
     Tool(name="create_support_ticket",
-         description="Create an IT support ticket. Stores in Supabase, syncs to Notion, and sends email confirmation. Use for bug reports, billing issues, broker connection problems, or onboarding help.",
+         description="Create an idempotent IT support ticket in the canonical Django support system. Use for bug reports, billing issues, broker connection problems, or onboarding help.",
          inputSchema={"type": "object", "properties": {
              "subject": {"type": "string", "description": "Short summary (max 200 chars)"},
              "description": {"type": "string", "description": "Full problem description"},
@@ -4237,10 +4237,11 @@ TOOLS = [
              "priority": {"type": "string", "enum": ["low","medium","high","critical"], "default": "medium"},
              "user_id": {"type": "string"},
              "metadata": {"type": "object"},
+             "idempotency_key": {"type": "string", "description": "Stable caller event ID used to deduplicate retries."},
          }, "required": ["subject","description","user_email"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_support_ticket",
-         description="Get a support ticket by ID. Returns full ticket details including status, responses, and Notion page link.",
+         description="Get a canonical support ticket by ID, including status and responses.",
          inputSchema={"type": "object", "properties": {"ticket_id": {"type": "string"}}, "required": ["ticket_id"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="list_support_tickets",
@@ -10055,6 +10056,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 priority=arguments.get("priority", "medium"),
                 user_id=arguments.get("user_id"),
                 metadata=arguments.get("metadata"),
+                idempotency_key=arguments.get("idempotency_key"),
             ))
         except KeyError as exc:
             return _text({"error": f"Missing required argument: {exc}"})

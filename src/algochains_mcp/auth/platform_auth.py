@@ -70,7 +70,7 @@ def _load_session() -> dict[str, Any]:
 
 async def _sync_algochains_core_insert(*, developer_api_key_id: str, user_name: str, raw_key: str) -> None:
     """
-    Unify access: mirror a freshly-minted ac_live_/ac_test_ key into
+    Unify access: mirror a freshly-minted ac_live_/ac_test_ key hash into
     public."algochains-core" — the separate, pre-existing allow-list table
     that gates algochains-library-mcp (the backtesting-library MCP package).
     Best-effort — never raises, so a mirror failure can't block key creation.
@@ -79,17 +79,21 @@ async def _sync_algochains_core_insert(*, developer_api_key_id: str, user_name: 
     if not (_SUPABASE_URL and _SUPABASE_SERVICE_KEY):
         return
     import httpx
+    from .key_contract import build_core_mirror_payload
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             await client.post(
                 f"{_SUPABASE_URL}/rest/v1/algochains-core",
                 headers={**_service_headers(), "Prefer": "return=minimal"},
-                json={
-                    "user_name": user_name,
-                    "api_key": raw_key,
-                    "developer_api_key_id": developer_api_key_id,
-                },
+                json=build_core_mirror_payload(
+                    raw_key=raw_key,
+                    developer_api_key_id=developer_api_key_id,
+                    user_name=user_name,
+                    include_plaintext=os.environ.get(
+                        "ALGOCHAINS_CORE_PLAINTEXT_KEY_FALLBACK", ""
+                    ).lower() in {"1", "true", "yes"},
+                ),
             )
     except Exception:
         # Deliberately do not log the exception object/message: this request's
@@ -102,16 +106,21 @@ async def _sync_algochains_core_insert(*, developer_api_key_id: str, user_name: 
 
 
 async def _sync_algochains_core_delete(*, developer_api_key_id: str) -> None:
-    """Remove the algochains-core mirror row(s) for a revoked developer key."""
+    """Deactivate the mirror row(s) for a revoked developer key."""
     if not (_SUPABASE_URL and _SUPABASE_SERVICE_KEY):
         return
     import httpx
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.delete(
+            await client.patch(
                 f"{_SUPABASE_URL}/rest/v1/algochains-core?developer_api_key_id=eq.{developer_api_key_id}",
                 headers={**_service_headers(), "Prefer": "return=minimal"},
+                json={
+                    "is_active": False,
+                    "revoked_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "api_key": None,
+                },
             )
     except Exception:
         logger.warning("_sync_algochains_core_delete: mirror delete failed")
