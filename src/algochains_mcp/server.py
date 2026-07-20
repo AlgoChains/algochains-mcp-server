@@ -1528,27 +1528,8 @@ TOOLS = [
             },
             "required": ["broker"],
         },
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "positions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "symbol": {"type": "string"},
-                            "qty": {"type": "number"},
-                            "side": {"type": "string"},
-                            "avg_entry_price": {"type": "number"},
-                            "current_price": {"type": "number"},
-                            "unrealized_pnl": {"type": "number"},
-                            "market_value": {"type": "number"},
-                        },
-                    },
-                },
-                "count": {"type": "integer"},
-            },
-        },
+        # No outputSchema: TextContent JSON only (structuredContent gap breaks
+        # OpenClaw / Cursor MCP clients — same class as get_quote).
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
@@ -1565,28 +1546,7 @@ TOOLS = [
             },
             "required": ["broker"],
         },
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "orders": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "order_id": {"type": "string"},
-                            "symbol": {"type": "string"},
-                            "side": {"type": "string"},
-                            "qty": {"type": "number"},
-                            "order_type": {"type": "string"},
-                            "status": {"type": "string"},
-                            "filled_qty": {"type": "number"},
-                            "limit_price": {"type": "number"},
-                        },
-                    },
-                },
-                "count": {"type": "integer"},
-            },
-        },
+        # No outputSchema: TextContent JSON only (structuredContent gap).
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
@@ -6023,12 +5983,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_positions":
         conn = _require_broker(registry, arguments["broker"])
         positions = await conn.get_positions()
-        return _text([p.to_dict() for p in positions])
+        rows = [p.to_dict() for p in positions]
+        return _text({"positions": rows, "count": len(rows), "broker": arguments["broker"]})
 
     elif name == "get_orders":
         conn = _require_broker(registry, arguments["broker"])
         orders = await conn.get_orders(arguments.get("status"))
-        return _text([o.to_dict() for o in orders])
+        rows = [o.to_dict() for o in orders]
+        return _text({"orders": rows, "count": len(rows), "broker": arguments["broker"]})
 
     elif name in ("portfolio_summary", "get_portfolio_summary"):
         summary = {"brokers": {}, "total_equity": 0.0, "total_positions": 0}
