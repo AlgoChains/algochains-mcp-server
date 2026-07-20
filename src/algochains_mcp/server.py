@@ -5616,6 +5616,26 @@ def _require_broker(registry: BrokerRegistry, broker_name: str):
     return conn
 
 
+async def _require_broker_or_connect(registry: BrokerRegistry, broker_name: str):
+    """Like _require_broker, but warm the pool once (same as get_quote).
+
+    Fresh MCP subprocesses (OpenClaw ac_mcp, Cursor) start with brokers
+    configured but cold. Live-ops reads should not fail closed on that —
+    connect_all once, then require.
+    """
+    try:
+        return _require_broker(registry, broker_name)
+    except BrokerNotConnectedError:
+        results = await registry.connect_all()
+        if not results.get(broker_name):
+            raise BrokerNotConnectedError(
+                f"Broker '{broker_name}' is configured but connect failed. "
+                f"Call connect_broker first. connect_result={results.get(broker_name)!r}",
+                broker=broker_name,
+            )
+        return _require_broker(registry, broker_name)
+
+
 async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -> list[TextContent]:
     """Route tool calls to their implementations."""
     args = arguments  # alias used by some handlers
@@ -5976,23 +5996,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── Portfolio ────────────────────────────────────────────
     elif name == "get_account":
-        conn = _require_broker(registry, arguments["broker"])
+        conn = await _require_broker_or_connect(registry, arguments["broker"])
         acct = await conn.get_account()
         return _text(acct.to_dict())
 
     elif name == "get_positions":
-        conn = _require_broker(registry, arguments["broker"])
+        conn = await _require_broker_or_connect(registry, arguments["broker"])
         positions = await conn.get_positions()
         rows = [p.to_dict() for p in positions]
         return _text({"positions": rows, "count": len(rows), "broker": arguments["broker"]})
 
     elif name == "get_orders":
-        conn = _require_broker(registry, arguments["broker"])
+        conn = await _require_broker_or_connect(registry, arguments["broker"])
         orders = await conn.get_orders(arguments.get("status"))
         rows = [o.to_dict() for o in orders]
         return _text({"orders": rows, "count": len(rows), "broker": arguments["broker"]})
 
     elif name in ("portfolio_summary", "get_portfolio_summary"):
+        # Warm cold pool so a fresh MCP subprocess does not return empty brokers{}
+        if not registry.list_available() and registry.list_configured():
+            await registry.connect_all()
         summary = {"brokers": {}, "total_equity": 0.0, "total_positions": 0}
         for bname in registry.list_available():
             conn = registry.get(bname)
@@ -6016,18 +6039,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             broker_name = arguments["broker"]
             try:
-                conn = _require_broker(registry, broker_name)
-            except BrokerNotConnectedError:
-                results = await registry.connect_all()
-                if not results.get(broker_name):
-                    return _text({
-                        "error": f"Broker '{broker_name}' configured but connect failed",
-                        "ok": False,
-                        "broker": broker_name,
-                        "symbol": arguments.get("symbol"),
-                        "connect_result": results.get(broker_name),
-                    })
-                conn = _require_broker(registry, broker_name)
+                conn = await _require_broker_or_connect(registry, broker_name)
+            except BrokerNotConnectedError as e:
+                return _text({
+                    "error": str(e),
+                    "ok": False,
+                    "broker": broker_name,
+                    "symbol": arguments.get("symbol"),
+                })
             quote = await conn.get_quote(arguments["symbol"])
             return _text(quote.to_dict())
         except Exception as e:
