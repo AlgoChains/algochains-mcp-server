@@ -324,8 +324,12 @@ def validate_arguments(tool_name: str, arguments: dict) -> dict:
     - Truncates oversized strings to MAX_STRING_LENGTH
     - Truncates oversized lists to MAX_LIST_LENGTH
     - Strips leading/trailing whitespace from string values
+    - Strips unsigned internal auth-context keys (stdio/dynamic spoof guard)
     - Raises InputValidationError for missing required fields
     """
+    from .security.internal_auth_context import strip_untrusted_internal_auth
+
+    arguments = strip_untrusted_internal_auth(dict(arguments or {}))
     cleaned: dict[str, Any] = {}
     for key, value in arguments.items():
         if isinstance(value, str):

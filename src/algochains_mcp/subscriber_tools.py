@@ -750,6 +750,42 @@ def _audit_live_delivery(
         pass
 
 
+def _verify_signal_for_subscriber(
+    sb,
+    subscriber_id: str,
+    signal_id: str,
+    bot: str | None,
+) -> tuple[bool, str | None, dict[str, Any] | None]:
+    """Ensure signal_id exists and belongs to a bot the subscriber follows."""
+    try:
+        sig = (
+            sb.table("copy_trade_signals")
+            .select("id,bot,symbol,side,qty")
+            .eq("id", signal_id)
+            .maybe_single()
+            .execute()
+        )
+        sig_row = getattr(sig, "data", None) or {}
+    except Exception as exc:
+        return False, f"signal_lookup_failed:{exc}", None
+    if not sig_row:
+        return False, "signal_not_found", None
+
+    signal_bot = (sig_row.get("bot") or "").upper()
+    if bot and signal_bot and signal_bot != (bot or "").upper():
+        return False, "signal_bot_mismatch", sig_row
+
+    try:
+        assignments = _list_active_assignments(sb, subscriber_id)
+    except PaperDataUnavailable:
+        return False, "assignments_unavailable", sig_row
+
+    allowed = {a["bot"] for a in assignments if not a.get("paused")}
+    if signal_bot not in allowed:
+        return False, "signal_not_assigned", sig_row
+    return True, None, sig_row
+
+
 def report_fill(
     subscriber_id: str,
     *,
@@ -765,6 +801,7 @@ def report_fill(
     error_msg: str | None = None,
     bracket_id: str | None = None,
     is_paper: bool = False,
+    daemon_authorized: bool = False,
 ) -> dict[str, Any]:
     """
     Daemon callback: persist a fill the local copy-trader executed.
@@ -783,25 +820,60 @@ def report_fill(
         return _err("supabase_unavailable")
     if fill_kind not in ("entry", "exit", "modify", "reject"):
         return _err("invalid_fill_kind", got=fill_kind)
-    # Security: default-scoped subscribers must not forge authoritative P&L.
-    # Accept pnl_usd only when correlated to a signal/order (daemon callback).
-    # Uncorrelated self-reported fills store pnl as NULL and mark non-authoritative.
-    authoritative = bool(signal_id or tradovate_order_id)
-    stored_pnl = pnl_usd if authoritative else None
-    if pnl_usd is not None and not authoritative:
+
+    bot_upper = (bot or "").upper()
+    stored_pnl: float | None = None
+    pnl_rejected_reason: str | None = None
+
+    if pnl_usd is not None:
+        if not daemon_authorized:
+            pnl_rejected_reason = "subscriber_key_cannot_write_authoritative_pnl"
+        elif not signal_id:
+            pnl_rejected_reason = "authoritative_pnl_requires_verified_signal_id"
+        else:
+            ok, verify_err, _sig_row = _verify_signal_for_subscriber(
+                sb, subscriber_id, signal_id, bot_upper
+            )
+            if not ok:
+                pnl_rejected_reason = verify_err or "signal_verification_failed"
+            else:
+                stored_pnl = pnl_usd
+
+    if pnl_rejected_reason:
+        error_msg = (
+            (error_msg + " | " if error_msg else "") + pnl_rejected_reason
+        )
+
+    if signal_id and fill_kind in ("entry", "exit", "modify"):
+        ok, verify_err, sig_row = _verify_signal_for_subscriber(
+            sb, subscriber_id, signal_id, bot_upper
+        )
+        if not ok:
+            return _err(verify_err or "signal_verification_failed", signal_id=signal_id)
+        if sig_row:
+            symbol = symbol or sig_row.get("symbol") or symbol
+            side = side or sig_row.get("side") or side
+            if not qty:
+                qty = int(sig_row.get("qty") or 0)
+
+    # Subscriber-origin fills without daemon auth never store self-reported order IDs
+    # as broker truth; daemon callback may attach tradovate_order_id after verify.
+    stored_order_id = tradovate_order_id if daemon_authorized else None
+    if tradovate_order_id and not daemon_authorized:
         error_msg = (
             (error_msg + " | " if error_msg else "")
-            + "unverified_self_reported_pnl_ignored"
+            + "subscriber_key_cannot_attach_tradovate_order_id"
         )
+
     payload = {
         "subscriber_id": subscriber_id,
         "signal_id": signal_id,
-        "bot": (bot or "").upper(),
+        "bot": bot_upper,
         "symbol": symbol,
         "side": (side or "").upper(),
         "qty": int(qty),
         "fill_price": fill_price,
-        "tradovate_order_id": tradovate_order_id,
+        "tradovate_order_id": stored_order_id,
         "pnl_usd": stored_pnl,
         "fill_kind": fill_kind,
         "error_msg": error_msg,
@@ -848,7 +920,33 @@ def report_fill(
         "subscriber_id": subscriber_id,
         "fill_id": (rows[0].get("id") if rows else None),
         "duplicate": False,
+        "pnl_stored": stored_pnl is not None,
+        "daemon_authorized": daemon_authorized,
     }
+
+
+def call_subscriber_tool(
+    name: str,
+    subscriber_id: str,
+    arguments: dict[str, Any],
+    *,
+    daemon_authorized: bool = False,
+) -> dict[str, Any]:
+    """Route a subscriber-scoped tool call. The bridge has already validated scope."""
+    handler = SUBSCRIBER_TOOL_HANDLERS.get(name)
+    if handler is None:
+        return _err("unknown_subscriber_tool", tool=name)
+    args = dict(arguments or {})
+    args.pop("subscriber_id", None)  # never trust caller-supplied id
+    if name in ("report_fill", "heartbeat") and daemon_authorized:
+        args["daemon_authorized"] = True
+    try:
+        return handler(subscriber_id, **args)
+    except TypeError as exc:
+        return _err("bad_arguments", tool=name, detail=str(exc))
+    except Exception as exc:
+        log.exception("subscriber tool %s failed", name)
+        return _err("handler_failed", tool=name, detail=str(exc))
 
 
 def heartbeat(
@@ -859,6 +957,7 @@ def heartbeat(
     fills_today: int | None = None,
     pnl_today_usd: float | None = None,
     notes: str | None = None,
+    daemon_authorized: bool = False,
 ) -> dict[str, Any]:
     """Upsert one row in subscriber_heartbeats (PK = subscriber_id)."""
     sb = _service_client()
@@ -875,7 +974,13 @@ def heartbeat(
     if fills_today is not None:
         payload["fills_today"] = int(fills_today)
     if pnl_today_usd is not None:
-        payload["pnl_today_usd"] = float(pnl_today_usd)
+        if not daemon_authorized:
+            notes = (
+                (notes + " | " if notes else "")
+                + "subscriber_key_cannot_write_authoritative_pnl_today"
+            )
+        else:
+            payload["pnl_today_usd"] = float(pnl_today_usd)
     if notes is not None:
         payload["notes"] = notes
     try:
@@ -1208,23 +1313,3 @@ SUBSCRIBER_TOOL_SCOPES = {
 }
 
 SUBSCRIBER_TOOLS = frozenset(SUBSCRIBER_TOOL_HANDLERS.keys())
-
-
-def call_subscriber_tool(
-    name: str,
-    subscriber_id: str,
-    arguments: dict[str, Any],
-) -> dict[str, Any]:
-    """Route a subscriber-scoped tool call. The bridge has already validated scope."""
-    handler = SUBSCRIBER_TOOL_HANDLERS.get(name)
-    if handler is None:
-        return _err("unknown_subscriber_tool", tool=name)
-    args = dict(arguments or {})
-    args.pop("subscriber_id", None)  # never trust caller-supplied id
-    try:
-        return handler(subscriber_id, **args)
-    except TypeError as exc:
-        return _err("bad_arguments", tool=name, detail=str(exc))
-    except Exception as exc:
-        log.exception("subscriber tool %s failed", name)
-        return _err("handler_failed", tool=name, detail=str(exc))

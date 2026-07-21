@@ -65,6 +65,8 @@ from .tool_policy import (
 )
 from .otel_tracing import redacted_argument_hash, trace_span
 from .paths import default_control_tower
+from .security.internal_auth_context import attach_trusted_developer_context
+from .daemon_callback_auth import verify_daemon_callback_key
 
 log = logging.getLogger(__name__)
 
@@ -196,6 +198,7 @@ async def handle_mcp_request(
     subscriber: ResolvedSubscriber | None = None,
     developer: ResolvedDeveloper | None = None,
     caller_scope: str | None = None,
+    daemon_callback_authorized: bool = False,
 ) -> dict:
     """
     Route an MCP tool call from the HTTP bridge.
@@ -223,7 +226,12 @@ async def handle_mcp_request(
                 "tool": tool_name,
                 "required_scope": required_scope,
             }
-        return call_subscriber_tool(tool_name, subscriber.subscriber_id, arguments)
+        return call_subscriber_tool(
+            tool_name,
+            subscriber.subscriber_id,
+            arguments,
+            daemon_authorized=daemon_callback_authorized,
+        )
 
     # ── 2. Developer surface ──────────────────────────────────────────────
     if developer is not None:
@@ -240,9 +248,11 @@ async def handle_mcp_request(
         # Inject scopes/identity for sandbox + budget tools (stripped before audit hash).
         try:
             from algochains_mcp import server as _server
-            call_args = dict(arguments or {})
-            call_args["_developer_scopes"] = list(developer.scopes or ())
-            call_args["_clerk_user_id"] = getattr(developer, "clerk_user_id", "") or ""
+            call_args = attach_trusted_developer_context(
+                dict(arguments or {}),
+                scopes=tuple(developer.scopes or ()),
+                clerk_user_id=getattr(developer, "clerk_user_id", "") or "",
+            )
             with trace_span(
                 "mcp.tool.call",
                 {
@@ -607,6 +617,7 @@ def create_fastapi_app():
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
         x_algochains_caller_scope: str | None = Header(default=None),
+        x_daemon_callback_token: str | None = Header(default=None),
     ):
         from .developer_rate_limiter import (
             MAX_BODY_BYTES,
@@ -679,6 +690,7 @@ def create_fastapi_app():
             subscriber=subscriber,
             developer=developer,
             caller_scope=caller_scope,
+            daemon_callback_authorized=verify_daemon_callback_key(x_daemon_callback_token),
         )
         return result
 

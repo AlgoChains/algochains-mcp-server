@@ -2021,7 +2021,7 @@ TOOLS = [
     # ── V6: Notifications ─────────────────────────────────────
     Tool(
         name="configure_notifications",
-        description="Configure notification channels: slack, email, discord, telegram, mobile push (FCM/APNS).",
+        description="Configure notification channels (owner-only). Slack/Discord webhook URLs are SSRF-checked.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -2030,15 +2030,16 @@ TOOLS = [
                 "api_key": {"type": "string", "description": "API key (for email/FCM)"},
                 "bot_token": {"type": "string", "description": "Bot token (for Telegram)"},
                 "chat_id": {"type": "string", "description": "Chat ID (for Telegram)"},
+                "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"},
             },
-            "required": ["channel"],
+            "required": ["channel", "owner_token"],
         },
     
         annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="send_notification",
-        description="Send a notification across configured channels. Supports order fills, P&L alerts, drawdown warnings, and custom messages.",
+        description="Send a notification across owner-configured channels. Outbound webhook channels require owner_token.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -2047,6 +2048,7 @@ TOOLS = [
                 "body": {"type": "string"},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"], "default": "medium"},
                 "channels": {"type": "array", "items": {"type": "string"}, "description": "Override default channels"},
+                "owner_token": {"type": "string", "description": "Required when channels include slack/discord/telegram/email/fcm/apns"},
             },
             "required": ["title", "body"],
         },
@@ -3918,10 +3920,11 @@ TOOLS = [
              "limit": {"type": "integer", "default": 50, "description": "Max listings to return"},
          }, "required": []},
          annotations=ANNOT_READ_ONLY),
-    Tool(name="get_subscriber_bots", description="Get all active bot subscriptions for a given subscriber. Returns listing details, status, and join date. Requires SUPABASE_SERVICE_ROLE_KEY. Pass user_id as email or UUID.",
+    Tool(name="get_subscriber_bots", description="Owner-only: list bot assignments for a subscriber (service_role lookup). Subscribers should use get_my_assignments on their API key. REQUIRES owner_token.",
          inputSchema={"type": "object", "properties": {
-             "user_id": {"type": "string", "description": "Subscriber email address or UUID"},
-         }, "required": ["user_id"]},
+             "subscriber_id": {"type": "string", "description": "Subscriber UUID"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"},
+         }, "required": ["subscriber_id", "owner_token"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="deliver_strategy_to_subscriber",
          description="Deliver an approved marketplace strategy config to a subscriber's bot endpoint. "
@@ -6779,21 +6782,30 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── V6: Notifications ────────────────────────────────────
     elif name == "configure_notifications":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "configure_notifications requires owner_token matching OWNER_API_TOKEN.",
+            })
         notifier = _get_notifier()
         ch = arguments["channel"]
-        if ch == "slack":
-            notifier.configure_slack(arguments.get("webhook_url", ""))
-        elif ch == "email":
-            notifier.configure_email(arguments.get("api_key", ""))
-        elif ch == "discord":
-            notifier.configure_discord(arguments.get("webhook_url", ""))
-        elif ch == "telegram":
-            notifier.configure_telegram(arguments.get("bot_token", ""), arguments.get("chat_id", ""))
-        elif ch in ("fcm", "apns"):
-            notifier.configure_mobile_push(
-                fcm_key=arguments.get("api_key", "") if ch == "fcm" else "",
-                apns_cert=arguments.get("api_key", "") if ch == "apns" else "",
-            )
+        try:
+            if ch == "slack":
+                notifier.configure_slack(arguments.get("webhook_url", ""))
+            elif ch == "email":
+                notifier.configure_email(arguments.get("api_key", ""))
+            elif ch == "discord":
+                notifier.configure_discord(arguments.get("webhook_url", ""))
+            elif ch == "telegram":
+                notifier.configure_telegram(arguments.get("bot_token", ""), arguments.get("chat_id", ""))
+            elif ch in ("fcm", "apns"):
+                notifier.configure_mobile_push(
+                    fcm_key=arguments.get("api_key", "") if ch == "fcm" else "",
+                    apns_cert=arguments.get("api_key", "") if ch == "apns" else "",
+                )
+        except ValueError as exc:
+            return _text({"error": str(exc), "channel": ch})
         return _text({"channel": ch, "status": "configured", "all_channels": notifier.configured_channels()})
 
     elif name == "send_notification":
@@ -6805,6 +6817,21 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         event_str = arguments.get("event", "bot_status")
         event = NotificationEvent(event_str) if event_str != "custom" else NotificationEvent.BOT_STATUS
         channels = [NotificationChannel(c) for c in arguments.get("channels", [])] or [NotificationChannel.WEBSOCKET]
+        outbound = {
+            NotificationChannel.SLACK,
+            NotificationChannel.DISCORD,
+            NotificationChannel.TELEGRAM,
+            NotificationChannel.EMAIL,
+            NotificationChannel.FCM,
+            NotificationChannel.APNS,
+        }
+        if any(c in outbound for c in channels):
+            _owner_token_provided = arguments.get("owner_token", "")
+            _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+                return _text({
+                    "error": "send_notification with outbound channels requires owner_token matching OWNER_API_TOKEN.",
+                })
         notification = Notification(
             event=event,
             priority=NotificationPriority(arguments.get("priority", "medium")),
@@ -9641,10 +9668,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_subscriber_bots":
         try:
             from .marketplace.supabase_tools import get_subscriber_bots as _sb_subs
-            user_id = args.get("user_id", "")
-            if not user_id:
-                return _text({"error": "user_id is required (email or UUID)"})
-            return _text(_sb_subs(user_id))
+            _owner_token_provided = args.get("owner_token", "")
+            _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+            owner_ok = bool(_expected_owner_token and _owner_token_provided == _expected_owner_token)
+            subscriber_id = args.get("subscriber_id", "") or args.get("user_id", "")
+            if not subscriber_id:
+                return _text({"error": "subscriber_id is required"})
+            return _text(_sb_subs(subscriber_id, owner_authorized=owner_ok))
         except Exception as exc:
             return _text({"error": f"Subscriber bots error: {exc}"})
 

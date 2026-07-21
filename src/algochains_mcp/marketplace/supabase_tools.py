@@ -191,19 +191,37 @@ def get_live_bot_metrics(bot_id: str | None = None) -> dict[str, Any]:
         return {"error": str(exc), "bots": [], "source": "supabase_error"}
 
 
-def get_subscriber_bots(user_id: str) -> dict[str, Any]:
+def get_subscriber_bots(
+    subscriber_id: str,
+    *,
+    owner_authorized: bool = False,
+) -> dict[str, Any]:
     """
-    Fetch active bot assignments for a given subscriber.
+    Fetch active bot assignments for a subscriber.
 
-    Uses service_role key to bypass RLS — this function must only be called
-    server-side with a verified user_id (never expose to untrusted clients).
+    Uses service_role key to bypass RLS. Cross-subscriber lookup requires
+    ``owner_authorized=True`` (caller verified OWNER_API_TOKEN). Subscribers
+    should use ``get_my_assignments`` on the subscriber tool surface instead.
 
     Args:
-        user_id: Subscriber ID or email to look up
+        subscriber_id: Subscriber UUID to look up
+        owner_authorized: True when caller passed owner_token gate
 
     Returns:
         Dict with keys: subscriptions (list), total, active, source
     """
+    if not owner_authorized:
+        return {
+            "error": (
+                "get_subscriber_bots requires owner_token matching OWNER_API_TOKEN. "
+                "Subscribers: use get_my_assignments on your subscriber API key."
+            ),
+            "subscriptions": [],
+        }
+
+    if not (subscriber_id or "").strip():
+        return {"error": "subscriber_id is required", "subscriptions": []}
+
     sb = _get_sb_client(use_service_role=True)
     if sb is None:
         return {"error": "Supabase service_role not configured", "subscriptions": []}
@@ -214,7 +232,7 @@ def get_subscriber_bots(user_id: str) -> dict[str, Any]:
             .select(
                 "bot,mode,paused,size_multiplier,max_contracts,daily_loss_cap_usd,created_at,updated_at"
             )
-            .eq("subscriber_id", user_id)
+            .eq("subscriber_id", subscriber_id.strip())
             .order("bot")
         )
 
@@ -226,44 +244,14 @@ def get_subscriber_bots(user_id: str) -> dict[str, Any]:
             "total": len(subs),
             "active": sum(1 for s in subs if not s.get("paused")),
             "source": "supabase",
+            "subscriber_id": subscriber_id.strip(),
         }
     except Exception as exc:
         log.error("get_subscriber_bots failed: %s", exc)
         return {"error": str(exc), "subscriptions": [], "source": "supabase_error"}
 
 
-_PRIVATE_NETWORK_PREFIXES = (
-    "http://localhost",
-    "http://127.",
-    "http://10.",
-    "http://192.168.",
-    "http://172.16.",
-    "http://172.17.",
-    "http://172.18.",
-    "http://172.19.",
-    "http://172.2",
-    "http://172.3",
-    "https://localhost",
-    "https://127.",
-    "https://10.",
-    "https://192.168.",
-    "https://172.16.",
-    "https://172.17.",
-    "https://172.18.",
-    "https://172.19.",
-    "https://172.2",
-    "https://172.3",
-    "file://",
-    "ftp://",
-    "http://0.",
-    "http://169.254.",  # link-local (AWS metadata)
-)
-
-
-def _is_ssrf_target(url: str) -> bool:
-    """Return True if the URL targets a private/link-local/loopback address."""
-    lower = (url or "").lower()
-    return any(lower.startswith(prefix) for prefix in _PRIVATE_NETWORK_PREFIXES)
+from ..security.ssrf_guard import is_ssrf_target as _is_ssrf_target, validate_webhook_url
 
 
 def deliver_strategy_to_subscriber(
@@ -304,11 +292,9 @@ def deliver_strategy_to_subscriber(
     import uuid as _uuid
 
     # ── Step 0: SSRF guard on caller-supplied webhook URL ─────────────────────
-    if webhook_url and _is_ssrf_target(webhook_url):
-        return {
-            "error": f"Blocked: webhook_url targets a private or link-local address. "
-                     f"Provide an externally reachable HTTPS endpoint.",
-        }
+    ssrf_err = validate_webhook_url(webhook_url or "")
+    if ssrf_err:
+        return {"error": ssrf_err}
 
     sb = _get_sb_client(use_service_role=True)
     if sb is None:
