@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+from ..security.ssrf_guard import validate_webhook_url
+
 logger = logging.getLogger("algochains_mcp.notifications")
 
 
@@ -120,6 +122,9 @@ class NotificationDispatcher:
         self._preferences: dict[str, NotificationPreferences] = {}
 
     def configure_slack(self, webhook_url: str) -> None:
+        err = validate_webhook_url(webhook_url)
+        if err:
+            raise ValueError(err)
         self._channels[NotificationChannel.SLACK] = {"webhook_url": webhook_url}
         logger.info("Slack notifications configured")
 
@@ -128,6 +133,9 @@ class NotificationDispatcher:
         logger.info("Email notifications configured")
 
     def configure_discord(self, webhook_url: str) -> None:
+        err = validate_webhook_url(webhook_url)
+        if err:
+            raise ValueError(err)
         self._channels[NotificationChannel.DISCORD] = {"webhook_url": webhook_url}
         logger.info("Discord notifications configured")
 
@@ -146,9 +154,19 @@ class NotificationDispatcher:
     def set_preferences(self, user_id: str, prefs: NotificationPreferences) -> None:
         self._preferences[user_id] = prefs
 
-    async def send(self, notification: Notification) -> dict:
-        """Dispatch a notification to all configured channels."""
+    async def send(
+        self,
+        notification: Notification,
+        *,
+        channel_overrides: dict[NotificationChannel, dict[str, Any]] | None = None,
+    ) -> dict:
+        """Dispatch a notification to configured channels.
+
+        ``channel_overrides`` supplies per-request webhook config (SSRF-checked)
+        instead of mutating the process-global channel registry.
+        """
         results: dict[str, str] = {}
+        overrides = channel_overrides or {}
 
         # Check user preferences
         prefs = self._preferences.get(notification.user_id)
@@ -159,27 +177,28 @@ class NotificationDispatcher:
                 return {"skipped": "Event type not subscribed"}
 
         for channel in notification.channels:
-            if channel not in self._channels:
+            cfg = overrides.get(channel) or self._channels.get(channel)
+            if cfg is None:
                 results[channel.value] = "not_configured"
                 continue
 
             try:
                 if channel == NotificationChannel.SLACK:
-                    await self._send_slack(notification)
+                    await self._send_slack(notification, cfg)
                     results[channel.value] = "sent"
                 elif channel == NotificationChannel.EMAIL:
-                    await self._send_email(notification)
+                    await self._send_email(notification, cfg)
                     results[channel.value] = "sent"
                 elif channel == NotificationChannel.DISCORD:
-                    await self._send_discord(notification)
+                    await self._send_discord(notification, cfg)
                     results[channel.value] = "sent"
                 elif channel == NotificationChannel.TELEGRAM:
-                    await self._send_telegram(notification)
+                    await self._send_telegram(notification, cfg)
                     results[channel.value] = "sent"
                 elif channel == NotificationChannel.WEBSOCKET:
                     results[channel.value] = "queued"
                 elif channel in (NotificationChannel.FCM, NotificationChannel.APNS):
-                    await self._send_mobile_push(notification, channel)
+                    await self._send_mobile_push(notification, channel, cfg)
                     results[channel.value] = "sent"
             except Exception as e:
                 logger.error("Failed to send %s notification: %s", channel.value, e)
@@ -192,18 +211,19 @@ class NotificationDispatcher:
 
         return results
 
-    async def _send_slack(self, n: Notification) -> None:
+    async def _send_slack(self, n: Notification, cfg: dict[str, Any]) -> None:
         import httpx
-        cfg = self._channels[NotificationChannel.SLACK]
+        err = validate_webhook_url(cfg.get("webhook_url", ""))
+        if err:
+            raise ValueError(err)
         emoji = {"critical": "🚨", "high": "🔔", "medium": "📊", "low": "ℹ️"}.get(n.priority.value, "")
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
             await client.post(cfg["webhook_url"], json={
                 "text": f"{emoji} *{n.title}*\n{n.body}",
             })
 
-    async def _send_email(self, n: Notification) -> None:
+    async def _send_email(self, n: Notification, cfg: dict[str, Any]) -> None:
         import httpx
-        cfg = self._channels[NotificationChannel.EMAIL]
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
             await client.post(
                 "https://api.resend.com/emails",
@@ -216,24 +236,30 @@ class NotificationDispatcher:
                 },
             )
 
-    async def _send_discord(self, n: Notification) -> None:
+    async def _send_discord(self, n: Notification, cfg: dict[str, Any]) -> None:
         import httpx
-        cfg = self._channels[NotificationChannel.DISCORD]
+        err = validate_webhook_url(cfg.get("webhook_url", ""))
+        if err:
+            raise ValueError(err)
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
             await client.post(cfg["webhook_url"], json={
                 "content": f"**{n.title}**\n{n.body}",
             })
 
-    async def _send_telegram(self, n: Notification) -> None:
+    async def _send_telegram(self, n: Notification, cfg: dict[str, Any]) -> None:
         import httpx
-        cfg = self._channels[NotificationChannel.TELEGRAM]
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
             await client.post(
                 f"https://api.telegram.org/bot{cfg['bot_token']}/sendMessage",
                 json={"chat_id": cfg["chat_id"], "text": f"*{n.title}*\n{n.body}", "parse_mode": "Markdown"},
             )
 
-    async def _send_mobile_push(self, n: Notification, channel: NotificationChannel) -> None:
+    async def _send_mobile_push(
+        self,
+        n: Notification,
+        channel: NotificationChannel,
+        cfg: dict[str, Any],
+    ) -> None:
         """
         Send native mobile push via FCM (Android/web) or APNS (iOS).
 
@@ -243,7 +269,7 @@ class NotificationDispatcher:
 
         Install: pip install firebase-admin  (FCM)  or  pip install apns2  (APNS)
         """
-        cfg = self._channels.get(channel, {})
+        cfg = cfg or self._channels.get(channel, {})
 
         # FCM path (Firebase Admin SDK)
         if cfg.get("fcm_server_key") or cfg.get("fcm_service_account_file"):
