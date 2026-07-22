@@ -99,7 +99,7 @@ _TOOL_OVERRIDES: dict[str, dict[str, Any]] = {
         "notes": "Reads control-tower state/sonia_air_heartbeat.json and fails closed when unavailable.",
     },
 
-    # ── Cricket bot (Avi's external partner API — Avi Predictions listing) ──
+    # ── Cricket bot (Avi's external partner API — Agent Cricket007 listing) ──
     "get_cricket_bot_performance": {
         "implementation_status": "full",
         "required_env": ["CRICKET_BOT_API_KEY", "CRICKET_BOT_API_URL"],
