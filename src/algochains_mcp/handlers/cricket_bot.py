@@ -6,7 +6,7 @@ Source repo: github.com/aviralthebuilder/cricket-bot-api. Contract:
   Auth:      X-API-Key header on every request (CRICKET_BOT_API_KEY)
   Endpoints: /performance /trades /matches /signals /tournaments
 
-These handlers are advisory observability for the marketplace "Avi Predictions"
+These handlers are advisory observability for the marketplace "Agent Cricket007"
 listing. They never read broker state, never place orders, and are never part
 of any trading/risk path. Fail-closed: when env vars are missing or the API is
 unreachable they return an explicit error dict — no mock data, no fallbacks.

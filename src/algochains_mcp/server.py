@@ -3098,10 +3098,10 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     # ═══════════════════════════════════════════════════════════════
-    # Cricket Bot (Avi's external partner API — Avi Predictions listing, 5 tools)
+    # Cricket Bot (Avi's external partner API — Agent Cricket007 listing, 5 tools)
     # Read-only observability; advisory only, never a trading dependency.
     # ═══════════════════════════════════════════════════════════════
-    Tool(name="get_cricket_bot_performance", description="Aggregate cricket-bot stats from Avi's partner API: win rate, total P&L, best/worst trade. Filter by platform (polymarket|kalshi|all), tournament ('MLC 2026' exact or 'MLC' any year), innings (1|2). Read-only, advisory; backs the Avi Predictions marketplace listing.",
+    Tool(name="get_cricket_bot_performance", description="Aggregate cricket-bot stats from Avi's partner API: win rate, total P&L, best/worst trade. Filter by platform (polymarket|kalshi|all), tournament ('MLC 2026' exact or 'MLC' any year), innings (1|2). Read-only, advisory; backs the Agent Cricket007 marketplace listing.",
          inputSchema={"type": "object", "properties": {"platform": {"type": "string", "enum": ["all", "polymarket", "kalshi"], "default": "all"}, "tournament": {"type": "string", "description": "e.g. 'MLC 2026' (exact) or 'MLC' (any year)"}, "innings": {"type": "integer", "enum": [1, 2], "description": "1 = first innings, 2 = chase"}}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="get_cricket_bot_trades", description="Cricket-bot individual trade history: player, tier (STAR|IN-FORM|LOW), entry/exit probability prices, size_usdc, pnl_usdc, exit_reason. Each trade carries platform=polymarket|kalshi. Paginated (limit max 500). Read-only, advisory.",
