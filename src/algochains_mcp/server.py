@@ -9407,6 +9407,15 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name in ("dispatch_tower_job", "get_tower_job_status", "get_tower_health", "list_tower_jobs"):
         import os as _os_tower
         import sys as _sys
+        # ASSP AC-MCP-007: deny before importing dispatcher (fail-closed without CT path)
+        if name == "dispatch_tower_job":
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                return _text({
+                    "error": "owner_token required for dispatch_tower_job",
+                    "assp_rule": "AC-MCP-007",
+                })
         _ct_path = _default_control_tower()
         if _ct_path not in _sys.path:
             _sys.path.insert(0, _ct_path)
@@ -9423,13 +9432,6 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             spec.loader.exec_module(mod)  # type: ignore
             dispatcher = mod.get_dispatcher()
             if name == "dispatch_tower_job":
-                _ot = str(args.get("owner_token") or "")
-                _expected = os.environ.get("OWNER_API_TOKEN", "")
-                if not _expected or not _ot or _ot != _expected:
-                    return _text({
-                        "error": "owner_token required for dispatch_tower_job",
-                        "assp_rule": "AC-MCP-007",
-                    })
                 job_id = await dispatcher.submit(
                     args.get("job_type", ""), args.get("params", {}),
                     force_local=args.get("force_local", False),
