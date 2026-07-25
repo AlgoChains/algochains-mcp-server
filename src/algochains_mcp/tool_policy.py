@@ -26,6 +26,28 @@ TRANSPORT_HTTP_BRIDGE = "http_bridge"
 TRANSPORT_DYNAMIC = "dynamic"
 TRANSPORT_LOCAL_MCP = "local_mcp"
 
+ASSP_RULE_POLICY_IMPORT = "AC-MCP-002"
+
+
+def assp_policy_import_error(
+    tool: str,
+    transport: str,
+    *,
+    context: str = "",
+) -> dict[str, Any]:
+    """Fail-closed payload when danger-tier policy modules cannot be imported."""
+    message = "Danger-tier policy module unavailable; execution blocked for safety."
+    if context:
+        message = f"{context}: {message}"
+    return {
+        "error": message,
+        "blocked": True,
+        "tool": tool,
+        "transport": transport,
+        "assp_rule": ASSP_RULE_POLICY_IMPORT,
+        "error_type": "PolicyImportError",
+    }
+
 
 @dataclass(frozen=True)
 class ToolPolicyDecision:

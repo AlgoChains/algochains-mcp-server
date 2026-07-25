@@ -7,7 +7,7 @@ Status of AC-MCP-001..010 after Phase 5 sprint remediations in `algochains-mcp-s
 | Rule | Finding | Status | Remediation |
 |------|---------|--------|-------------|
 | AC-MCP-001 | Unauthenticated MCP/SSE transport | **Remediated** | `sse_server._validate_api_key` fail-closed when `ALGOCHAINS_SSE_KEY` unset; localhost-only bypass requires `ALGOCHAINS_SSE_ALLOW_UNAUTH=1`. Non-localhost bind without key raises at startup. `http_transport` fail-closed without `ALGOCHAINS_HTTP_TRANSPORT_SECRET`. |
-| AC-MCP-002 | Danger-tier import fail-open | **Gap (detection)** | Tier registry import failure behavior not changed this sprint. Splunk rule still `status: gap`; telemetry not wired. |
+| AC-MCP-002 | Danger-tier import fail-open | **Remediated** | `assp_policy_import_error()` in `tool_policy.py`; stdio `call_tool`, `execute_dynamic_tool`, demo-mode tier gate, and replay-guard tier lookup fail-closed with `assp_rule=AC-MCP-002` on `ImportError`. Tests in `test_assp_appsec_sprint.py`. Splunk telemetry still **gap** (`telemetry_present: false`). |
 | AC-MCP-003 | Unsigned `_developer_scopes` spoof | **Remediated** | `strip_untrusted_internal_auth` + signed bridge context (`internal_auth_context.py`). Tests in `test_appsec_medium_fixes_20260721.py`. |
 | AC-MCP-004 | `report_fill` forged PnL / fills | **Remediated** | PnL/order-id blocked without `daemon_authorized`; entry/exit/modify now require `signal_id` unless daemon-authorized. Tests in sprint + medium-fixes suites. |
 | AC-MCP-005 | SSRF via notification webhook | **Remediated** | Shared `ssrf_guard.py`; Slack/Discord configure + send paths validate URLs; `configure_notifications` owner-gated. Learn Hub uses fixed HTTPS hosts only. |
@@ -25,15 +25,14 @@ Status of AC-MCP-001..010 after Phase 5 sprint remediations in `algochains-mcp-s
 
 ## Still open (honest gaps)
 
-1. **AC-MCP-002** — Splunk detection + fail-closed tier import policy not implemented.
-2. **AC-MCP-006 telemetry** — No `algochains:mcp_audit` sourcetype shipping yet (`telemetry_present: false` on all rules).
-3. **`run_mcpt_pipeline` in Tier-1** — Safe by default (`dry_run=True`) but still callable; consider moving to full mode only if abuse observed.
-4. **`inject_session_context`** — WRITE_LOCAL tier; not owner-gated this sprint (lower exposure than Onyx ingest).
+1. **AC-MCP-006 telemetry** — No `algochains:mcp_audit` sourcetype shipping yet (`telemetry_present: false` on all rules).
+2. **`run_mcpt_pipeline` in Tier-1** — Safe by default (`dry_run=True`) but still callable; consider moving to full mode only if abuse observed.
+3. **`inject_session_context`** — WRITE_LOCAL tier; not owner-gated this sprint (lower exposure than Onyx ingest).
 
 ## Test commands
 
 ```bash
 cd /Users/soniaramos/Documents/CursorProjects/algochains-mcp-server
 .venv/bin/python -m pytest tests/test_assp_appsec_sprint.py tests/test_appsec_medium_fixes_20260721.py tests/test_learn_hub_health_security.py -q
-# 2026-07-25 sonia-air: 25 passed
+# 2026-07-25 sonia-air: 27 passed
 ```
