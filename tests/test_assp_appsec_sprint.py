@@ -173,6 +173,46 @@ class TestConnectOnyxDocsOwnerGate:
         assert "owner_token" in payload.get("error", "")
 
 
+class TestDangerTierPolicyImportFailClosed:
+    """AC-MCP-002: danger-tier / tool_policy ImportError must deny, not soft-allow."""
+
+    def test_stdio_direct_policy_import_error_denies(self, monkeypatch):
+        import algochains_mcp.server as srv
+
+        def _boom(*_args, **_kwargs):
+            raise ImportError("simulated tool_danger_tiers missing")
+
+        monkeypatch.setattr(srv, "evaluate_stdio_direct_tool", _boom)
+
+        result = asyncio.run(srv.call_tool("get_quote", {"symbol": "MNQ"}))
+        payload = _decode(result)
+
+        assert payload.get("assp_rule") == "AC-MCP-002"
+        assert payload.get("blocked") is True
+        assert payload.get("error_type") == "PolicyImportError"
+
+    def test_execute_dynamic_tool_policy_import_error_denies(self, monkeypatch):
+        import algochains_mcp.server as srv
+
+        def _boom(*_args, **_kwargs):
+            raise ImportError("simulated tool_policy missing")
+
+        monkeypatch.setattr(srv, "evaluate_dynamic_tool", _boom)
+
+        result = asyncio.run(
+            srv.call_tool(
+                "execute_dynamic_tool",
+                {"tool_name": "get_quote", "arguments": {"symbol": "MNQ"}},
+            )
+        )
+        payload = _decode(result)
+
+        assert payload.get("assp_rule") == "AC-MCP-002"
+        assert payload.get("blocked") is True
+        assert payload.get("tool") == "get_quote"
+        assert payload.get("transport") == "dynamic"
+
+
 class TestReportFillSignalIdRequired:
     def test_subscriber_cannot_forge_entry_without_signal_id(self):
         sb = MagicMock()

@@ -249,7 +249,11 @@ from .memory_safety import get_memory_monitor, MemoryMonitor
 from .handlers.physical_world import PHYSICAL_WORLD_HANDLERS
 from .handlers.cricket_bot import CRICKET_BOT_HANDLERS
 from .tool_manifest import build_manifest
-from .tool_policy import evaluate_dynamic_tool, evaluate_stdio_direct_tool
+from .tool_policy import (
+    assp_policy_import_error,
+    evaluate_dynamic_tool,
+    evaluate_stdio_direct_tool,
+)
 from .otel_tracing import redacted_argument_hash, trace_span
 
 # ─── V20 Account Protection — lightweight, no ML deps ───────────────────────
@@ -1387,6 +1391,27 @@ def _text(data: Any) -> list[TextContent]:
     if isinstance(data, (dict, list)):
         return [TextContent(type="text", text=json.dumps(data, indent=2, default=str))]
     return [TextContent(type="text", text=str(data))]
+
+
+def _assp_emit_deny(
+    *,
+    rule_id: str,
+    tool_name: str,
+    deny_reason: str,
+    **extras: Any,
+) -> None:
+    """Best-effort ASSP mcp_audit JSONL emit; never breaks tool execution."""
+    try:
+        from .assp_mcp_audit import emit_mcp_audit_denial
+
+        emit_mcp_audit_denial(
+            rule_id=rule_id,
+            tool_name=tool_name,
+            deny_reason=deny_reason,
+            **extras,
+        )
+    except Exception:
+        pass
 
 
 def _error_text(exc: Exception) -> list[TextContent]:
@@ -5383,7 +5408,11 @@ async def _execute_tool_with_runtime_guards(
                             "message": "Request rejected by replay guard. Timestamp too old or nonce already seen.",
                         })
             except ImportError:
-                pass  # tier module unavailable — skip replay check
+                return _text(assp_policy_import_error(
+                    name,
+                    transport,
+                    context="danger-tier replay guard",
+                ))
 
         check_circuit(name)
 
@@ -5523,7 +5552,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # real data from those paths. Only tier≥2 (ORDER_EXEC / DESTRUCTIVE)
         # is stubbed. quickstart.py sets this env var in --mode demo.
         if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
-            from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_ORDER_EXEC, get_danger_tier as _get_tier
+            try:
+                from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_ORDER_EXEC, get_danger_tier as _get_tier
+            except ImportError:
+                return _text(assp_policy_import_error(name, "stdio", context="demo-mode tier gate"))
             if _get_tier(name) >= _TIER_ORDER_EXEC:
                 return _text({
                     "status": "demo_mode_stub",
@@ -5545,13 +5577,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # (stdio/full parity). Previously full mode had no such gate.
         _stdio_owner_token = arguments.get("owner_token") if isinstance(arguments, dict) else None
         _stdio_require_confirm = os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1"
-        direct_decision = evaluate_stdio_direct_tool(
-            name,
-            tool_mode=cfg.tool_mode,
-            tier1_names=set(TIER1_TOOL_NAMES),
-            owner_token=_stdio_owner_token,
-            require_confirmation=_stdio_require_confirm,
-        )
+        try:
+            direct_decision = evaluate_stdio_direct_tool(
+                name,
+                tool_mode=cfg.tool_mode,
+                tier1_names=set(TIER1_TOOL_NAMES),
+                owner_token=_stdio_owner_token,
+                require_confirmation=_stdio_require_confirm,
+            )
+        except ImportError:
+            return _text(assp_policy_import_error(name, "stdio", context="stdio direct policy"))
         if not direct_decision.allow:
             payload = direct_decision.as_error()
             payload["error_type"] = "SmartModeToolUnavailable"
@@ -7895,11 +7930,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 expected_owner_token=os.environ.get("OWNER_API_TOKEN", ""),
             )
         except ImportError:
-            return _text({
-                "error": "execute_dynamic_tool: danger-tier module unavailable; execution blocked for safety.",
-                "blocked": True,
-                "tool": inner_name,
-            })
+            return _text(assp_policy_import_error(
+                inner_name,
+                "dynamic",
+                context="execute_dynamic_tool",
+            ))
 
         if not decision.allow:
             return _text(decision.as_error())
@@ -7907,7 +7942,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         # Demo mode guard: also stub ORDER_EXEC+ tools dispatched via execute_dynamic_tool.
         # call_tool stubs direct calls; this catches the dynamic dispatch path.
         if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
-            from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_OE, get_danger_tier as _gdt
+            try:
+                from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_OE, get_danger_tier as _gdt
+            except ImportError:
+                return _text(assp_policy_import_error(
+                    inner_name,
+                    "dynamic",
+                    context="execute_dynamic_tool demo-mode tier gate",
+                ))
             if _gdt(inner_name) >= _TIER_OE:
                 return _text({
                     "status": "demo_mode_stub",
@@ -8397,6 +8439,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         _ot = str(args.get("owner_token") or "")
         _expected = os.environ.get("OWNER_API_TOKEN", "")
         if not _expected or not _ot or _ot != _expected:
+            _assp_emit_deny(
+                rule_id="AC-MCP-sqlite-write",
+                tool_name="record_trade_episode",
+                deny_reason="owner_token_required",
+            )
             return _text({
                 "error": "owner_token required for record_trade_episode",
                 "assp_rule": "AC-MCP-sqlite-write",
@@ -9412,6 +9459,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             _ot = str(args.get("owner_token") or "")
             _expected = os.environ.get("OWNER_API_TOKEN", "")
             if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-007",
+                    tool_name="dispatch_tower_job",
+                    deny_reason="owner_token_required",
+                )
                 return _text({
                     "error": "owner_token required for dispatch_tower_job",
                     "assp_rule": "AC-MCP-007",
@@ -9596,6 +9648,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         _ot = str(args.get("owner_token") or "")
         _expected = os.environ.get("OWNER_API_TOKEN", "")
         if not _expected or not _ot or _ot != _expected:
+            _assp_emit_deny(
+                rule_id="AC-MCP-009",
+                tool_name="run_onyx_ingest",
+                deny_reason="owner_token_required",
+            )
             return _text({
                 "error": "owner_token required for run_onyx_ingest",
                 "assp_rule": "AC-MCP-009",
@@ -9875,6 +9932,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             _expected = os.environ.get("OWNER_API_TOKEN", "")
             if not _expected or not _ot or _ot != _expected:
                 # ASSP: redacted health only for non-owner
+                _assp_emit_deny(
+                    rule_id="AC-MCP-010",
+                    tool_name="get_all_bot_ops_status",
+                    deny_reason="owner_token_required",
+                    redacted=True,
+                )
                 return _text({
                     "redacted": True,
                     "assp_rule": "AC-MCP-010",
@@ -10065,6 +10128,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         _ot = str(arguments.get("owner_token") or "")
         _expected = os.environ.get("OWNER_API_TOKEN", "")
         if not _expected or not _ot or _ot != _expected:
+            _assp_emit_deny(
+                rule_id="AC-MCP-009",
+                tool_name="connect_onyx_docs",
+                deny_reason="owner_token_required",
+            )
             return _text({
                 "error": "owner_token required for connect_onyx_docs",
                 "assp_rule": "AC-MCP-009",
@@ -10704,6 +10772,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             _ot = str(arguments.get("owner_token") or "")
             _expected = os.environ.get("OWNER_API_TOKEN", "")
             if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-metrics-owner",
+                    tool_name="get_user_bot_metrics",
+                    deny_reason="owner_token_required",
+                )
                 return _text({
                     "error": "owner_token required for cross-subscriber metrics",
                     "assp_rule": "AC-MCP-metrics-owner",
@@ -10724,6 +10797,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             _ot = str(arguments.get("owner_token") or "")
             _expected = os.environ.get("OWNER_API_TOKEN", "")
             if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-metrics-owner",
+                    tool_name="get_all_user_bots",
+                    deny_reason="owner_token_required",
+                )
                 return _text({
                     "error": "owner_token required for get_all_user_bots",
                     "assp_rule": "AC-MCP-metrics-owner",
@@ -11532,6 +11610,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             _ot = str(args.get("owner_token") or "")
             _expected = os.environ.get("OWNER_API_TOKEN", "")
             if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-rithmic-owner",
+                    tool_name=name,
+                    deny_reason="owner_token_required",
+                    redacted=True,
+                )
                 return _text({
                     "error": "owner_token required for Rithmic live account tools",
                     "assp_rule": "AC-MCP-rithmic-owner",
