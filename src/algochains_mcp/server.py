@@ -3329,8 +3329,8 @@ TOOLS = [
     Tool(name="rollback_evolution", description="Roll back a strategy to its pre-evolution checkpoint if the promoted version underperforms.",
          inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}}, "required": ["strategy_id"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="record_trade_episode", description="Record a completed trade episode into episodic trade memory for AlphaLoop learning. Stores entry/exit, regime, P&L, and lessons.",
-         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "symbol": {"type": "string"}, "side": {"type": "string"}, "entry_price": {"type": "number"}, "exit_price": {"type": "number"}, "pnl_usd": {"type": "number"}, "regime": {"type": "string"}, "lesson": {"type": "string"}}, "required": ["strategy_id", "symbol", "side", "entry_price", "exit_price", "pnl_usd"]},
+    Tool(name="record_trade_episode", description="Record a completed trade episode into episodic trade memory for AlphaLoop learning. Stores entry/exit, regime, P&L, and lessons. Owner-only SQLite write.",
+         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "symbol": {"type": "string"}, "side": {"type": "string"}, "entry_price": {"type": "number"}, "exit_price": {"type": "number"}, "pnl_usd": {"type": "number"}, "regime": {"type": "string"}, "lesson": {"type": "string"}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."}}, "required": ["strategy_id", "symbol", "side", "entry_price", "exit_price", "pnl_usd", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="query_trade_memory", description="Semantic search over episodic trade memory. Find similar past trades by regime, setup, or performance characteristics.",
          inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "strategy_id": {"type": "string"}, "regime": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, "required": ["query"]},
@@ -3821,12 +3821,13 @@ TOOLS = [
              "trigger_type": {"type": "string", "default": "mcp_manual"},
          }, "required": ["symbol", "direction", "confidence"]},
          annotations=ANNOT_READ_ONLY),
-    Tool(name="run_mcpt_pipeline",
+    Tool(name="run_mcpt_pipeline",  # ASSP: dry_run default True — see handler
          description="Run the MCPT marketplace autopilot pipeline. Steps: decay (check edge decay), graduate (30-day paper trading gates), audit (batch MCPT re-validation), listing (generate marketplace JSON), slack (post summary to #quant-lab). Calls scripts/mcpt_autopilot.py.",
          inputSchema={"type": "object", "properties": {
              "step": {"type": "string", "enum": ["all", "sync", "decay", "graduate", "audit", "listing", "slack"], "default": "all"},
-             "dry_run": {"type": "boolean", "default": False, "description": "Report only, no writes"},
+             "dry_run": {"type": "boolean", "default": True, "description": "ASSP: default true — report only, no writes. Set false only with owner_token."},
              "no_desktop": {"type": "boolean", "default": False},
+             "owner_token": {"type": "string", "description": "Required when dry_run=false"},
          }, "required": []},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="run_regime_detection",
@@ -3886,8 +3887,8 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════
     # Desktop Tower Job Dispatcher
     # ═══════════════════════════════════════════════════════════════
-    Tool(name="dispatch_tower_job", description="Dispatch a heavy compute job to a configured GPU compute node (set ALGOCHAINS_TOWER_HOST) via SSH. Jobs: optuna_optimize, walk_forward_backtest, ml_retrain, mcpt_validation. Returns job_id for polling. Small jobs (<500MB) run locally; large/GPU jobs route to the compute node automatically.",
-         inputSchema={"type": "object", "properties": {"job_type": {"type": "string", "enum": ["optuna_optimize", "walk_forward_backtest", "ml_retrain", "mcpt_validation", "large_backtest", "factor_model_compute"]}, "params": {"type": "object", "description": "Job parameters: bot, symbol, n_trials, data_start, data_end, model, etc."}, "force_local": {"type": "boolean", "default": False}}, "required": ["job_type"]},
+    Tool(name="dispatch_tower_job", description="Dispatch a heavy compute job to a configured GPU compute node (set ALGOCHAINS_TOWER_HOST) via SSH. Jobs: optuna_optimize, walk_forward_backtest, ml_retrain, mcpt_validation. Returns job_id for polling. Small jobs (<500MB) run locally; large/GPU jobs route to the compute node automatically. Owner-only (AC-MCP-007).",
+         inputSchema={"type": "object", "properties": {"job_type": {"type": "string", "enum": ["optuna_optimize", "walk_forward_backtest", "ml_retrain", "mcpt_validation", "large_backtest", "factor_model_compute"]}, "params": {"type": "object", "description": "Job parameters: bot, symbol, n_trials, data_start, data_end, model, etc."}, "force_local": {"type": "boolean", "default": False}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."}}, "required": ["job_type", "owner_token"]},
          annotations=ANNOT_COMPUTE),
     Tool(name="get_tower_job_status", description="Get status and result of a dispatched tower job. Polls the tower via SSH for the result file.",
          inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
@@ -3938,10 +3939,11 @@ TOOLS = [
              "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
          }, "required": ["subscriber_id", "strategy_id", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the self-hosted Onyx RAG host (ONYX_API_URL).",
+    Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the self-hosted Onyx RAG host (ONYX_API_URL). Owner-only side effect (AC-MCP-009).",
          inputSchema={"type": "object", "properties": {
              "full_sync": {"type": "boolean", "default": False, "description": "Full re-index vs incremental (new files only)"},
-         }, "required": []},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+         }, "required": ["owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_onyx_status", description="Check Onyx knowledge base status: health, last sync time, total indexed documents, connector status (self-hosted host via ONYX_API_URL).",
          inputSchema={"type": "object", "properties": {}, "required": []},
@@ -4158,14 +4160,15 @@ TOOLS = [
          },
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="connect_onyx_docs",
-         description="Index local research documents (PDF, Markdown, JSON, TXT) into the Onyx RAG knowledge base. Documents become searchable via onyx_ask() and onyx_search(). Supports recursive directory scanning. Requires Onyx to be running at ONYX_API_URL.",
+         description="Index local research documents (PDF, Markdown, JSON, TXT) into the Onyx RAG knowledge base. Documents become searchable via onyx_ask() and onyx_search(). Supports recursive directory scanning. Requires Onyx to be running at ONYX_API_URL. Owner-only side effect (AC-MCP-009).",
          inputSchema={
              "type": "object",
              "properties": {
                  "doc_paths": {"type": "array", "items": {"type": "string"}, "description": "List of absolute file or directory paths."},
                  "doc_type": {"type": "string", "enum": ["strategy_research", "blueprint", "backtest", "whitepaper", "general"], "description": "Document category for Onyx tagging."},
+                 "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
              },
-             "required": ["doc_paths", "doc_type"],
+             "required": ["doc_paths", "doc_type", "owner_token"],
          },
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="register_strategy",
@@ -5129,7 +5132,8 @@ TIER1_TOOL_NAMES = {
     # Marketplace Autopilot + Onyx
     "run_marketplace_autopilot",
     "get_marketplace_listings",
-    "run_onyx_ingest",
+    # ASSP: run_onyx_ingest removed from Tier-1 (owner-gated RAG side effect, AC-MCP-009)
+    # "run_onyx_ingest",
     "get_onyx_status",
     "get_learn_hub_health",
     # V22 — Live Bot Intelligence (always Tier 1 — powers bot cards)
@@ -5145,7 +5149,8 @@ TIER1_TOOL_NAMES = {
     "get_bot_position_state",
     "get_bot_bracket_status",
     "get_ai_pipeline_health",
-    "get_all_bot_ops_status",
+    # ASSP: get_all_bot_ops_status removed from Tier-1 (position/bracket disclosure)
+    # "get_all_bot_ops_status",
     # V26.1 — Bracket integrity (always Tier 1 — safety critical)
     "check_unprotected_positions",
     "bracket_integrity_check",
@@ -5181,12 +5186,12 @@ TIER1_TOOL_NAMES = {
     "get_signal_trade_correlation",
     "start_sandboxed_agent",
     "reserve_llm_budget",
-    "get_rithmic_live_accounts",
-    "get_rithmic_live_pnl",
-    "get_rithmic_live_positions",
-    "get_rithmic_live_fills",
+    # ASSP: Rithmic live account tools removed from Tier-1 (owner-gated AC-MCP)
+    # "get_rithmic_live_accounts", "get_rithmic_live_pnl",
+    # "get_rithmic_live_positions", "get_rithmic_live_fills",
     # Support Tickets — create only (public intake); admin tools require owner_token (SEC-2026-C8)
-    "create_support_ticket",
+    # ASSP: create_support_ticket escalated — side-effect spam (AC)
+    # "create_support_ticket",
     # "get_support_ticket", "list_support_tickets", "update_ticket_status", "get_ticket_stats"
     # removed from Tier-1: SEC-2026-C8 — service_role reads/writes without auth.
     # OAuth Broker Connection
@@ -5238,9 +5243,8 @@ TIER1_TOOL_NAMES = {
     "get_waitlist_stats",
     # "send_waitlist_invite" removed from Tier-1: SEC-2026-C3 FIX — invite minting
     # requires owner_token (ORDER_EXEC tier). See tool_danger_tiers.py.
-    # Verification
-    "send_email_verification_code",
-    "send_sms_verification_code",
+    # Verification — ASSP: outbound email/SMS removed from Tier-1 (AC-MCP-006)
+    # "send_email_verification_code", "send_sms_verification_code",
     "verify_code",
     # Analytics
     "track_platform_event",
@@ -5251,8 +5255,8 @@ TIER1_TOOL_NAMES = {
     "initiate_account_recovery",
     "get_password_policy",
     # Multi-Bot Metrics
-    "get_user_bot_metrics",
-    "get_all_user_bots",
+    # ASSP: cross-tenant metrics removed from Tier-1
+    # "get_user_bot_metrics", "get_all_user_bots",
     # "upsert_bot_performance" removed from Tier-1: SEC-2026-C4 FIX — metric writes
     # go through metrics_streaming_daemon.py; MCP path requires owner_token (ORDER_EXEC).
     # V22.9 — PAI Integration (always Tier 1 — business context + macro data)
@@ -8390,6 +8394,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(get_evolution_daemon().rollback(args.get("strategy_id", "")))
 
     elif name == "record_trade_episode":
+        _ot = str(args.get("owner_token") or "")
+        _expected = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected or not _ot or _ot != _expected:
+            return _text({
+                "error": "owner_token required for record_trade_episode",
+                "assp_rule": "AC-MCP-sqlite-write",
+            })
         get_trade_memory = _lazy_import("trade_memory", "get_trade_memory")
         if not get_trade_memory:
             return _text({"error": "Trade memory not available"})
@@ -9222,8 +9233,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             import subprocess, sys as _sys
             control_tower = _default_control_tower()
             step = str(args.get("step", "all"))
-            dry_run = bool(args.get("dry_run", False))
+            # ASSP: default dry_run=True; live runs require owner_token
+            dry_run = bool(args.get("dry_run", True))
             no_desktop = bool(args.get("no_desktop", False))
+            if not dry_run:
+                _ot = str(args.get("owner_token") or "")
+                _expected = os.environ.get("OWNER_API_TOKEN", "")
+                if not _expected or not _ot or _ot != _expected:
+                    return _text({
+                        "error": "owner_token required when dry_run=false",
+                        "assp_rule": "AC-MCP-008",
+                    })
 
             cmd = [_sys.executable, "scripts/mcpt_autopilot.py", "--json"]
             if step != "all":
@@ -9387,6 +9407,15 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name in ("dispatch_tower_job", "get_tower_job_status", "get_tower_health", "list_tower_jobs"):
         import os as _os_tower
         import sys as _sys
+        # ASSP AC-MCP-007: deny before importing dispatcher (fail-closed without CT path)
+        if name == "dispatch_tower_job":
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                return _text({
+                    "error": "owner_token required for dispatch_tower_job",
+                    "assp_rule": "AC-MCP-007",
+                })
         _ct_path = _default_control_tower()
         if _ct_path not in _sys.path:
             _sys.path.insert(0, _ct_path)
@@ -9564,6 +9593,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Marketplace listings error: {exc}"})
 
     elif name == "run_onyx_ingest":
+        _ot = str(args.get("owner_token") or "")
+        _expected = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected or not _ot or _ot != _expected:
+            return _text({
+                "error": "owner_token required for run_onyx_ingest",
+                "assp_rule": "AC-MCP-009",
+            })
         try:
             import subprocess as _sp
             import sys as _sys
@@ -9835,6 +9871,16 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_all_bot_ops_status":
         try:
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                # ASSP: redacted health only for non-owner
+                return _text({
+                    "redacted": True,
+                    "assp_rule": "AC-MCP-010",
+                    "bots": {"mnq": "unknown", "cl": "unknown", "mes": "unknown", "nq": "unknown"},
+                    "hint": "owner_token required for positions/brackets/PIDs",
+                })
             from .live_bot_intelligence.bot_ops import get_all_bot_ops_status
             return _text(get_all_bot_ops_status())
         except Exception as exc:
@@ -10016,6 +10062,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Signal ingestion error: {exc}"})
 
     elif name == "connect_onyx_docs":
+        _ot = str(arguments.get("owner_token") or "")
+        _expected = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected or not _ot or _ot != _expected:
+            return _text({
+                "error": "owner_token required for connect_onyx_docs",
+                "assp_rule": "AC-MCP-009",
+            })
         try:
             from .data_ingestion import connect_onyx_docs as _connect_onyx
             return _text(_connect_onyx(
@@ -10648,6 +10701,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_user_bot_metrics":
         try:
+            _ot = str(arguments.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                return _text({
+                    "error": "owner_token required for cross-subscriber metrics",
+                    "assp_rule": "AC-MCP-metrics-owner",
+                })
             from .live_bot_intelligence.multi_account_metrics import get_user_bot_metrics as _get_ubm
             result = await _get_ubm(
                 user_id=arguments["user_id"],
@@ -10661,6 +10721,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_all_user_bots":
         try:
+            _ot = str(arguments.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                return _text({
+                    "error": "owner_token required for get_all_user_bots",
+                    "assp_rule": "AC-MCP-metrics-owner",
+                })
             from .live_bot_intelligence.multi_account_metrics import get_all_user_bots as _get_all_bots
             return _text(await _get_all_bots(arguments["user_id"]))
         except Exception as exc:
@@ -11461,6 +11528,15 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name in ("get_rithmic_live_accounts", "get_rithmic_live_pnl",
                   "get_rithmic_live_positions", "get_rithmic_live_fills"):
         try:
+            # ASSP: owner-gate prop-account telemetry (removed from Tier-1)
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                return _text({
+                    "error": "owner_token required for Rithmic live account tools",
+                    "assp_rule": "AC-MCP-rithmic-owner",
+                    "redacted": True,
+                })
             import sys as _sys
             from pathlib import Path as _Path
             _ct = str(_Path(__file__).resolve().parent.parent.parent.parent.parent / "algochains-control-tower")
