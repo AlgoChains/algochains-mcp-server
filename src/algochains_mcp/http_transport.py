@@ -58,9 +58,23 @@ def _allow_unauthenticated_dev() -> bool:
 
 
 def _get_cors_origins() -> list[str]:
-    raw = os.environ.get("ALGOCHAINS_HTTP_CORS_ORIGINS", "*")
+    # ASSP: never default to wildcard CORS — require explicit allowlist or localhost.
+    raw = os.environ.get("ALGOCHAINS_HTTP_CORS_ORIGINS", "").strip()
+    if not raw:
+        return [
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+            "https://algochains.ai",
+            "https://app.algochains.ai",
+        ]
     if raw == "*":
-        return ["*"]
+        # Explicit opt-in only via env; log-risk path for local demos.
+        if os.environ.get("ALGOCHAINS_HTTP_ALLOW_WILDCARD_CORS", "0") == "1":
+            return ["*"]
+        return [
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+        ]
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 

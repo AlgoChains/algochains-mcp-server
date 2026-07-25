@@ -293,21 +293,14 @@ def _validate_origin(request: Request) -> bool:
 
 def _validate_api_key(request: Request) -> bool:
     if not SSE_API_KEY:
-        # Fail closed on non-localhost binds. Localhost stays open for dev unless
-        # ALGOCHAINS_SSE_REQUIRE_KEY=1. Explicit opt-in:
-        # ALGOCHAINS_SSE_ALLOW_UNAUTH=1 (dev-only, never on public interfaces).
+        # ASSP P0: fail closed unless explicit local-dev opt-in.
+        # ALGOCHAINS_SSE_ALLOW_UNAUTH=1 AND bind to localhost only.
         host = (SSE_HOST or "").strip().lower()
         localhost = host in ("127.0.0.1", "localhost", "::1", "")
         allow_unauth = os.environ.get("ALGOCHAINS_SSE_ALLOW_UNAUTH", "0") == "1"
-        require_key = os.environ.get("ALGOCHAINS_SSE_REQUIRE_KEY", "0") == "1"
-        if require_key:
-            return False
-        if not localhost and not allow_unauth:
-            return False  # fail closed when exposed
-        if allow_unauth and not localhost:
-            # Still refuse unauth on non-localhost even if mis-set
-            return False
-        return True  # localhost dev mode only
+        if allow_unauth and localhost:
+            return True
+        return False
     provided = (
         request.headers.get("x-api-key")
         # Reject query-param keys in production: they appear in access logs / Referer.

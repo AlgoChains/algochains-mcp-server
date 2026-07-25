@@ -821,6 +821,14 @@ def report_fill(
     if fill_kind not in ("entry", "exit", "modify", "reject"):
         return _err("invalid_fill_kind", got=fill_kind)
 
+    # ASSP AC-MCP-004: subscriber keys cannot forge entry/exit/modify without signal_id
+    if (
+        fill_kind in ("entry", "exit", "modify")
+        and not signal_id
+        and not daemon_authorized
+    ):
+        return _err("signal_id_required", fill_kind=fill_kind)
+
     bot_upper = (bot or "").upper()
     stored_pnl: float | None = None
     pnl_rejected_reason: str | None = None
