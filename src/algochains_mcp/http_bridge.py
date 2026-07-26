@@ -672,10 +672,25 @@ def create_fastapi_app():
             from .developer_auth import hash_developer_key
             rate_result = check_rate_limit(hash_developer_key(provided_key))
             if not rate_result.allowed:
+                try:
+                    from .assp_mcp_audit import emit_mcp_audit_denial
+
+                    emit_mcp_audit_denial(
+                        rule_id="AC-MCP-006",
+                        tool_name=tool if isinstance(tool, str) else "http_bridge",
+                        deny_reason="developer_key_rate_limit",
+                        event="rate_limit_exceeded",
+                        transport="http_bridge",
+                    )
+                except Exception:
+                    pass
                 from fastapi.responses import JSONResponse
+                body = rate_result.as_error_dict()
+                if isinstance(body, dict):
+                    body["assp_rule"] = "AC-MCP-006"
                 return JSONResponse(
                     status_code=429,
-                    content=rate_result.as_error_dict(),
+                    content=body,
                     headers={
                         "Retry-After": str(max(1, rate_result.retry_after_ms // 1000)),
                         "X-RateLimit-Remaining-RPM": str(rate_result.remaining_rpm),
