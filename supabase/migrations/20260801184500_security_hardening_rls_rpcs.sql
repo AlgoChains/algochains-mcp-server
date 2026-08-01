@@ -1,152 +1,225 @@
 -- Security hardening applied 2026-08-01 via Supabase MCP (prod: trkpzsnwjtmvgppuzlwu).
--- Re-run safely with IF EXISTS / DROP IF EXISTS patterns where possible.
+-- Idempotent / CI-safe: skip objects that do not exist in the local schema.
 -- Companion write-up: docs/SUPABASE_SECURITY_AUDIT_2026-08-01.md
 
--- 1) Revoke dangerous SECURITY DEFINER RPCs from API roles
-REVOKE ALL ON FUNCTION public.increment_paper_account(uuid, numeric) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.increment_paper_account(uuid, numeric) TO service_role;
+-- Helper: revoke + grant EXECUTE on a function only when it exists.
+CREATE OR REPLACE FUNCTION pg_temp._sec_lock_fn(p_identity text)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF to_regprocedure(p_identity) IS NULL THEN
+    RAISE NOTICE 'security hardening: skip missing function %', p_identity;
+    RETURN;
+  END IF;
+  EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC, anon, authenticated', p_identity);
+  EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO service_role', p_identity);
+END;
+$$;
 
-REVOKE ALL ON FUNCTION public.rebase_paper_accounts_50k() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.rebase_paper_accounts_50k() TO service_role;
+SELECT pg_temp._sec_lock_fn('public.increment_paper_account(uuid, numeric)');
+SELECT pg_temp._sec_lock_fn('public.rebase_paper_accounts_50k()');
+SELECT pg_temp._sec_lock_fn('public._reschedule_edge_fn(text, text, text)');
+SELECT pg_temp._sec_lock_fn('public.create_audit_events_partition(date)');
+SELECT pg_temp._sec_lock_fn('public.get_cron_health()');
+SELECT pg_temp._sec_lock_fn('public.rls_auto_enable()');
+SELECT pg_temp._sec_lock_fn('public.get_slippage_events(text, integer, integer)');
 
-REVOKE ALL ON FUNCTION public._reschedule_edge_fn(text, text, text) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public._reschedule_edge_fn(text, text, text) TO service_role;
+-- Pin search_path when the function exists.
+CREATE OR REPLACE FUNCTION pg_temp._sec_set_search_path(p_identity text, p_path text)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF to_regprocedure(p_identity) IS NULL THEN
+    RAISE NOTICE 'security hardening: skip search_path for missing function %', p_identity;
+    RETURN;
+  END IF;
+  EXECUTE format('ALTER FUNCTION %s SET search_path = %s', p_identity, p_path);
+END;
+$$;
 
-REVOKE ALL ON FUNCTION public.create_audit_events_partition(date) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.create_audit_events_partition(date) TO service_role;
+SELECT pg_temp._sec_set_search_path('public._reschedule_edge_fn(text, text, text)', 'pg_catalog, public, cron, net');
+SELECT pg_temp._sec_set_search_path('public.increment_paper_account(uuid, numeric)', 'pg_catalog, public');
+SELECT pg_temp._sec_set_search_path('public.invite_subscriber_override(text, text)', 'pg_catalog, public, auth');
+SELECT pg_temp._sec_set_search_path('public.enforce_internal_email_allowlist()', 'pg_catalog, public');
+SELECT pg_temp._sec_set_search_path('public._set_updated_at()', 'pg_catalog, public');
+SELECT pg_temp._sec_set_search_path('public._trade_log_compute_pnl_delta()', 'pg_catalog, public');
+SELECT pg_temp._sec_set_search_path('public.enforce_subscriber_cap()', 'pg_catalog, public');
+SELECT pg_temp._sec_set_search_path('public.update_premarket_regime_cache_updated_at()', 'pg_catalog, public');
+SELECT pg_temp._sec_set_search_path('public.rebase_paper_accounts_50k()', 'pg_catalog, public');
+SELECT pg_temp._sec_set_search_path('public.create_audit_events_partition(date)', 'pg_catalog, public');
+SELECT pg_temp._sec_set_search_path('public.get_slippage_events(text, integer, integer)', 'pg_catalog, public');
+SELECT pg_temp._sec_set_search_path('public.get_cron_health()', 'pg_catalog, cron, public');
+SELECT pg_temp._sec_set_search_path('public.rls_auto_enable()', 'pg_catalog, public');
 
-REVOKE ALL ON FUNCTION public.get_cron_health() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.get_cron_health() TO service_role;
+-- copy_trade_signals: service_role UPDATE only + no client writes
+DO $$
+BEGIN
+  IF to_regclass('public.copy_trade_signals') IS NULL THEN
+    RAISE NOTICE 'security hardening: skip copy_trade_signals (missing)';
+    RETURN;
+  END IF;
 
-REVOKE ALL ON FUNCTION public.rls_auto_enable() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.rls_auto_enable() TO service_role;
+  DROP POLICY IF EXISTS cts_service_update ON public.copy_trade_signals;
+  CREATE POLICY cts_service_update
+    ON public.copy_trade_signals
+    FOR UPDATE
+    TO service_role
+    USING (true)
+    WITH CHECK (true);
 
-REVOKE ALL ON FUNCTION public.get_slippage_events(text, integer, integer) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.get_slippage_events(text, integer, integer) TO service_role;
+  REVOKE INSERT, UPDATE, DELETE ON public.copy_trade_signals FROM anon, authenticated, PUBLIC;
+  GRANT SELECT ON public.copy_trade_signals TO anon, authenticated;
+  GRANT ALL ON public.copy_trade_signals TO service_role;
+END $$;
 
--- 2) copy_trade_signals: service_role UPDATE only + no client writes
-DROP POLICY IF EXISTS cts_service_update ON public.copy_trade_signals;
-CREATE POLICY cts_service_update
-  ON public.copy_trade_signals
-  FOR UPDATE
-  TO service_role
-  USING (true)
-  WITH CHECK (true);
+-- subscriber_bot_assignments: clients may only update paused
+DO $$
+BEGIN
+  IF to_regclass('public.subscriber_bot_assignments') IS NULL THEN
+    RAISE NOTICE 'security hardening: skip subscriber_bot_assignments (missing)';
+    RETURN;
+  END IF;
 
-REVOKE INSERT, UPDATE, DELETE ON public.copy_trade_signals FROM anon, authenticated, PUBLIC;
-GRANT SELECT ON public.copy_trade_signals TO anon, authenticated;
-GRANT ALL ON public.copy_trade_signals TO service_role;
+  DROP POLICY IF EXISTS sba_owner_update_pause ON public.subscriber_bot_assignments;
+  CREATE POLICY sba_owner_update_pause
+    ON public.subscriber_bot_assignments
+    FOR UPDATE
+    TO authenticated
+    USING (auth.uid() = subscriber_id)
+    WITH CHECK (auth.uid() = subscriber_id);
 
--- 3) subscriber_bot_assignments: clients may only update paused
-DROP POLICY IF EXISTS sba_owner_update_pause ON public.subscriber_bot_assignments;
-CREATE POLICY sba_owner_update_pause
-  ON public.subscriber_bot_assignments
-  FOR UPDATE
-  TO authenticated
-  USING (auth.uid() = subscriber_id)
-  WITH CHECK (auth.uid() = subscriber_id);
+  REVOKE UPDATE ON public.subscriber_bot_assignments FROM anon, authenticated, PUBLIC;
+  GRANT UPDATE (paused) ON public.subscriber_bot_assignments TO authenticated;
+  GRANT ALL ON public.subscriber_bot_assignments TO service_role;
+END $$;
 
-REVOKE UPDATE ON public.subscriber_bot_assignments FROM anon, authenticated, PUBLIC;
-GRANT UPDATE (paused) ON public.subscriber_bot_assignments TO authenticated;
-GRANT ALL ON public.subscriber_bot_assignments TO service_role;
+-- subscriber_paper_orders: WITH CHECK + limited columns
+DO $$
+BEGIN
+  IF to_regclass('public.subscriber_paper_orders') IS NULL THEN
+    RAISE NOTICE 'security hardening: skip subscriber_paper_orders (missing)';
+    RETURN;
+  END IF;
 
--- 4) subscriber_paper_orders: WITH CHECK + limited columns
-DROP POLICY IF EXISTS spo_update_own ON public.subscriber_paper_orders;
-CREATE POLICY spo_update_own
-  ON public.subscriber_paper_orders
-  FOR UPDATE
-  TO authenticated
-  USING (auth.uid() = subscriber_id)
-  WITH CHECK (auth.uid() = subscriber_id);
+  DROP POLICY IF EXISTS spo_update_own ON public.subscriber_paper_orders;
+  CREATE POLICY spo_update_own
+    ON public.subscriber_paper_orders
+    FOR UPDATE
+    TO authenticated
+    USING (auth.uid() = subscriber_id)
+    WITH CHECK (auth.uid() = subscriber_id);
 
-REVOKE UPDATE ON public.subscriber_paper_orders FROM anon, authenticated, PUBLIC;
-GRANT UPDATE (status, error_msg, updated_at) ON public.subscriber_paper_orders TO authenticated;
-GRANT ALL ON public.subscriber_paper_orders TO service_role;
+  REVOKE UPDATE ON public.subscriber_paper_orders FROM anon, authenticated, PUBLIC;
+  GRANT UPDATE (status, error_msg, updated_at) ON public.subscriber_paper_orders TO authenticated;
+  GRANT ALL ON public.subscriber_paper_orders TO service_role;
+END $$;
 
--- 5) algochains_runs: remove auth.uid() IS NOT NULL leak
-DROP POLICY IF EXISTS auth_read_own ON public.algochains_runs;
-DROP POLICY IF EXISTS service_role_select_algochains_runs ON public.algochains_runs;
-CREATE POLICY service_role_select_algochains_runs
-  ON public.algochains_runs
-  FOR SELECT
-  TO service_role
-  USING (true);
+-- algochains_runs: remove auth.uid() IS NOT NULL leak (prod-only table)
+DO $$
+BEGIN
+  IF to_regclass('public.algochains_runs') IS NULL THEN
+    RAISE NOTICE 'security hardening: skip algochains_runs (missing)';
+    RETURN;
+  END IF;
 
--- 6) Marketplace views: security_invoker + SELECT-only grants
-ALTER VIEW public.v_approved_marketplace SET (security_invoker = true);
-ALTER VIEW public.v_public_marketplace SET (security_invoker = true);
-ALTER VIEW public.v_marketplace_validation SET (security_invoker = true);
+  DROP POLICY IF EXISTS auth_read_own ON public.algochains_runs;
+  DROP POLICY IF EXISTS service_role_select_algochains_runs ON public.algochains_runs;
+  CREATE POLICY service_role_select_algochains_runs
+    ON public.algochains_runs
+    FOR SELECT
+    TO service_role
+    USING (true);
+END $$;
 
-REVOKE ALL ON public.v_approved_marketplace FROM anon, authenticated, PUBLIC;
-REVOKE ALL ON public.v_public_marketplace FROM anon, authenticated, PUBLIC;
-REVOKE ALL ON public.v_marketplace_validation FROM anon, authenticated, PUBLIC;
+-- Marketplace views: security_invoker + SELECT-only grants
+DO $$
+DECLARE
+  v text;
+BEGIN
+  FOREACH v IN ARRAY ARRAY[
+    'v_approved_marketplace',
+    'v_public_marketplace',
+    'v_marketplace_validation'
+  ]
+  LOOP
+    IF to_regclass('public.' || v) IS NULL THEN
+      RAISE NOTICE 'security hardening: skip view % (missing)', v;
+      CONTINUE;
+    END IF;
+    EXECUTE format('ALTER VIEW public.%I SET (security_invoker = true)', v);
+    EXECUTE format('REVOKE ALL ON public.%I FROM anon, authenticated, PUBLIC', v);
+    EXECUTE format('GRANT ALL ON public.%I TO service_role', v);
+  END LOOP;
 
-GRANT SELECT ON public.v_approved_marketplace TO anon, authenticated;
-GRANT SELECT ON public.v_public_marketplace TO anon, authenticated;
-GRANT SELECT ON public.v_marketplace_validation TO authenticated, service_role;
-GRANT ALL ON public.v_approved_marketplace TO service_role;
-GRANT ALL ON public.v_public_marketplace TO service_role;
-GRANT ALL ON public.v_marketplace_validation TO service_role;
+  IF to_regclass('public.v_approved_marketplace') IS NOT NULL THEN
+    GRANT SELECT ON public.v_approved_marketplace TO anon, authenticated;
+  END IF;
+  IF to_regclass('public.v_public_marketplace') IS NOT NULL THEN
+    GRANT SELECT ON public.v_public_marketplace TO anon, authenticated;
+  END IF;
+  IF to_regclass('public.v_marketplace_validation') IS NOT NULL THEN
+    GRANT SELECT ON public.v_marketplace_validation TO authenticated, service_role;
+  END IF;
+END $$;
 
--- 7) Pin search_path on functions flagged by advisors
-ALTER FUNCTION public._reschedule_edge_fn(text, text, text) SET search_path = pg_catalog, public, cron, net;
-ALTER FUNCTION public.increment_paper_account(uuid, numeric) SET search_path = pg_catalog, public;
-ALTER FUNCTION public.invite_subscriber_override(text, text) SET search_path = pg_catalog, public, auth;
-ALTER FUNCTION public.enforce_internal_email_allowlist() SET search_path = pg_catalog, public;
-ALTER FUNCTION public._set_updated_at() SET search_path = pg_catalog, public;
-ALTER FUNCTION public._trade_log_compute_pnl_delta() SET search_path = pg_catalog, public;
-ALTER FUNCTION public.enforce_subscriber_cap() SET search_path = pg_catalog, public;
-ALTER FUNCTION public.update_premarket_regime_cache_updated_at() SET search_path = pg_catalog, public;
-ALTER FUNCTION public.rebase_paper_accounts_50k() SET search_path = pg_catalog, public;
-ALTER FUNCTION public.create_audit_events_partition(date) SET search_path = pg_catalog, public;
-ALTER FUNCTION public.get_slippage_events(text, integer, integer) SET search_path = pg_catalog, public;
-ALTER FUNCTION public.get_cron_health() SET search_path = pg_catalog, cron, public;
-ALTER FUNCTION public.rls_auto_enable() SET search_path = pg_catalog, public;
+-- Ops tables: service_role only (no per-user owner column; often prod-only)
+DO $$
+DECLARE
+  t text;
+  policy_name text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY[
+    'trade_log',
+    'bot_events',
+    'bracket_audit',
+    'order_cancel_log',
+    'ghost_pnl_audit',
+    'broker_fill_imports'
+  ]
+  LOOP
+    IF to_regclass('public.' || t) IS NULL THEN
+      RAISE NOTICE 'security hardening: skip ops table % (missing)', t;
+      CONTINUE;
+    END IF;
 
--- 8) Ops tables: service_role only (no per-user owner column)
-DROP POLICY IF EXISTS authenticated_read ON public.trade_log;
-DROP POLICY IF EXISTS authenticated_read_own ON public.trade_log;
-DROP POLICY IF EXISTS auth_read_bot_events ON public.bot_events;
-DROP POLICY IF EXISTS auth_read_bracket_audit ON public.bracket_audit;
-DROP POLICY IF EXISTS auth_read_order_cancel_log ON public.order_cancel_log;
-DROP POLICY IF EXISTS authenticated_read_imports ON public.broker_fill_imports;
-DROP POLICY IF EXISTS authenticated_read ON public.ghost_pnl_audit;
+    -- Drop known overly-broad authenticated read policies when present
+    FOR policy_name IN
+      SELECT p.policyname
+      FROM pg_policies p
+      WHERE p.schemaname = 'public'
+        AND p.tablename = t
+        AND p.policyname IN (
+          'authenticated_read',
+          'authenticated_read_own',
+          'auth_read_bot_events',
+          'auth_read_bracket_audit',
+          'auth_read_order_cancel_log',
+          'authenticated_read_imports',
+          'service_role_select_trade_log',
+          'service_role_select_bot_events',
+          'service_role_select_bracket_audit',
+          'service_role_select_order_cancel_log',
+          'service_role_select_ghost_pnl_audit'
+        )
+    LOOP
+      EXECUTE format('DROP POLICY IF EXISTS %I ON public.%I', policy_name, t);
+    END LOOP;
 
-DROP POLICY IF EXISTS service_role_select_trade_log ON public.trade_log;
-CREATE POLICY service_role_select_trade_log ON public.trade_log
-  FOR SELECT TO service_role USING (true);
+    IF t <> 'broker_fill_imports' THEN
+      EXECUTE format(
+        'CREATE POLICY %I ON public.%I FOR SELECT TO service_role USING (true)',
+        'service_role_select_' || t,
+        t
+      );
+    END IF;
 
-DROP POLICY IF EXISTS service_role_select_bot_events ON public.bot_events;
-CREATE POLICY service_role_select_bot_events ON public.bot_events
-  FOR SELECT TO service_role USING (true);
+    EXECUTE format('REVOKE ALL ON public.%I FROM anon, authenticated', t);
+    EXECUTE format('GRANT ALL ON public.%I TO service_role', t);
+  END LOOP;
+END $$;
 
-DROP POLICY IF EXISTS service_role_select_bracket_audit ON public.bracket_audit;
-CREATE POLICY service_role_select_bracket_audit ON public.bracket_audit
-  FOR SELECT TO service_role USING (true);
-
-DROP POLICY IF EXISTS service_role_select_order_cancel_log ON public.order_cancel_log;
-CREATE POLICY service_role_select_order_cancel_log ON public.order_cancel_log
-  FOR SELECT TO service_role USING (true);
-
-DROP POLICY IF EXISTS service_role_select_ghost_pnl_audit ON public.ghost_pnl_audit;
-CREATE POLICY service_role_select_ghost_pnl_audit ON public.ghost_pnl_audit
-  FOR SELECT TO service_role USING (true);
-
-REVOKE ALL ON public.trade_log FROM anon, authenticated;
-REVOKE ALL ON public.bot_events FROM anon, authenticated;
-REVOKE ALL ON public.bracket_audit FROM anon, authenticated;
-REVOKE ALL ON public.order_cancel_log FROM anon, authenticated;
-REVOKE ALL ON public.ghost_pnl_audit FROM anon, authenticated;
-REVOKE ALL ON public.broker_fill_imports FROM anon, authenticated;
-
-GRANT ALL ON public.trade_log TO service_role;
-GRANT ALL ON public.bot_events TO service_role;
-GRANT ALL ON public.bracket_audit TO service_role;
-GRANT ALL ON public.order_cancel_log TO service_role;
-GRANT ALL ON public.ghost_pnl_audit TO service_role;
-GRANT ALL ON public.broker_fill_imports TO service_role;
-
--- 9) Cron for trade_evidence_rollup: set x-rollup-secret via Dashboard SQL or:
+-- Cron for trade_evidence_rollup: set x-rollup-secret via Dashboard SQL or:
 -- SELECT cron.alter_job(<jobid>, command := $$ ... x-rollup-secret ... $$);
--- Secret value lives in Edge Function secrets as TRADE_EVIDENCE_ROLLUP_SECRET
--- (and temporarily as BOOTSTRAP_SECRET in the deployed function — rotate ASAP).
+-- Secret value lives in Edge Function secrets as TRADE_EVIDENCE_ROLLUP_SECRET.
