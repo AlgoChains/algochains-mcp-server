@@ -391,6 +391,59 @@ def create_http_app(
     return http_app
 
 
+
+def _authorize_tool_call(tool_name: str, arguments: dict) -> tuple[bool, dict]:
+    """Apply the HTTP bridge's tool policy to an /mcp tools/call.
+
+    ONE POLICY, NOT TWO. `http_bridge.py` already owns the subscriber /
+    developer / owner matrices and `tool_policy.evaluate_bridge_tool` already
+    encodes danger tiers, caller scopes and confirm-arg requirements. Writing a
+    second gate here would guarantee the two drift, and the drift would be
+    invisible until someone reached a tool through the quieter path — which is
+    exactly the defect this fixes.
+
+    Evaluated as `is_owner=False` with no caller scope. The transport bearer is
+    a shared channel secret, not an identity: it is set once in the environment
+    and cannot distinguish the owner from anyone who has read that environment.
+    Treating it as owner authority would re-open the hole one layer down.
+
+    Fails CLOSED. If the policy module cannot be imported the call is denied,
+    because an unavailable authorizer is not an absent requirement.
+    """
+    try:
+        from algochains_mcp.http_bridge import OWNER_TOOLS, PUBLIC_TOOLS
+        from algochains_mcp.tool_policy import evaluate_bridge_tool
+    except Exception as exc:  # noqa: BLE001
+        return False, {
+            "reason": "Tool authorization unavailable — denying by default.",
+            "detail": f"{type(exc).__name__}",
+            "tool": tool_name,
+        }
+
+    decision = evaluate_bridge_tool(
+        tool_name,
+        arguments or {},
+        is_owner=False,
+        caller_scope=None,
+        public_tools=PUBLIC_TOOLS,
+        owner_tools=OWNER_TOOLS,
+    )
+    if decision.allow:
+        return True, {}
+    payload = decision.as_error()
+    payload.setdefault("transport", "http_transport")
+    return False, payload
+
+
+def _public_tool_names() -> set[str]:
+    """Names /mcp is willing to run. Empty set means "could not determine"."""
+    try:
+        from algochains_mcp.http_bridge import PUBLIC_TOOLS
+        return set(PUBLIC_TOOLS)
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 async def _dispatch_jsonrpc(mcp_server: Any, body: dict, session_id: str) -> dict:
     """Route a JSON-RPC 2.0 request to the MCP server's handlers."""
     method = body.get("method", "")
@@ -416,16 +469,58 @@ async def _dispatch_jsonrpc(mcp_server: Any, body: dict, session_id: str) -> dic
         elif method == "tools/list":
             # Delegate to the server's list_tools handler
             tools_list = await mcp_server._mcp_server.list_tools()
+            # Advertise only what this transport will actually run. Listing
+            # owner-sensitive tools that tools/call then denies invites a client
+            # to build against them and turns an authorization boundary into a
+            # confusing runtime error.
+            _allowed = _public_tool_names()
+            _all = list(tools_list.tools if hasattr(tools_list, "tools") else tools_list)
+            _visible = [
+                t for t in _all
+                if not _allowed or getattr(t, "name", None) in _allowed
+            ]
             result = {
                 "tools": [
                     t.model_dump() if hasattr(t, "model_dump") else vars(t)
-                    for t in (tools_list.tools if hasattr(tools_list, "tools") else tools_list)
+                    for t in _visible
                 ]
             }
         elif method == "tools/call":
-            from algochains_mcp.server import call_tool
             tool_name = params.get("name", "")
             tool_args = params.get("arguments", {})
+
+            # AUTHORIZE BEFORE DISPATCH. This branch called server.call_tool()
+            # directly, so anything satisfying the transport bearer —
+            # ALGOCHAINS_HTTP_TRANSPORT_SECRET, or any OAuth principal accepted
+            # by /mcp — reached EVERY registered tool. The subscriber /
+            # developer / owner matrices in http_bridge.py were bypassed
+            # entirely, exposing owner-sensitive readers that developer bridge
+            # keys are explicitly denied: get_account, get_positions,
+            # get_orders, portfolio_summary, execute_dynamic_tool.
+            #
+            # A transport secret authenticates the CHANNEL. It says nothing
+            # about who is on the other end, so it cannot stand in for owner
+            # identity. Routed through the bridge's own policy as a NON-owner,
+            # which denies OWNER_TOOLS and anything outside PUBLIC_TOOLS.
+            allowed, denial = _authorize_tool_call(tool_name, tool_args)
+            if not allowed:
+                logger.warning(
+                    "HTTP transport denied tools/call %s — %s",
+                    tool_name, denial.get("reason", "policy"),
+                )
+                return {
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32001,
+                        "message": denial.get(
+                            "reason", "Tool not available over HTTP transport"
+                        ),
+                        "data": denial,
+                    },
+                    "id": req_id,
+                }
+
+            from algochains_mcp.server import call_tool
             content = await call_tool(tool_name, tool_args)
             result = {
                 "content": [

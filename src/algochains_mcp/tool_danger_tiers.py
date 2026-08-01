@@ -148,7 +148,25 @@ _TOOL_TIERS: dict[str, int] = {
     "get_polymarket_market": TIER_READ_ONLY,
     "get_polymarket_market_history": TIER_READ_ONLY,
     "list_polymarket_markets": TIER_READ_ONLY,
-    "get_kalshi_settlements": TIER_READ_ONLY,
+    # SEC-2026-C9: Kalshi account-private readers were reachable via
+    # execute_dynamic_tool with no owner_token. `get_kalshi_account` and
+    # `get_kalshi_pnl_summary` matched the ("get_", TIER_READ_ONLY) prefix rule —
+    # the same hole as SEC-2026-C5 — and `get_kalshi_settlements` was explicitly
+    # READ_ONLY, so a prefix-only fix would have missed it.
+    #
+    # These are not market data. Every one calls kalshi_signed_get against
+    # /trade-api/v2/portfolio/* with the server's own signing key, returning live
+    # balance, open positions, resting orders, and settled trade history. That is
+    # the same category as place_kalshi_order's account, read instead of written,
+    # and the same category as get_broker_oauth_status.
+    #
+    # ORDER_EXEC is the tier that makes evaluate_dynamic_tool demand owner_token;
+    # there is no read-only-but-owner-gated tier to reach for. Tiering by blast
+    # radius rather than by verb is the intent — see the module docstring's
+    # "when in doubt, assign HIGHER tier".
+    "get_kalshi_account": TIER_ORDER_EXEC,
+    "get_kalshi_pnl_summary": TIER_ORDER_EXEC,
+    "get_kalshi_settlements": TIER_ORDER_EXEC,
     "get_physical_event_sources": TIER_READ_ONLY,
     "map_physical_event_assets": TIER_READ_ONLY,
     "score_physical_event_alpha": TIER_READ_ONLY,
@@ -213,7 +231,13 @@ _TOOL_TIERS: dict[str, int] = {
     "get_learning_signals": TIER_READ_ONLY,
     "send_ntfy_notification": TIER_WRITE_LOCAL,
     "get_prediction_market_bot_metrics": TIER_READ_ONLY,
-    "record_prediction_market_bot_metric": TIER_WRITE_LOCAL,
+    # SEC-2026-C10: record_prediction_market_bot_metric appends to the marketplace
+    # promotion audit trail. bot_id and market_id are caller-supplied strings and
+    # the only validation was platform in {polymarket, kalshi} — so any smart-mode
+    # caller could invent a bot and give it a flattering latency/edge history.
+    # Same shape as SEC-2026-C4 (upsert_bot_performance): the evidence a promotion
+    # rests on must not be writable by whoever benefits from the promotion.
+    "record_prediction_market_bot_metric": TIER_ORDER_EXEC,
     "propagate_trade_signal": TIER_ORDER_EXEC,
     "get_congressional_trades": TIER_READ_ONLY,
     "get_insider_activity": TIER_READ_ONLY,

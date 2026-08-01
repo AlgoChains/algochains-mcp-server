@@ -5125,8 +5125,12 @@ TIER1_TOOL_NAMES = {
     "get_polymarket_market",
     "get_polymarket_market_history",
     "list_polymarket_markets",
-    "get_kalshi_settlements",
-    "record_prediction_market_bot_metric",
+    # "get_kalshi_settlements" removed from Tier-1: SEC-2026-C9 — reads
+    # /trade-api/v2/portfolio/settlements with the server's Kalshi signing key.
+    # Now ORDER_EXEC; leaving it listed would advertise a tool that always refuses.
+    # "record_prediction_market_bot_metric" removed from Tier-1: SEC-2026-C10 —
+    # appends to the marketplace promotion audit trail with caller-supplied bot_id.
+    # Now ORDER_EXEC. The read tool stays Tier-1; it reports provenance counts.
     "get_prediction_market_bot_metrics",
     "check_propagation_health",
     # "test_signal_propagation" removed from Tier-1: SEC-2026-C7 — live signal injection.
@@ -8702,8 +8706,25 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         ))
 
     elif name == "scan_kalshi_edges":
+        # SEC-2026-C9 (adjacent): run_full_scan() calls get_account_state() to size
+        # its Kelly suggestions, and returned the raw account read alongside them —
+        # `positions` (every open market position) and `positions_open`. `scan_` has
+        # no prefix rule, so this tool defaults to WRITE_LOCAL, which is exactly the
+        # autonomous/research scope ceiling. Live position disclosure was therefore
+        # reachable one tool over from the two that were reported, without a token.
+        #
+        # Tiering the whole tool to ORDER_EXEC would break its legitimate research
+        # use, since edge scanning is not itself account-private. Dropping the two
+        # account fields from the response keeps the tool working and closes the
+        # leak. The engine function is left intact for owner-gated pipeline callers.
         from .order_flow.kalshi_strategy_engine import run_full_scan as _kalshi_scan
-        return _text(_kalshi_scan())
+        scan = _kalshi_scan()
+        if isinstance(scan, dict):
+            scan = {k: v for k, v in scan.items() if k not in ("positions", "positions_open")}
+            scan["account_fields_withheld"] = (
+                "positions/positions_open require get_kalshi_account (ORDER_EXEC, owner_token)"
+            )
+        return _text(scan)
 
     elif name == "get_kalshi_account":
         from .order_flow.kalshi_strategy_engine import get_account_state as _kalshi_acct
@@ -8983,6 +9004,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 action=str(args.get("action", "")),
                 notes=str(args.get("notes", "")),
                 extra=args.get("metadata") if isinstance(args.get("metadata"), dict) else None,
+                # SEC-2026-C10: reaching this handler means the ORDER_EXEC gate in
+                # evaluate_dynamic_tool / evaluate_stdio_direct_tool already matched
+                # owner_token and confirm. Record the path, not a claim about the values.
+                written_by="mcp_owner_authorized",
             )
             return _text(out)
         except KeyError as exc:
