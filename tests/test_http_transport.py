@@ -9,11 +9,20 @@ from algochains_mcp.http_transport import _dispatch_jsonrpc
 
 @pytest.mark.asyncio
 async def test_tools_call_uses_guarded_call_tool():
+    """A permitted tool still dispatches through server.call_tool.
+
+    The fixture tool changed from `mcp_tool_manifest` to a public one when the
+    2026-08-01 review closed the transport's role-matrix bypass. `mcp_tool_manifest`
+    returns every registered tool with its env-var requirements, so serving it here
+    would hand back exactly the names `tools/list` now withholds. The property this
+    test exists to pin — that dispatch goes through the guarded path rather than an
+    unguarded one — is unchanged.
+    """
     body = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
-        "params": {"name": "mcp_tool_manifest", "arguments": {}},
+        "params": {"name": "browse_strategy_marketplace", "arguments": {}},
     }
 
     with patch(
@@ -22,6 +31,28 @@ async def test_tools_call_uses_guarded_call_tool():
     ) as mock_call:
         result = await _dispatch_jsonrpc(object(), body, "session-1")
 
-    mock_call.assert_awaited_once_with("mcp_tool_manifest", {})
+    mock_call.assert_awaited_once_with("browse_strategy_marketplace", {})
     assert "error" not in result
     assert result["result"]["content"][0]["text"] == '{"ok": true}'
+
+
+@pytest.mark.asyncio
+async def test_tools_call_denies_owner_tool_before_dispatch():
+    """The bypass this transport used to have: satisfying the transport bearer
+    reached every registered tool. Denial must happen BEFORE call_tool runs, so
+    assert the mock was never awaited rather than only checking the response."""
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "get_account", "arguments": {}},
+    }
+
+    with patch(
+        "algochains_mcp.server.call_tool",
+        new=AsyncMock(return_value=[TextContent(type="text", text="{}")]),
+    ) as mock_call:
+        result = await _dispatch_jsonrpc(object(), body, "session-1")
+
+    mock_call.assert_not_awaited()
+    assert "error" in result

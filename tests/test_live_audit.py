@@ -69,7 +69,12 @@ def test_no_hardcoded_secrets_in_test_file():
         r"os\.environ\[['\"].*_KEY['\"]\]\s*=\s*['\"][A-Za-z0-9+/]{16,}",
     ]
     this_file = os.path.abspath(__file__)
-    src = open(this_file).read()
+    # encoding= is not cosmetic here. Without it Python uses the platform default —
+    # cp1252 on Windows — and server.py's non-ASCII raises UnicodeDecodeError before
+    # a single pattern is checked. The secret scan reported failure rather than
+    # "clean", but it had scanned nothing; on a runner that tolerates the error it
+    # would report clean for the same reason. Found 2026-08-01.
+    src = open(this_file, encoding="utf-8").read()
     hits = []
     for pat in _bad_patterns:
         if re.search(pat, src):
@@ -116,7 +121,7 @@ def test_lazy_singletons_initialise():
 
 def test_no_bare_except_in_server():
     """Bare 'except:' clauses in server.py swallow all errors; report count."""
-    with open(_server_path()) as f:
+    with open(_server_path(), encoding="utf-8") as f:
         tree = ast.parse(f.read())
     bare = sum(
         1 for node in ast.walk(tree)
@@ -136,7 +141,7 @@ def test_no_hardcoded_secrets_in_server():
         r'(?i)password\s*=\s*["\'][^"\']+["\']',
         r'(?i)token\s*=\s*["\'][A-Za-z0-9._\-]{20,}["\']',
     ]
-    with open(_server_path()) as f:
+    with open(_server_path(), encoding="utf-8") as f:
         lines = f.readlines()
     hits = []
     for i, line in enumerate(lines, 1):
