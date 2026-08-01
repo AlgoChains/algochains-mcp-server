@@ -32,7 +32,7 @@ def _get_registered_tools() -> list:
             {
                 "name": t.name,
                 "description": t.description,
-                "inputSchema": t.inputSchema,
+                "inputSchema": srv._tool_input_schema(t),
             }
             for t in srv.TOOLS_ANNOTATED
         ]
