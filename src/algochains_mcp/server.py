@@ -249,7 +249,11 @@ from .memory_safety import get_memory_monitor, MemoryMonitor
 from .handlers.physical_world import PHYSICAL_WORLD_HANDLERS
 from .handlers.cricket_bot import CRICKET_BOT_HANDLERS
 from .tool_manifest import build_manifest
-from .tool_policy import evaluate_dynamic_tool, evaluate_stdio_direct_tool
+from .tool_policy import (
+    assp_policy_import_error,
+    evaluate_dynamic_tool,
+    evaluate_stdio_direct_tool,
+)
 from .otel_tracing import redacted_argument_hash, trace_span
 
 # ─── V20 Account Protection — lightweight, no ML deps ───────────────────────
@@ -433,6 +437,12 @@ from algochains_mcp import __version__ as _server_version
 
 SERVER_INSTRUCTIONS = (
     f"AlgoChains MCP Server v{_server_version} — The Ultimate Algo Quant Stack. "
+    "LIVE-OPS ROUTING (mandatory): bot health/status → get_bot_health; "
+    "owner P&L → portfolio_summary; subscriber paper P&L → get_my_pnl/get_my_portfolio; "
+    "flat/positions → get_positions; brackets/unprotected → check_unprotected_positions; "
+    "working orders → get_orders; live quote now → get_quote. "
+    "NEVER use web search or chat memory for live AlgoChains ops — fail closed if tools fail. "
+    "See docs/LIVE_OPS_TOOL_ROUTING.md. "
     "~533 tools across 21 domains: market data, trading, strategy building, ML/AI, execution, "
     "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
     "Onyx RAG intelligence, Graphiti temporal knowledge graph, MCP 2025-11-25 spec compliance, "
@@ -1228,7 +1238,18 @@ def _get_dynamic_gateway():
         if cls:
             _dynamic_gateway = cls()
             _dynamic_gateway.register_tools_from_list(
-                [t.model_dump() if hasattr(t, 'model_dump') else {"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in TOOLS],
+                [
+                    (
+                        {**t.model_dump(by_alias=True), "inputSchema": _tool_input_schema(t)}
+                        if hasattr(t, "model_dump")
+                        else {
+                            "name": t.name,
+                            "description": t.description,
+                            "inputSchema": _tool_input_schema(t),
+                        }
+                    )
+                    for t in TOOLS
+                ],
                 category="core",
                 version=f"v{_server_version}",
             )
@@ -1383,6 +1404,27 @@ def _text(data: Any) -> list[TextContent]:
     return [TextContent(type="text", text=str(data))]
 
 
+def _assp_emit_deny(
+    *,
+    rule_id: str,
+    tool_name: str,
+    deny_reason: str,
+    **extras: Any,
+) -> None:
+    """Best-effort ASSP mcp_audit JSONL emit; never breaks tool execution."""
+    try:
+        from .assp_mcp_audit import emit_mcp_audit_denial
+
+        emit_mcp_audit_denial(
+            rule_id=rule_id,
+            tool_name=tool_name,
+            deny_reason=deny_reason,
+            **extras,
+        )
+    except Exception:
+        pass
+
+
 def _error_text(exc: Exception) -> list[TextContent]:
     """Structured error response for tool failures."""
     if isinstance(exc, AlgoChainsError):
@@ -1509,7 +1551,12 @@ TOOLS = [
     ),
     Tool(
         name="get_positions",
-        description="Get all open positions from a broker.",
+        description=(
+            "broker_truth / live ops — open positions from a connected broker "
+            "(flat check, exposure, unrealized P&L only). "
+            "Use for 'am I flat', 'open positions', 'exposure'. "
+            "Do NOT substitute web search or memory. unrealized_pnl ≠ realized session P&L."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -1517,32 +1564,16 @@ TOOLS = [
             },
             "required": ["broker"],
         },
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "positions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "symbol": {"type": "string"},
-                            "qty": {"type": "number"},
-                            "side": {"type": "string"},
-                            "avg_entry_price": {"type": "number"},
-                            "current_price": {"type": "number"},
-                            "unrealized_pnl": {"type": "number"},
-                            "market_value": {"type": "number"},
-                        },
-                    },
-                },
-                "count": {"type": "integer"},
-            },
-        },
+        # No outputSchema: TextContent JSON only (structuredContent gap breaks
+        # OpenClaw / Cursor MCP clients — same class as get_quote).
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_orders",
-        description="Get orders from a broker, optionally filtered by status.",
+        description=(
+            "broker_truth / live ops — working/open/closed orders from a connected broker. "
+            "Use for 'working orders', 'pending orders'. Do NOT use web search."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -1551,33 +1582,17 @@ TOOLS = [
             },
             "required": ["broker"],
         },
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "orders": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "order_id": {"type": "string"},
-                            "symbol": {"type": "string"},
-                            "side": {"type": "string"},
-                            "qty": {"type": "number"},
-                            "order_type": {"type": "string"},
-                            "status": {"type": "string"},
-                            "filled_qty": {"type": "number"},
-                            "limit_price": {"type": "number"},
-                        },
-                    },
-                },
-                "count": {"type": "integer"},
-            },
-        },
+        # No outputSchema: TextContent JSON only (structuredContent gap).
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="portfolio_summary",
-        description="Get a unified portfolio summary across ALL connected brokers — total equity, positions, and P&L.",
+        description=(
+            "broker_truth / live ops — unified portfolio across connected brokers "
+            "(equity, positions, P&L). Use for owner 'today's P&L' / 'how did we do'. "
+            "Do NOT invent numbers from web search or memory. "
+            "Subscribers should use get_my_pnl / get_my_portfolio instead."
+        ),
         inputSchema={"type": "object", "properties": {}},
     
         annotations=ANNOT_READ_EXTERNAL,
@@ -1585,7 +1600,11 @@ TOOLS = [
     # ── Market Data ─────────────────────────────────────────────
     Tool(
         name="get_quote",
-        description="Get current quote (bid/ask/last) for a symbol from a broker.",
+        description=(
+            "broker_truth / live ops — right-now bid/ask/last for a symbol from a connected broker. "
+            "Use for 'MNQ price right now' / live quote. "
+            "Do NOT scrape CME/Yahoo via web search. For historical OHLCV bars use data/backtest tools."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -1594,17 +1613,7 @@ TOOLS = [
             },
             "required": ["broker", "symbol"],
         },
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "bid": {"type": "number"},
-                "ask": {"type": "number"},
-                "last": {"type": "number"},
-                "volume": {"type": "number"},
-                "timestamp": {"type": "string"},
-            },
-        },
+        # No outputSchema: TextContent JSON only (structuredContent gap breaks OpenClaw).
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
@@ -1646,11 +1655,11 @@ TOOLS = [
     Tool(
         name="get_bot_health",
         description=(
-            "Return a unified health snapshot for all four live futures bots (MNQ, CL, MES, NQ) "
-            "and the Kalshi daemon. For each bot: process up? last log mtime, last signal ts, "
-            "current regime, error count in last 100 log lines, token expiry (if Tradovate). "
-            "Includes E2E sentinel lifecycle state for MNQ execution traceability. "
-            "Pure read-only — reads logs/, state/, and ps aux on the control tower host."
+            "broker_truth / live ops — unified health for live futures bots (MNQ, CL, MES, NQ) "
+            "and Kalshi: process up?, log mtime, last signal, regime, recent errors, token expiry, "
+            "e2e_sentinel. Use for 'MNQ health check', 'is the bot running', 'bot status'. "
+            "Do NOT use web search (CME/Yahoo) for bot liveness — that is market news, not AlgoChains processes. "
+            "For live market price use get_quote. Pure read-only on control-tower host (logs/, state/, ps)."
         ),
         inputSchema={
             "type": "object",
@@ -2048,7 +2057,7 @@ TOOLS = [
     # ── V6: Notifications ─────────────────────────────────────
     Tool(
         name="configure_notifications",
-        description="Configure notification channels: slack, email, discord, telegram, mobile push (FCM/APNS).",
+        description="Configure notification channels (owner-only). Slack/Discord webhook URLs are SSRF-checked.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -2057,15 +2066,16 @@ TOOLS = [
                 "api_key": {"type": "string", "description": "API key (for email/FCM)"},
                 "bot_token": {"type": "string", "description": "Bot token (for Telegram)"},
                 "chat_id": {"type": "string", "description": "Chat ID (for Telegram)"},
+                "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"},
             },
-            "required": ["channel"],
+            "required": ["channel", "owner_token"],
         },
     
         annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="send_notification",
-        description="Send a notification across configured channels. Supports order fills, P&L alerts, drawdown warnings, and custom messages.",
+        description="Send a notification across owner-configured channels. Outbound webhook channels require owner_token.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -2074,6 +2084,7 @@ TOOLS = [
                 "body": {"type": "string"},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"], "default": "medium"},
                 "channels": {"type": "array", "items": {"type": "string"}, "description": "Override default channels"},
+                "owner_token": {"type": "string", "description": "Required when channels include slack/discord/telegram/email/fcm/apns"},
             },
             "required": ["title", "body"],
         },
@@ -3123,10 +3134,10 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     # ═══════════════════════════════════════════════════════════════
-    # Cricket Bot (Avi's external partner API — Avi Predictions listing, 5 tools)
+    # Cricket Bot (Avi's external partner API — Agent Cricket007 listing, 5 tools)
     # Read-only observability; advisory only, never a trading dependency.
     # ═══════════════════════════════════════════════════════════════
-    Tool(name="get_cricket_bot_performance", description="Aggregate cricket-bot stats from Avi's partner API: win rate, total P&L, best/worst trade. Filter by platform (polymarket|kalshi|all), tournament ('MLC 2026' exact or 'MLC' any year), innings (1|2). Read-only, advisory; backs the Avi Predictions marketplace listing.",
+    Tool(name="get_cricket_bot_performance", description="Aggregate cricket-bot stats from Avi's partner API: win rate, total P&L, best/worst trade. Filter by platform (polymarket|kalshi|all), tournament ('MLC 2026' exact or 'MLC' any year), innings (1|2). Read-only, advisory; backs the Agent Cricket007 marketplace listing.",
          inputSchema={"type": "object", "properties": {"platform": {"type": "string", "enum": ["all", "polymarket", "kalshi"], "default": "all"}, "tournament": {"type": "string", "description": "e.g. 'MLC 2026' (exact) or 'MLC' (any year)"}, "innings": {"type": "integer", "enum": [1, 2], "description": "1 = first innings, 2 = chase"}}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="get_cricket_bot_trades", description="Cricket-bot individual trade history: player, tier (STAR|IN-FORM|LOW), entry/exit probability prices, size_usdc, pnl_usdc, exit_reason. Each trade carries platform=polymarket|kalshi. Paginated (limit max 500). Read-only, advisory.",
@@ -3260,11 +3271,26 @@ TOOLS = [
     Tool(name="list_data_warehouses", description="List available AlgoChains data warehouses with row counts, schemas, and access requirements.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+
+    Tool(name="start_sandboxed_agent",
+         description="Start an AlgoClaw MCP-only agent session in an app-owned sandbox (path allowlist, no inherited broker/owner env, runtime quotas). Requires agent:sandbox scope. Fail closed without the scope.",
+         inputSchema={"type": "object", "properties": {
+             "task": {"type": "string", "description": "Agent task / objective"},
+             "max_runtime_sec": {"type": "integer", "default": 300}
+         }, "required": ["task"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="reserve_llm_budget",
+         description="Atomically reserve USD against the developer key's daily LLM budget (spend:llm_budget). Fail closed on ledger errors or exhaustion.",
+         inputSchema={"type": "object", "properties": {
+             "amount_usd": {"type": "number"},
+             "daily_cap_usd": {"type": "number", "description": "Optional override; defaults to entitlement/env cap"}
+         }, "required": ["amount_usd"]},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="run_builder_backtest", description="Run a backtest using the Builder SDK. Supports built-in strategies (SMA crossover, RSI, Bollinger Bands, etc.) or custom data. Returns Sharpe, MaxDD, win rate, profit factor, and marketplace readiness check.",
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "default": "custom"}, "timeframe": {"type": "string", "default": "1d"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "initial_capital": {"type": "number", "default": 100000}}, "required": ["symbol"]},
          annotations=ANNOT_COMPUTE),
-    Tool(name="submit_to_marketplace", description="Submit a validated strategy to the AlgoChains marketplace. Runs 7-gate validation (schema, performance, overfitting, MCPT, walk-forward, paper trading, decay monitor). Returns tier classification (Platinum/Gold/Silver/Bronze) and next steps.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "enum": ["trend", "mean_reversion", "breakout", "momentum", "scalp", "pairs", "stat_arb"]}, "timeframe": {"type": "string"}, "oos_sharpe": {"type": "number"}, "oos_trades": {"type": "integer"}, "max_drawdown_pct": {"type": "number"}, "is_sharpe": {"type": "number"}, "win_rate": {"type": "number"}, "profit_factor": {"type": "number"}, "mcpt_p_value": {"type": "number"}, "mcpt_permutations": {"type": "integer"}, "wf_folds": {"type": "integer"}, "wf_avg_oos_sharpe": {"type": "number"}, "wf_worst_fold": {"type": "number"}, "description": {"type": "string"}, "asset_class": {"type": "string", "default": "stock"}, "price_monthly": {"type": "number", "default": 29.99}}, "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct"]},
+    Tool(name="submit_to_marketplace", description="Validate a strategy for marketplace readiness. Tier-1 calls are dry-run unless LISTING_API_KEY is configured; staging then requires a verified local artifact path + SHA-256.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "enum": ["trend", "mean_reversion", "breakout", "momentum", "scalp", "pairs", "stat_arb"]}, "timeframe": {"type": "string"}, "oos_sharpe": {"type": "number"}, "oos_trades": {"type": "integer"}, "max_drawdown_pct": {"type": "number"}, "is_sharpe": {"type": "number"}, "win_rate": {"type": "number"}, "profit_factor": {"type": "number"}, "mcpt_p_value": {"type": "number"}, "mcpt_permutations": {"type": "integer"}, "wf_folds": {"type": "integer"}, "wf_avg_oos_sharpe": {"type": "number"}, "wf_worst_fold": {"type": "number"}, "description": {"type": "string"}, "asset_class": {"type": "string", "default": "stock"}, "price_monthly": {"type": "number", "default": 29.99}, "verification_artifact": {"type": "object", "description": "Required only for staging: {path, sha256, artifact_id?}. Path must be under ALGOCHAINS_VERIFIED_ARTIFACT_DIR.", "properties": {"path": {"type": "string"}, "sha256": {"type": "string"}, "artifact_id": {"type": "string"}}}}, "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_submission_guide", description="Get the step-by-step guide for submitting a strategy to the AlgoChains marketplace. Includes gate requirements, pricing guide, IP protection details, and revenue split information.",
          inputSchema={"type": "object", "properties": {}, "required": []},
@@ -3339,8 +3365,8 @@ TOOLS = [
     Tool(name="rollback_evolution", description="Roll back a strategy to its pre-evolution checkpoint if the promoted version underperforms.",
          inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}}, "required": ["strategy_id"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="record_trade_episode", description="Record a completed trade episode into episodic trade memory for AlphaLoop learning. Stores entry/exit, regime, P&L, and lessons.",
-         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "symbol": {"type": "string"}, "side": {"type": "string"}, "entry_price": {"type": "number"}, "exit_price": {"type": "number"}, "pnl_usd": {"type": "number"}, "regime": {"type": "string"}, "lesson": {"type": "string"}}, "required": ["strategy_id", "symbol", "side", "entry_price", "exit_price", "pnl_usd"]},
+    Tool(name="record_trade_episode", description="Record a completed trade episode into episodic trade memory for AlphaLoop learning. Stores entry/exit, regime, P&L, and lessons. Owner-only SQLite write.",
+         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "symbol": {"type": "string"}, "side": {"type": "string"}, "entry_price": {"type": "number"}, "exit_price": {"type": "number"}, "pnl_usd": {"type": "number"}, "regime": {"type": "string"}, "lesson": {"type": "string"}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."}}, "required": ["strategy_id", "symbol", "side", "entry_price", "exit_price", "pnl_usd", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="query_trade_memory", description="Semantic search over episodic trade memory. Find similar past trades by regime, setup, or performance characteristics.",
          inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "strategy_id": {"type": "string"}, "regime": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, "required": ["query"]},
@@ -3807,7 +3833,7 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_bot_heartbeat_openclaw",
-         description="Read the bot heartbeat state from OpenClaw — shows which bots are alive, last-seen timestamps, and LIVE/STALE status. Written by autonomous_watchdog.py every 5 minutes.",
+         description="Read ~/.openclaw/bot_heartbeat.json. This file is MNQ-only and fill-triggered (written by FUTURES_SCALPER_UPGRADED._track_openclaw_feedback on slippage/fill feedback), NOT by autonomous_watchdog every 5 minutes. Schema is typically {ts, bot, symbol}. For fleet process liveness use get_bot_health / get_all_bot_ops_status; for failover primary use control-tower logs/bot_heartbeat.json.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_agent_evaluations",
@@ -3831,12 +3857,13 @@ TOOLS = [
              "trigger_type": {"type": "string", "default": "mcp_manual"},
          }, "required": ["symbol", "direction", "confidence"]},
          annotations=ANNOT_READ_ONLY),
-    Tool(name="run_mcpt_pipeline",
+    Tool(name="run_mcpt_pipeline",  # ASSP: dry_run default True — see handler
          description="Run the MCPT marketplace autopilot pipeline. Steps: decay (check edge decay), graduate (30-day paper trading gates), audit (batch MCPT re-validation), listing (generate marketplace JSON), slack (post summary to #quant-lab). Calls scripts/mcpt_autopilot.py.",
          inputSchema={"type": "object", "properties": {
              "step": {"type": "string", "enum": ["all", "sync", "decay", "graduate", "audit", "listing", "slack"], "default": "all"},
-             "dry_run": {"type": "boolean", "default": False, "description": "Report only, no writes"},
+             "dry_run": {"type": "boolean", "default": True, "description": "ASSP: default true — report only, no writes. Set false only with owner_token."},
              "no_desktop": {"type": "boolean", "default": False},
+             "owner_token": {"type": "string", "description": "Required when dry_run=false"},
          }, "required": []},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="run_regime_detection",
@@ -3896,8 +3923,8 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════
     # Desktop Tower Job Dispatcher
     # ═══════════════════════════════════════════════════════════════
-    Tool(name="dispatch_tower_job", description="Dispatch a heavy compute job to a configured GPU compute node (set ALGOCHAINS_TOWER_HOST) via SSH. Jobs: optuna_optimize, walk_forward_backtest, ml_retrain, mcpt_validation. Returns job_id for polling. Small jobs (<500MB) run locally; large/GPU jobs route to the compute node automatically.",
-         inputSchema={"type": "object", "properties": {"job_type": {"type": "string", "enum": ["optuna_optimize", "walk_forward_backtest", "ml_retrain", "mcpt_validation", "large_backtest", "factor_model_compute"]}, "params": {"type": "object", "description": "Job parameters: bot, symbol, n_trials, data_start, data_end, model, etc."}, "force_local": {"type": "boolean", "default": False}}, "required": ["job_type"]},
+    Tool(name="dispatch_tower_job", description="Dispatch a heavy compute job to a configured GPU compute node (set ALGOCHAINS_TOWER_HOST) via SSH. Jobs: optuna_optimize, walk_forward_backtest, ml_retrain, mcpt_validation. Returns job_id for polling. Small jobs (<500MB) run locally; large/GPU jobs route to the compute node automatically. Owner-only (AC-MCP-007).",
+         inputSchema={"type": "object", "properties": {"job_type": {"type": "string", "enum": ["optuna_optimize", "walk_forward_backtest", "ml_retrain", "mcpt_validation", "large_backtest", "factor_model_compute"]}, "params": {"type": "object", "description": "Job parameters: bot, symbol, n_trials, data_start, data_end, model, etc."}, "force_local": {"type": "boolean", "default": False}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."}}, "required": ["job_type", "owner_token"]},
          annotations=ANNOT_COMPUTE),
     Tool(name="get_tower_job_status", description="Get status and result of a dispatched tower job. Polls the tower via SSH for the result file.",
          inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
@@ -3930,10 +3957,11 @@ TOOLS = [
              "limit": {"type": "integer", "default": 50, "description": "Max listings to return"},
          }, "required": []},
          annotations=ANNOT_READ_ONLY),
-    Tool(name="get_subscriber_bots", description="Get all active bot subscriptions for a given subscriber. Returns listing details, status, and join date. Requires SUPABASE_SERVICE_ROLE_KEY. Pass user_id as email or UUID.",
+    Tool(name="get_subscriber_bots", description="Owner-only: list bot assignments for a subscriber (service_role lookup). Subscribers should use get_my_assignments on their API key. REQUIRES owner_token.",
          inputSchema={"type": "object", "properties": {
-             "user_id": {"type": "string", "description": "Subscriber email address or UUID"},
-         }, "required": ["user_id"]},
+             "subscriber_id": {"type": "string", "description": "Subscriber UUID"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"},
+         }, "required": ["subscriber_id", "owner_token"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="deliver_strategy_to_subscriber",
          description="Deliver an approved marketplace strategy config to a subscriber's bot endpoint. "
@@ -3947,16 +3975,17 @@ TOOLS = [
              "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
          }, "required": ["subscriber_id", "strategy_id", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the self-hosted Onyx RAG host (ONYX_API_URL).",
+    Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the self-hosted Onyx RAG host (ONYX_API_URL). Owner-only side effect (AC-MCP-009).",
          inputSchema={"type": "object", "properties": {
              "full_sync": {"type": "boolean", "default": False, "description": "Full re-index vs incremental (new files only)"},
-         }, "required": []},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+         }, "required": ["owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_onyx_status", description="Check Onyx knowledge base status: health, last sync time, total indexed documents, connector status (self-hosted host via ONYX_API_URL).",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="get_learn_hub_health", description="Check AlgoChains Learn Hub health: HTTP status of /learn/, /learn/feed.xml RSS MIME, and learn.algochains.ai subdomain redirect. Read-only — does NOT deploy. Use to verify the live Learn Hub is up and public (no login required).",
-         inputSchema={"type": "object", "properties": {"base_url": {"type": "string", "description": "Base URL to check (default: https://algochains.ai)", "default": "https://algochains.ai"}}, "required": []},
+         inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     # ═══════════════════════════════════════════════════════════════
     # V22: Live Bot Intelligence — real metrics, heartbeat, academic citations
@@ -4042,7 +4071,13 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Symbol to flatten: MNQ | CL | MES | NQ"}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"}}, "required": ["symbol", "owner_token"]},
          annotations=ANNOT_DESTRUCTIVE),
     Tool(name="check_unprotected_positions",
-         description="Cross-check ALL open Tradovate positions vs working orders to identify unprotected exposure (position open, no stop/target orders). Returns status OK | UNPROTECTED_EXPOSURE. Run before any P&L report or after any bot restart. Prevents repeat of Apr 14 2026 -$4.9k incident.",
+         description=(
+             "broker_truth / live ops — cross-check ALL open Tradovate positions vs working orders "
+             "to find unprotected exposure (position open, no stop/target). "
+             "Use for 'unprotected?', 'do I have stops?', 'bracket check'. Do NOT use web search. "
+             "Returns OK | UNPROTECTED_EXPOSURE. Run before P&L reports and after restarts "
+             "(prevents Apr 14 2026 -$4.9k class)."
+         ),
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="bracket_integrity_check",
@@ -4161,14 +4196,15 @@ TOOLS = [
          },
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="connect_onyx_docs",
-         description="Index local research documents (PDF, Markdown, JSON, TXT) into the Onyx RAG knowledge base. Documents become searchable via onyx_ask() and onyx_search(). Supports recursive directory scanning. Requires Onyx to be running at ONYX_API_URL.",
+         description="Index local research documents (PDF, Markdown, JSON, TXT) into the Onyx RAG knowledge base. Documents become searchable via onyx_ask() and onyx_search(). Supports recursive directory scanning. Requires Onyx to be running at ONYX_API_URL. Owner-only side effect (AC-MCP-009).",
          inputSchema={
              "type": "object",
              "properties": {
                  "doc_paths": {"type": "array", "items": {"type": "string"}, "description": "List of absolute file or directory paths."},
                  "doc_type": {"type": "string", "enum": ["strategy_research", "blueprint", "backtest", "whitepaper", "general"], "description": "Document category for Onyx tagging."},
+                 "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
              },
-             "required": ["doc_paths", "doc_type"],
+             "required": ["doc_paths", "doc_type", "owner_token"],
          },
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="register_strategy",
@@ -4194,7 +4230,7 @@ TOOLS = [
 
     # ── Support Ticket System ──────────────────────────────────────────────
     Tool(name="create_support_ticket",
-         description="Create an IT support ticket. Stores in Supabase, syncs to Notion, and sends email confirmation. Use for bug reports, billing issues, broker connection problems, or onboarding help.",
+         description="Create an idempotent IT support ticket in the canonical Django support system. Use for bug reports, billing issues, broker connection problems, or onboarding help.",
          inputSchema={"type": "object", "properties": {
              "subject": {"type": "string", "description": "Short summary (max 200 chars)"},
              "description": {"type": "string", "description": "Full problem description"},
@@ -4203,10 +4239,11 @@ TOOLS = [
              "priority": {"type": "string", "enum": ["low","medium","high","critical"], "default": "medium"},
              "user_id": {"type": "string"},
              "metadata": {"type": "object"},
+             "idempotency_key": {"type": "string", "description": "Stable caller event ID used to deduplicate retries."},
          }, "required": ["subject","description","user_email"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_support_ticket",
-         description="Get a support ticket by ID. Returns full ticket details including status, responses, and Notion page link.",
+         description="Get a canonical support ticket by ID, including status and responses.",
          inputSchema={"type": "object", "properties": {"ticket_id": {"type": "string"}}, "required": ["ticket_id"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="list_support_tickets",
@@ -4336,10 +4373,11 @@ TOOLS = [
     Tool(name="create_developer_key",
          description="Mint a new ac_live_* or ac_test_* developer API key. Requires AAL2 session (enroll_mfa + verify_mfa first). Plaintext key returned ONCE ONLY — save immediately.",
          inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "AAL2 access token from verify_mfa response"},
              "name": {"type": "string", "description": "Friendly name for the key", "default": "default"},
              "scopes": {"type": "array", "items": {"type": "string"}, "description": "e.g. ['read:market_data','read:signals']"},
              "env": {"type": "string", "enum": ["live", "test"], "default": "live"},
-         }, "required": []},
+         }, "required": ["access_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="list_developer_keys",
          description="List your developer API keys (masked — plaintext never returned after creation).",
@@ -4348,15 +4386,17 @@ TOOLS = [
     Tool(name="rotate_developer_key",
          description="Atomically rotate a developer key (revoke old, mint new). Requires AAL2 session. New plaintext returned ONCE ONLY.",
          inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "AAL2 access token from verify_mfa response"},
              "key_id": {"type": "string", "description": "UUID of the key to rotate"},
              "name": {"type": "string", "description": "Name for the new key (defaults to old key's name)"},
-         }, "required": ["key_id"]},
+         }, "required": ["access_token", "key_id"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="revoke_developer_key",
          description="Revoke (soft-delete) a developer API key. Requires AAL2 session.",
          inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "AAL2 access token from verify_mfa response"},
              "key_id": {"type": "string"},
-         }, "required": ["key_id"]},
+         }, "required": ["access_token", "key_id"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_developer_key_usage",
          description="Get usage metadata for a developer key (last used, scopes, active status).",
@@ -4819,17 +4859,19 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_SAFE),
     Tool(name="build_prop_fund_inputs",
-         description="Pull REAL Tradovate fills (no synthetic data) for a strategy over lookback_days, FIFO-match to realized trades, and return: daily_pnl series, win_rate, sharpe, avg_trade_pnl, max_drawdown_pct, and trade count. Fails closed if no real fills are found. Use this to feed evaluate_strategy_for_prop_fund and simulate_prop_fund_evaluation with live data.",
+         description="OWNER-ONLY: Pull REAL Tradovate fills for prop-fund analysis. Returns sensitive realized P&L and requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "strategy_name": {"type": "string", "description": "Bot name for tagging, e.g. FUTURES_SCALPER_UPGRADED"},
              "symbol": {"type": "string", "description": "Root symbol, e.g. MNQ"},
              "lookback_days": {"type": "integer", "default": 90},
              "account_id": {"type": "integer", "description": "Tradovate account id (defaults to primary)"},
              "fills_override": {"type": "array", "items": {"type": "object"}, "description": "Optional pre-pulled fills list for offline analysis"},
-         }, "required": ["strategy_name", "symbol"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+             "confirm": {"type": "boolean", "description": "Explicit authorization to read broker fill P&L."},
+         }, "required": ["strategy_name", "symbol", "owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="onboard_prop_account",
-         description="Stage a new prop firm account for the autopilot. Two-phase: first call returns fee/rules confirmation preview; pass confirm=true to commit. Never pays the evaluation fee — operator does that manually on the firm's website. Writes autopilot state.",
+         description="OWNER-ONLY: Stage a new prop firm account for the autopilot. Requires owner_token + confirm=true. Never pays the evaluation fee.",
          inputSchema={"type": "object", "properties": {
              "fund_key": {"type": "string"},
              "account_id": {"type": "string"},
@@ -4837,32 +4879,38 @@ TOOLS = [
              "starting_balance": {"type": "number"},
              "credentials_ref": {"type": "string", "description": "Reference key in credential vault"},
              "confirm": {"type": "boolean", "default": False},
-         }, "required": ["fund_key", "account_id", "broker", "starting_balance"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+         }, "required": ["fund_key", "account_id", "broker", "starting_balance", "owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="deploy_bot_in_prop_mode",
-         description="Generate the prop_mode config JSON for a staged account and return the exact env vars (PROP_MODE=true, PROP_MODE_CONFIG=...) the operator must set to launch the bot. Does NOT start the bot — operator runs launch command. Requires confirm=true.",
+         description="OWNER-ONLY: Generate prop-mode config for a staged account. Does NOT start the bot. Requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "account_id": {"type": "string"},
              "bot_name": {"type": "string", "default": "FUTURES_SCALPER_UPGRADED"},
              "symbol": {"type": "string", "default": "MNQ"},
              "confirm": {"type": "boolean", "default": False},
-         }, "required": ["account_id"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+         }, "required": ["account_id", "owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="get_prop_mode_status",
-         description="Return autopilot status for all staged/active prop accounts — current phase (onboarded/deployed/evaluating/funded), balance, days traded, distance to profit target, distance to drawdown, consistency utilization.",
+         description="OWNER-ONLY: Return sensitive prop-account status and balances. Requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "account_id": {"type": "string", "description": "Optional — filter to one account"},
-         }, "required": []},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+             "confirm": {"type": "boolean", "description": "Explicit authorization to read account state."},
+         }, "required": ["owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="request_prop_payout",
-         description="Check if an account is eligible for a payout given the firm's safety net, first-payout-day, and cap rules. Returns preview only — operator requests payout manually.",
+         description="OWNER-ONLY: Check prop-account payout eligibility. Returns preview only and requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "account_id": {"type": "string"},
              "current_balance": {"type": "number"},
-         }, "required": ["account_id", "current_balance"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+             "confirm": {"type": "boolean", "description": "Explicit authorization to read payout state."},
+         }, "required": ["account_id", "current_balance", "owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="run_prop_fund_autopilot",
-         description="End-to-end read-only pipeline: build real-data inputs for a strategy, evaluate vs every eligible fund (or a filtered set), simulate drawdown, and return a prioritized recommendation (GO / HOLD / NO-GO) with rules-verified fields. Never commits fees or launches bots.",
+         description="OWNER-ONLY: Analyze real broker fills/P&L against prop-fund rules. Never commits fees or launches bots. Requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "strategy_name": {"type": "string", "default": "FUTURES_SCALPER_UPGRADED"},
              "symbol": {"type": "string", "default": "MNQ"},
@@ -4870,7 +4918,9 @@ TOOLS = [
              "account_id": {"type": "integer"},
             "fund_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional filter, e.g. ['apex_50k_eod','mffu_core_50k']"},
             "fills_override": {"type": "array", "items": {"type": "object"}},
-         }, "required": []},
+            "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+            "confirm": {"type": "boolean", "description": "Explicit authorization to read broker fill P&L."},
+         }, "required": ["owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="check_prop_fund_rules_freshness",
          description="Audit all supported prop fund entries for how recently their rules were verified. Flags any entry older than max_age_days.",
@@ -5122,7 +5172,8 @@ TIER1_TOOL_NAMES = {
     # Marketplace Autopilot + Onyx
     "run_marketplace_autopilot",
     "get_marketplace_listings",
-    "run_onyx_ingest",
+    # ASSP: run_onyx_ingest removed from Tier-1 (owner-gated RAG side effect, AC-MCP-009)
+    # "run_onyx_ingest",
     "get_onyx_status",
     "get_learn_hub_health",
     # V22 — Live Bot Intelligence (always Tier 1 — powers bot cards)
@@ -5138,7 +5189,8 @@ TIER1_TOOL_NAMES = {
     "get_bot_position_state",
     "get_bot_bracket_status",
     "get_ai_pipeline_health",
-    "get_all_bot_ops_status",
+    # ASSP: get_all_bot_ops_status removed from Tier-1 (position/bracket disclosure)
+    # "get_all_bot_ops_status",
     # V26.1 — Bracket integrity (always Tier 1 — safety critical)
     "check_unprotected_positions",
     "bracket_integrity_check",
@@ -5172,12 +5224,14 @@ TIER1_TOOL_NAMES = {
     # Kronos + Rithmic live tools (always Tier 1 — bot operators need these)
     "get_kronos_shadow_stats",
     "get_signal_trade_correlation",
-    "get_rithmic_live_accounts",
-    "get_rithmic_live_pnl",
-    "get_rithmic_live_positions",
-    "get_rithmic_live_fills",
+    "start_sandboxed_agent",
+    "reserve_llm_budget",
+    # ASSP: Rithmic live account tools removed from Tier-1 (owner-gated AC-MCP)
+    # "get_rithmic_live_accounts", "get_rithmic_live_pnl",
+    # "get_rithmic_live_positions", "get_rithmic_live_fills",
     # Support Tickets — create only (public intake); admin tools require owner_token (SEC-2026-C8)
-    "create_support_ticket",
+    # ASSP: create_support_ticket escalated — side-effect spam (AC)
+    # "create_support_ticket",
     # "get_support_ticket", "list_support_tickets", "update_ticket_status", "get_ticket_stats"
     # removed from Tier-1: SEC-2026-C8 — service_role reads/writes without auth.
     # OAuth Broker Connection
@@ -5229,9 +5283,8 @@ TIER1_TOOL_NAMES = {
     "get_waitlist_stats",
     # "send_waitlist_invite" removed from Tier-1: SEC-2026-C3 FIX — invite minting
     # requires owner_token (ORDER_EXEC tier). See tool_danger_tiers.py.
-    # Verification
-    "send_email_verification_code",
-    "send_sms_verification_code",
+    # Verification — ASSP: outbound email/SMS removed from Tier-1 (AC-MCP-006)
+    # "send_email_verification_code", "send_sms_verification_code",
     "verify_code",
     # Analytics
     "track_platform_event",
@@ -5242,8 +5295,8 @@ TIER1_TOOL_NAMES = {
     "initiate_account_recovery",
     "get_password_policy",
     # Multi-Bot Metrics
-    "get_user_bot_metrics",
-    "get_all_user_bots",
+    # ASSP: cross-tenant metrics removed from Tier-1
+    # "get_user_bot_metrics", "get_all_user_bots",
     # "upsert_bot_performance" removed from Tier-1: SEC-2026-C4 FIX — metric writes
     # go through metrics_streaming_daemon.py; MCP path requires owner_token (ORDER_EXEC).
     # V22.9 — PAI Integration (always Tier 1 — business context + macro data)
@@ -5255,14 +5308,33 @@ TIER1_TOOL_NAMES = {
     "get_learning_signals",
     "send_ntfy_notification",
     "update_algochains_telos",
-    # Prop Fund Evaluation — always Tier 1: operators need these to decide on eval fees
-    "run_prop_fund_autopilot",
+    # Prop Fund Evaluation — public catalog/scoring only. Account-bound status
+    # and real-fill P&L analysis are owner-gated hidden tools.
     "list_prop_funds",
     "evaluate_strategy_for_prop_fund",
-    "get_prop_mode_status",
     # Numerai tournament — status tool is Tier 1 for discoverability (§9)
     "numerai_status",
 }
+
+
+def _tool_input_schema(tool: Any) -> dict:
+    """Read Tool schema across mcp SDK versions (inputSchema vs input_schema).
+
+    mcp>=2 may expose the Python attribute as snake_case while constructors /
+    wire format still use camelCase. Pydantic raises AttributeError on the
+    missing name, so getattr(..., default) is not enough.
+    """
+    for attr in ("inputSchema", "input_schema"):
+        try:
+            schema = getattr(tool, attr)
+        except AttributeError:
+            continue
+        if schema is not None:
+            return schema
+    if hasattr(tool, "model_dump"):
+        dumped = tool.model_dump(by_alias=True)
+        return dumped.get("inputSchema") or dumped.get("input_schema") or {}
+    return {}
 
 
 def _annotate_tools(tools: list[Tool]) -> list[Tool]:
@@ -5274,30 +5346,16 @@ def _annotate_tools(tools: list[Tool]) -> list[Tool]:
         _tier_for_annotation = None
         _annot_order_exec = 2
     for t in tools:
+        # Prefer model_copy so we never re-read/re-write inputSchema under either SDK naming.
         if _tier_for_annotation is not None and _tier_for_annotation(t.name) >= _annot_order_exec:
-            annotated.append(Tool(
-                name=t.name,
-                description=t.description,
-                inputSchema=t.inputSchema,
-                annotations=ANNOT_TRADE_EXEC,
-            ))
+            annotated.append(t.model_copy(update={"annotations": ANNOT_TRADE_EXEC}))
             continue
         if t.annotations is not None:
             annotated.append(t)
         elif t.name in _TOOL_ANNOTATION_MAP:
-            annotated.append(Tool(
-                name=t.name,
-                description=t.description,
-                inputSchema=t.inputSchema,
-                annotations=_TOOL_ANNOTATION_MAP[t.name],
-            ))
+            annotated.append(t.model_copy(update={"annotations": _TOOL_ANNOTATION_MAP[t.name]}))
         else:
-            annotated.append(Tool(
-                name=t.name,
-                description=t.description,
-                inputSchema=t.inputSchema,
-                annotations=ANNOT_READ_ONLY,
-            ))
+            annotated.append(t.model_copy(update={"annotations": ANNOT_READ_ONLY}))
     return annotated
 
 
@@ -5371,7 +5429,11 @@ async def _execute_tool_with_runtime_guards(
                             "message": "Request rejected by replay guard. Timestamp too old or nonce already seen.",
                         })
             except ImportError:
-                pass  # tier module unavailable — skip replay check
+                return _text(assp_policy_import_error(
+                    name,
+                    transport,
+                    context="danger-tier replay guard",
+                ))
 
         check_circuit(name)
 
@@ -5511,7 +5573,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # real data from those paths. Only tier≥2 (ORDER_EXEC / DESTRUCTIVE)
         # is stubbed. quickstart.py sets this env var in --mode demo.
         if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
-            from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_ORDER_EXEC, get_danger_tier as _get_tier
+            try:
+                from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_ORDER_EXEC, get_danger_tier as _get_tier
+            except ImportError:
+                return _text(assp_policy_import_error(name, "stdio", context="demo-mode tier gate"))
             if _get_tier(name) >= _TIER_ORDER_EXEC:
                 return _text({
                     "status": "demo_mode_stub",
@@ -5533,13 +5598,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # (stdio/full parity). Previously full mode had no such gate.
         _stdio_owner_token = arguments.get("owner_token") if isinstance(arguments, dict) else None
         _stdio_require_confirm = os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1"
-        direct_decision = evaluate_stdio_direct_tool(
-            name,
-            tool_mode=cfg.tool_mode,
-            tier1_names=set(TIER1_TOOL_NAMES),
-            owner_token=_stdio_owner_token,
-            require_confirmation=_stdio_require_confirm,
-        )
+        try:
+            direct_decision = evaluate_stdio_direct_tool(
+                name,
+                tool_mode=cfg.tool_mode,
+                tier1_names=set(TIER1_TOOL_NAMES),
+                owner_token=_stdio_owner_token,
+                require_confirmation=_stdio_require_confirm,
+            )
+        except ImportError:
+            return _text(assp_policy_import_error(name, "stdio", context="stdio direct policy"))
         if not direct_decision.allow:
             payload = direct_decision.as_error()
             payload["error_type"] = "SmartModeToolUnavailable"
@@ -5609,6 +5677,26 @@ def _require_broker(registry: BrokerRegistry, broker_name: str):
             broker=broker_name,
         )
     return conn
+
+
+async def _require_broker_or_connect(registry: BrokerRegistry, broker_name: str):
+    """Like _require_broker, but warm the pool once (same as get_quote).
+
+    Fresh MCP subprocesses (OpenClaw ac_mcp, Cursor) start with brokers
+    configured but cold. Live-ops reads should not fail closed on that —
+    connect_all once, then require.
+    """
+    try:
+        return _require_broker(registry, broker_name)
+    except BrokerNotConnectedError:
+        results = await registry.connect_all()
+        if not results.get(broker_name):
+            raise BrokerNotConnectedError(
+                f"Broker '{broker_name}' is configured but connect failed. "
+                f"Call connect_broker first. connect_result={results.get(broker_name)!r}",
+                broker=broker_name,
+            )
+        return _require_broker(registry, broker_name)
 
 
 async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -> list[TextContent]:
@@ -5971,21 +6059,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── Portfolio ────────────────────────────────────────────
     elif name == "get_account":
-        conn = _require_broker(registry, arguments["broker"])
+        conn = await _require_broker_or_connect(registry, arguments["broker"])
         acct = await conn.get_account()
         return _text(acct.to_dict())
 
     elif name == "get_positions":
-        conn = _require_broker(registry, arguments["broker"])
+        conn = await _require_broker_or_connect(registry, arguments["broker"])
         positions = await conn.get_positions()
-        return _text([p.to_dict() for p in positions])
+        rows = [p.to_dict() for p in positions]
+        return _text({"positions": rows, "count": len(rows), "broker": arguments["broker"]})
 
     elif name == "get_orders":
-        conn = _require_broker(registry, arguments["broker"])
+        conn = await _require_broker_or_connect(registry, arguments["broker"])
         orders = await conn.get_orders(arguments.get("status"))
-        return _text([o.to_dict() for o in orders])
+        rows = [o.to_dict() for o in orders]
+        return _text({"orders": rows, "count": len(rows), "broker": arguments["broker"]})
 
     elif name in ("portfolio_summary", "get_portfolio_summary"):
+        # Warm cold pool so a fresh MCP subprocess does not return empty brokers{}
+        if not registry.list_available() and registry.list_configured():
+            await registry.connect_all()
         summary = {"brokers": {}, "total_equity": 0.0, "total_positions": 0}
         for bname in registry.list_available():
             conn = registry.get(bname)
@@ -6006,9 +6099,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── Market Data ─────────────────────────────────────────
     elif name == "get_quote":
-        conn = _require_broker(registry, arguments["broker"])
-        quote = await conn.get_quote(arguments["symbol"])
-        return _text(quote.to_dict())
+        try:
+            broker_name = arguments["broker"]
+            try:
+                conn = await _require_broker_or_connect(registry, broker_name)
+            except BrokerNotConnectedError as e:
+                return _text({
+                    "error": str(e),
+                    "ok": False,
+                    "broker": broker_name,
+                    "symbol": arguments.get("symbol"),
+                })
+            quote = await conn.get_quote(arguments["symbol"])
+            return _text(quote.to_dict())
+        except Exception as e:
+            return _text({
+                "error": str(e),
+                "ok": False,
+                "broker": arguments.get("broker"),
+                "symbol": arguments.get("symbol"),
+            })
 
     elif name == "search_tradovate_contracts":
         conn = _require_broker(registry, "tradovate")
@@ -6155,11 +6265,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 _sh_data = _json_gh.loads(_sh_path.read_text())
                 _bot_key_map = {
                     "mnq": "MNQ_Upgraded_Scalper",
-                    "cl":  "CL_Futures_Scalper",
+                    "cl":  "CL_Scalper",
                     "mes": "MES_EMA_Swing",
                     "nq":  "NQ_EMA_Swing",
                 }
-                _legacy_bot_key_map = {"cl": "CL_Swing_Scalper"}
+                _legacy_bot_key_map = {
+                    "cl": "CL_Futures_Scalper",  # older writers / health aliases
+                }
                 def _bounded_slice(_entry: dict, _name: str) -> dict | None:
                     _value = _entry.get(_name)
                     if not isinstance(_value, dict):
@@ -6730,21 +6842,30 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── V6: Notifications ────────────────────────────────────
     elif name == "configure_notifications":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "configure_notifications requires owner_token matching OWNER_API_TOKEN.",
+            })
         notifier = _get_notifier()
         ch = arguments["channel"]
-        if ch == "slack":
-            notifier.configure_slack(arguments.get("webhook_url", ""))
-        elif ch == "email":
-            notifier.configure_email(arguments.get("api_key", ""))
-        elif ch == "discord":
-            notifier.configure_discord(arguments.get("webhook_url", ""))
-        elif ch == "telegram":
-            notifier.configure_telegram(arguments.get("bot_token", ""), arguments.get("chat_id", ""))
-        elif ch in ("fcm", "apns"):
-            notifier.configure_mobile_push(
-                fcm_key=arguments.get("api_key", "") if ch == "fcm" else "",
-                apns_cert=arguments.get("api_key", "") if ch == "apns" else "",
-            )
+        try:
+            if ch == "slack":
+                notifier.configure_slack(arguments.get("webhook_url", ""))
+            elif ch == "email":
+                notifier.configure_email(arguments.get("api_key", ""))
+            elif ch == "discord":
+                notifier.configure_discord(arguments.get("webhook_url", ""))
+            elif ch == "telegram":
+                notifier.configure_telegram(arguments.get("bot_token", ""), arguments.get("chat_id", ""))
+            elif ch in ("fcm", "apns"):
+                notifier.configure_mobile_push(
+                    fcm_key=arguments.get("api_key", "") if ch == "fcm" else "",
+                    apns_cert=arguments.get("api_key", "") if ch == "apns" else "",
+                )
+        except ValueError as exc:
+            return _text({"error": str(exc), "channel": ch})
         return _text({"channel": ch, "status": "configured", "all_channels": notifier.configured_channels()})
 
     elif name == "send_notification":
@@ -6756,6 +6877,21 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         event_str = arguments.get("event", "bot_status")
         event = NotificationEvent(event_str) if event_str != "custom" else NotificationEvent.BOT_STATUS
         channels = [NotificationChannel(c) for c in arguments.get("channels", [])] or [NotificationChannel.WEBSOCKET]
+        outbound = {
+            NotificationChannel.SLACK,
+            NotificationChannel.DISCORD,
+            NotificationChannel.TELEGRAM,
+            NotificationChannel.EMAIL,
+            NotificationChannel.FCM,
+            NotificationChannel.APNS,
+        }
+        if any(c in outbound for c in channels):
+            _owner_token_provided = arguments.get("owner_token", "")
+            _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+                return _text({
+                    "error": "send_notification with outbound channels requires owner_token matching OWNER_API_TOKEN.",
+                })
         notification = Notification(
             event=event,
             priority=NotificationPriority(arguments.get("priority", "medium")),
@@ -7815,11 +7951,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 expected_owner_token=os.environ.get("OWNER_API_TOKEN", ""),
             )
         except ImportError:
-            return _text({
-                "error": "execute_dynamic_tool: danger-tier module unavailable; execution blocked for safety.",
-                "blocked": True,
-                "tool": inner_name,
-            })
+            return _text(assp_policy_import_error(
+                inner_name,
+                "dynamic",
+                context="execute_dynamic_tool",
+            ))
 
         if not decision.allow:
             return _text(decision.as_error())
@@ -7827,7 +7963,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         # Demo mode guard: also stub ORDER_EXEC+ tools dispatched via execute_dynamic_tool.
         # call_tool stubs direct calls; this catches the dynamic dispatch path.
         if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
-            from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_OE, get_danger_tier as _gdt
+            try:
+                from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_OE, get_danger_tier as _gdt
+            except ImportError:
+                return _text(assp_policy_import_error(
+                    inner_name,
+                    "dynamic",
+                    context="execute_dynamic_tool demo-mode tier gate",
+                ))
             if _gdt(inner_name) >= _TIER_OE:
                 return _text({
                     "status": "demo_mode_stub",
@@ -8122,6 +8265,33 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         output["marketplace_readiness"] = result.passes_marketplace_gates()
         return _text(output)
 
+    elif name == "start_sandboxed_agent":
+        from algochains_mcp.agent_sandbox import start_sandboxed_agent as _start_sb
+        scopes = tuple(arguments.pop("_developer_scopes", ()) or ())
+        clerk_user_id = str(arguments.pop("_clerk_user_id", "") or "")
+        # Prefer scopes injected by http_bridge; fail closed if absent.
+        if not scopes:
+            return _text({"ok": False, "error": "missing_scope:agent:sandbox", "authority": "agent_memory"})
+        return _text(_start_sb(
+            scopes=scopes,
+            task=str(arguments.get("task") or ""),
+            clerk_user_id=clerk_user_id,
+            max_runtime_sec=arguments.get("max_runtime_sec"),
+        ))
+
+    elif name == "reserve_llm_budget":
+        from algochains_mcp.agent_sandbox import reserve_llm_budget as _reserve
+        scopes = tuple(arguments.pop("_developer_scopes", ()) or ())
+        clerk_user_id = str(arguments.pop("_clerk_user_id", "") or "")
+        if not scopes:
+            return _text({"ok": False, "error": "missing_scope:spend:llm_budget", "authority": "agent_memory"})
+        return _text(_reserve(
+            scopes=scopes,
+            clerk_user_id=clerk_user_id,
+            amount_usd=float(arguments.get("amount_usd") or 0),
+            daily_cap_usd=arguments.get("daily_cap_usd"),
+        ))
+
     elif name == "submit_to_marketplace":
         pipeline = _get_submission_pipeline()
         sub = StrategySubmission(
@@ -8142,6 +8312,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             description=arguments.get("description", ""),
             asset_class=arguments.get("asset_class", "stock"),
             price_monthly=arguments.get("price_monthly", 29.99),
+            verification_artifact=arguments.get("verification_artifact") or {},
         )
         result = await pipeline.submit(sub)
         return _text(result.to_dict())
@@ -8286,6 +8457,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(get_evolution_daemon().rollback(args.get("strategy_id", "")))
 
     elif name == "record_trade_episode":
+        _ot = str(args.get("owner_token") or "")
+        _expected = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected or not _ot or _ot != _expected:
+            _assp_emit_deny(
+                rule_id="AC-MCP-sqlite-write",
+                tool_name="record_trade_episode",
+                deny_reason="owner_token_required",
+            )
+            return _text({
+                "error": "owner_token required for record_trade_episode",
+                "assp_rule": "AC-MCP-sqlite-write",
+            })
         get_trade_memory = _lazy_import("trade_memory", "get_trade_memory")
         if not get_trade_memory:
             return _text({"error": "Trade memory not available"})
@@ -9139,8 +9322,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             import subprocess, sys as _sys
             control_tower = _default_control_tower()
             step = str(args.get("step", "all"))
-            dry_run = bool(args.get("dry_run", False))
+            # ASSP: default dry_run=True; live runs require owner_token
+            dry_run = bool(args.get("dry_run", True))
             no_desktop = bool(args.get("no_desktop", False))
+            if not dry_run:
+                _ot = str(args.get("owner_token") or "")
+                _expected = os.environ.get("OWNER_API_TOKEN", "")
+                if not _expected or not _ot or _ot != _expected:
+                    return _text({
+                        "error": "owner_token required when dry_run=false",
+                        "assp_rule": "AC-MCP-008",
+                    })
 
             cmd = [_sys.executable, "scripts/mcpt_autopilot.py", "--json"]
             if step != "all":
@@ -9304,6 +9496,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name in ("dispatch_tower_job", "get_tower_job_status", "get_tower_health", "list_tower_jobs"):
         import os as _os_tower
         import sys as _sys
+        # ASSP AC-MCP-007: deny before importing dispatcher (fail-closed without CT path)
+        if name == "dispatch_tower_job":
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-007",
+                    tool_name="dispatch_tower_job",
+                    deny_reason="owner_token_required",
+                )
+                return _text({
+                    "error": "owner_token required for dispatch_tower_job",
+                    "assp_rule": "AC-MCP-007",
+                })
         _ct_path = _default_control_tower()
         if _ct_path not in _sys.path:
             _sys.path.insert(0, _ct_path)
@@ -9481,6 +9687,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Marketplace listings error: {exc}"})
 
     elif name == "run_onyx_ingest":
+        _ot = str(args.get("owner_token") or "")
+        _expected = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected or not _ot or _ot != _expected:
+            _assp_emit_deny(
+                rule_id="AC-MCP-009",
+                tool_name="run_onyx_ingest",
+                deny_reason="owner_token_required",
+            )
+            return _text({
+                "error": "owner_token required for run_onyx_ingest",
+                "assp_rule": "AC-MCP-009",
+            })
         try:
             import subprocess as _sp
             import sys as _sys
@@ -9522,7 +9740,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_learn_hub_health":
         try:
             import httpx as _httpx
-            _base = (args.get("base_url") or "https://algochains.ai").rstrip("/")
+            # Tier-1 callers must not choose the request destination. Ignoring
+            # legacy base_url arguments also protects dynamic callers that
+            # bypass the published tool schema.
+            _base = "https://algochains.ai"
             _results: dict = {"base_url": _base, "checks": {}}
             async with _httpx.AsyncClient(timeout=10, follow_redirects=False) as _hc:
                 # Hub page — must be 200 (no login redirect)
@@ -9582,10 +9803,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_subscriber_bots":
         try:
             from .marketplace.supabase_tools import get_subscriber_bots as _sb_subs
-            user_id = args.get("user_id", "")
-            if not user_id:
-                return _text({"error": "user_id is required (email or UUID)"})
-            return _text(_sb_subs(user_id))
+            _owner_token_provided = args.get("owner_token", "")
+            _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+            owner_ok = bool(_expected_owner_token and _owner_token_provided == _expected_owner_token)
+            subscriber_id = args.get("subscriber_id", "") or args.get("user_id", "")
+            if not subscriber_id:
+                return _text({"error": "subscriber_id is required"})
+            return _text(_sb_subs(subscriber_id, owner_authorized=owner_ok))
         except Exception as exc:
             return _text({"error": f"Subscriber bots error: {exc}"})
 
@@ -9746,6 +9970,22 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_all_bot_ops_status":
         try:
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                # ASSP: redacted health only for non-owner
+                _assp_emit_deny(
+                    rule_id="AC-MCP-010",
+                    tool_name="get_all_bot_ops_status",
+                    deny_reason="owner_token_required",
+                    redacted=True,
+                )
+                return _text({
+                    "redacted": True,
+                    "assp_rule": "AC-MCP-010",
+                    "bots": {"mnq": "unknown", "cl": "unknown", "mes": "unknown", "nq": "unknown"},
+                    "hint": "owner_token required for positions/brackets/PIDs",
+                })
             from .live_bot_intelligence.bot_ops import get_all_bot_ops_status
             return _text(get_all_bot_ops_status())
         except Exception as exc:
@@ -9927,6 +10167,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Signal ingestion error: {exc}"})
 
     elif name == "connect_onyx_docs":
+        _ot = str(arguments.get("owner_token") or "")
+        _expected = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected or not _ot or _ot != _expected:
+            _assp_emit_deny(
+                rule_id="AC-MCP-009",
+                tool_name="connect_onyx_docs",
+                deny_reason="owner_token_required",
+            )
+            return _text({
+                "error": "owner_token required for connect_onyx_docs",
+                "assp_rule": "AC-MCP-009",
+            })
         try:
             from .data_ingestion import connect_onyx_docs as _connect_onyx
             return _text(_connect_onyx(
@@ -9978,6 +10230,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 priority=arguments.get("priority", "medium"),
                 user_id=arguments.get("user_id"),
                 metadata=arguments.get("metadata"),
+                idempotency_key=arguments.get("idempotency_key"),
             ))
         except KeyError as exc:
             return _text({"error": f"Missing required argument: {exc}"})
@@ -10506,6 +10759,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .auth.platform_auth import create_developer_key as _create_key
             return _text(await _create_key(
+                access_token=arguments.get("access_token", ""),
                 name=arguments.get("name", "default"),
                 scopes=arguments.get("scopes"),
                 env=arguments.get("env", "live"),
@@ -10524,6 +10778,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .auth.platform_auth import rotate_developer_key as _rotate_key
             return _text(await _rotate_key(
+                access_token=arguments.get("access_token", ""),
                 key_id=arguments["key_id"],
                 name=arguments.get("name"),
             ))
@@ -10533,7 +10788,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "revoke_developer_key":
         try:
             from .auth.platform_auth import revoke_developer_key as _revoke_key
-            return _text(await _revoke_key(key_id=arguments["key_id"]))
+            return _text(await _revoke_key(
+                access_token=arguments.get("access_token", ""),
+                key_id=arguments["key_id"],
+            ))
         except Exception as exc:
             return _text({"error": str(exc)})
 
@@ -10553,6 +10811,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_user_bot_metrics":
         try:
+            _ot = str(arguments.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-metrics-owner",
+                    tool_name="get_user_bot_metrics",
+                    deny_reason="owner_token_required",
+                )
+                return _text({
+                    "error": "owner_token required for cross-subscriber metrics",
+                    "assp_rule": "AC-MCP-metrics-owner",
+                })
             from .live_bot_intelligence.multi_account_metrics import get_user_bot_metrics as _get_ubm
             result = await _get_ubm(
                 user_id=arguments["user_id"],
@@ -10566,6 +10836,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_all_user_bots":
         try:
+            _ot = str(arguments.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-metrics-owner",
+                    tool_name="get_all_user_bots",
+                    deny_reason="owner_token_required",
+                )
+                return _text({
+                    "error": "owner_token required for get_all_user_bots",
+                    "assp_rule": "AC-MCP-metrics-owner",
+                })
             from .live_bot_intelligence.multi_account_metrics import get_all_user_bots as _get_all_bots
             return _text(await _get_all_bots(arguments["user_id"]))
         except Exception as exc:
@@ -11366,6 +11648,21 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name in ("get_rithmic_live_accounts", "get_rithmic_live_pnl",
                   "get_rithmic_live_positions", "get_rithmic_live_fills"):
         try:
+            # ASSP: owner-gate prop-account telemetry (removed from Tier-1)
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-rithmic-owner",
+                    tool_name=name,
+                    deny_reason="owner_token_required",
+                    redacted=True,
+                )
+                return _text({
+                    "error": "owner_token required for Rithmic live account tools",
+                    "assp_rule": "AC-MCP-rithmic-owner",
+                    "redacted": True,
+                })
             import sys as _sys
             from pathlib import Path as _Path
             _ct = str(_Path(__file__).resolve().parent.parent.parent.parent.parent / "algochains-control-tower")

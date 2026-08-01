@@ -1,8 +1,8 @@
 # AlgoChains MCP Server
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
-[![Tools](https://img.shields.io/badge/tools-533%20full%20%7C%20181%20smart-green?style=flat-square)](#tool-domains)
-[![Version](https://img.shields.io/badge/version-22.7.1-blueviolet?style=flat-square)](#whats-new)
+[![Tools](https://img.shields.io/badge/tools-535%20full%20%7C%20181%20smart-green?style=flat-square)](#tool-domains)
+[![Version](https://img.shields.io/badge/version-22.7.2-blueviolet?style=flat-square)](#whats-new)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-GOTCHAS__AND__BUGS.md-red?style=flat-square)](docs/GOTCHAS_AND_BUGS.md)
@@ -10,7 +10,7 @@
 
 ---
 
-> **The only MCP server with live futures bots, real fill data, real-time ML inference, and 533 tools across 21 domains — all backed by real APIs, zero synthetic data.**
+> **The only MCP server with live futures bots, real fill data, real-time ML inference, and 535 tools across 21 domains — all backed by real APIs, zero synthetic data.**
 
 Connect your AI assistant (Claude, Cursor, ChatGPT) to your trading infrastructure in 3 commands. Ask Claude "What's my paper P&L today?" — it reads your AlgoChains virtual paper account and tells you. No broker required.
 
@@ -87,7 +87,8 @@ as `ALGOCHAINS_SUBSCRIBER_KEY` (canonical) in your `.env` — the server resolve
 the TS CLI (fixed in #242 / v22.7.1), but prefer `ALGOCHAINS_SUBSCRIBER_KEY`. Note:
 `ALGOCHAINS_BRIDGE_KEY` is the **owner / developer** key — it is *not* a subscriber key.
 On the HTTP bridge the subscriber key is sent as the `X-Api-Key` header; the base URL is
-`https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint). There are **16
+`https://mcp.algochains.ai` (`api.algochains.ai` is a different service — AlgoChains' Data
+API — and does not answer `/api/mcp`). There are **16
 subscriber tools** in total (`get_signal_stream`, `get_my_pnl`, `get_my_fills`,
 `get_my_assignments`, `get_my_portfolio`, `get_marketplace_listings`, `place_paper_order`,
 `cancel_paper_order`, `get_my_paper_positions`, `report_fill`, `heartbeat`, `ack_signal`,
@@ -125,7 +126,7 @@ AlgoChains exposes tools in two tiers, controlled by `ALGOCHAINS_TOOL_MODE`:
 | Mode | Tools Exposed | Token Cost | When to Use |
 |------|:---:|:---:|-----|
 | **Smart** (default) | 181 curated | ~4K tokens | Cursor, Windsurf (80-tool limit), everyday use |
-| **Full** (`ALGOCHAINS_TOOL_MODE=full`) | 533 tools | ~40K tokens | Claude Code, full agentic sessions |
+| **Full** (`ALGOCHAINS_TOOL_MODE=full`) | 535 tools | ~40K tokens | Claude Code, full agentic sessions |
 
 **Smart mode includes:** all live bot tools, market data, signals, research/backtest, Onyx RAG, prop fund pipeline, position sizing, broker management, and order execution. Everything you need 95% of the time.
 
@@ -133,7 +134,7 @@ AlgoChains exposes tools in two tiers, controlled by `ALGOCHAINS_TOOL_MODE`:
 
 ### `discover_tools` — Find Any Tool Without Full Mode
 
-Even in smart mode, you can find and use any of the 533 tools:
+Even in smart mode, you can find and use any of the 535 tools:
 
 ```python
 # Ask the server to find the right tool for your task
@@ -144,13 +145,13 @@ discover_tools("walk-forward validation with leakage check")
 execute_dynamic_tool("walk_forward_test", {"symbol": "MNQ", "lookback_days": 252})
 ```
 
-This provides 99.6% token reduction vs exposing all 533 tools (arXiv:2603.20313).
+This provides 99.6% token reduction vs exposing all 535 tools (arXiv:2603.20313).
 
 ---
 
 ## Tool Domains
 
-All 533 tools organized across 21 domains:
+All 535 tools organized across 21 domains:
 
 | # | Domain | Smart | Full | Key Tools |
 |---|--------|:-----:|:----:|-----------|
@@ -195,6 +196,10 @@ AlgoChains runs 4 live futures bots on Tradovate. Their state, fills, ML pipelin
 
 ### `get_bot_health` — Full e2e Signal→Order→Fill Trace
 
+> **Routing:** “MNQ health / is the bot running / bot status” → **`get_bot_health`**.
+> Do **not** web-search CME/Yahoo for bot liveness. For “MNQ price right now” use `get_quote`.
+> Full agent table: [docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md).
+
 ```python
 # Returns: process state, position, bracket status, AI pipeline health,
 #          ml_env_flags (MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, MASSIVE_HALT_GUARD),
@@ -211,6 +216,21 @@ status = get_all_bot_ops_status()
 ```
 
 No credentials needed if you have `ALGOCHAINS_BRIDGE_API_KEY`. Read-only.
+
+### Agent live-ops routing (mandatory)
+
+| Ask | Tool |
+|-----|------|
+| Bot health / running? | `get_bot_health` |
+| Session / portfolio P&L (owner) | `portfolio_summary` |
+| Paper P&L (subscriber) | `get_my_pnl` / `get_my_portfolio` |
+| Flat / open positions | `get_positions` |
+| Stops / unprotected | `check_unprotected_positions` |
+| Working orders | `get_orders` |
+| Live quote now | `get_quote` |
+| Market news / headlines | web/news tools — **not** `get_bot_health` |
+
+Never invent broker numbers. Ghost-P&L and persona rules: **[docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md)**.
 
 ---
 
@@ -389,6 +409,12 @@ OWNER_API_TOKEN=your-owner-token-here
 
 ## What's New in v22.x
 
+### v22.7.2 (2026-07-13) — Live-ops tool routing for agents
+
+- Added [docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md): intent → MCP tool map so agents never substitute web search for bot health, P&L, positions, brackets, orders, or live quotes.
+- README + `AGENTS.md` routing/safety clarity; tool descriptions hardened for LLM selection.
+- Synced package/registry version metadata to **22.7.2**.
+
 ### v22.7.1 (2026-07-07) — Subscriber key alias fix
 - Both `ALGOCHAINS_SUBSCRIBER_KEY` (canonical) and `ALGOCHAINS_SUB_KEY` (back-compat alias)
   are now accepted by **both** the Python server and the TS CLI (#242). Previously the CLI
@@ -400,7 +426,7 @@ OWNER_API_TOKEN=your-owner-token-here
 - Complete README rewrite (plain English, team access)
 - `scripts/quickstart.py` — interactive setup wizard with health checks
 - `SAFETY_MODEL.md` — answers "is this safe?" for every failure mode
-- `tool_danger_tiers.py` — machine-readable danger classification (0–3) for the documented 533-tool surface
+- `tool_danger_tiers.py` — machine-readable danger classification (0–3) for the documented 535-tool surface
 - HTTP bridge `/tools` endpoint now returns `danger_tier`, `safe_in_demo_mode`, etc.
 - `get_bot_health` includes `e2e_sentinel`, desktop inference SLO, and decision latency SLO slices for signal-to-fill traceability
 
@@ -450,7 +476,7 @@ Available immediately (no credentials):
 - `get_quote("AAPL")` — live price for any symbol
 - `detect_market_regime()` — trending / ranging / choppy
 - `get_macro_signals()` — macro environment analysis
-- `discover_tools()` — find any of the 533 tools
+- `discover_tools()` — find any of the 535 tools
 - `onyx_ask("any question")` — knowledge base search
 
 ### Option B — AlgoChains Hosted Paper (Free, No Broker Needed)
@@ -683,8 +709,8 @@ Downloadable, always current:
 - OpenAPI 3.1 YAML — `https://algochains.ai/docs/openapi.yaml`
 - Postman collection — `https://algochains.ai/docs/postman-collection.json`
 
-Base URL `https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint). Subscriber
-requests authenticate with the `X-Api-Key` header.
+Base URL `https://mcp.algochains.ai` (`api.algochains.ai` is a different service and does not
+answer `/api/mcp`). Subscriber requests authenticate with the `X-Api-Key` header.
 
 > **⚠️ Namespace note:** Do **not** co-register this package (`algochains-mcp-server` —
 > trading/signals) alongside **`algochains-library-mcp`** (Roo's NL backtesting MCP) under the
@@ -700,7 +726,7 @@ Your AI (Claude / Cursor / ChatGPT)
          │ MCP 2025-11-25 (stdio or HTTP + SSE)
          ▼
 AlgoChains MCP Server
-  ├── 533 tools / 181 smart-mode (21 domains)
+  ├── 535 tools / 181 smart-mode (21 domains)
   ├── Trading Guardrails (hard-coded limits, AI loop detection)
   ├── Account Protection (12 pre-trade guards)
   ├── Onyx RAG (semantic search — 400+ docs + 472 skills)
@@ -723,6 +749,7 @@ AlgoChains MCP Server
 
 | File | Purpose |
 |------|---------|
+| [docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md) | **Agent routing:** bot health / P&L / positions / brackets / quotes — never web-search for live ops |
 | [SAFETY_MODEL.md](SAFETY_MODEL.md) | Is this safe? Failure modes, guardrails, team access |
 | [CHANGELOG.md](CHANGELOG.md) | Full version history |
 | [docs/GOTCHAS_AND_BUGS.md](docs/GOTCHAS_AND_BUGS.md) | Confirmed bugs, gotchas, operational surprises |

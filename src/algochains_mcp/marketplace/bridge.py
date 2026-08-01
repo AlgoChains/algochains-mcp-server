@@ -21,6 +21,16 @@ from ..errors import (
     RateLimitError,
     SubscriptionError,
 )
+from .contracts import (
+    LISTING_CREATE_PATH,
+    LISTINGS_COLLECTION_PATH,
+    SUBSCRIPTIONS_COLLECTION_PATH,
+    listing_detail_path,
+    listing_metrics_path,
+    listing_subscribe_path,
+    listing_unsubscribe_path,
+    listing_update_path,
+)
 
 logger = logging.getLogger("algochains_mcp.marketplace.bridge")
 
@@ -97,14 +107,14 @@ class MarketplaceBridge:
         if min_sharpe is not None:
             params["min_sharpe"] = min_sharpe
 
-        resp = await client.get("/api/v1/listings/", params=params)
+        resp = await client.get(LISTINGS_COLLECTION_PATH, params=params)
         self._check_response(resp)
         return resp.json().get("results", [])
 
     async def get_listing(self, slug: str) -> dict:
         self._require_listing_key()
         client = await self._ensure_client()
-        resp = await client.get(f"/api/v1/listings/{slug}/")
+        resp = await client.get(listing_detail_path(slug))
         if resp.status_code == 404:
             raise ListingNotFoundError(f"Listing '{slug}' not found")
         self._check_response(resp)
@@ -113,14 +123,14 @@ class MarketplaceBridge:
     async def publish_listing(self, data: dict) -> dict:
         self._require_listing_key()
         client = await self._ensure_client()
-        resp = await client.post("/api/v1/listings/", json=data)
+        resp = await client.post(LISTING_CREATE_PATH, json=data)
         self._check_response(resp)
         return resp.json()
 
     async def update_listing(self, slug: str, data: dict) -> dict:
         self._require_listing_key()
         client = await self._ensure_client()
-        resp = await client.patch(f"/api/v1/listings/{slug}/", json=data)
+        resp = await client.patch(listing_update_path(slug), json=data)
         if resp.status_code == 404:
             raise ListingNotFoundError(f"Listing '{slug}' not found")
         self._check_response(resp)
@@ -135,7 +145,7 @@ class MarketplaceBridge:
         if mode != "paper" or broker:
             payload["broker"] = broker
         resp = await client.post(
-            f"/api/v1/listings/{slug}/subscribe/",
+            listing_subscribe_path(slug),
             json=payload,
         )
         if resp.status_code == 404:
@@ -148,7 +158,7 @@ class MarketplaceBridge:
     async def unsubscribe(self, slug: str) -> bool:
         self._require_listing_key()
         client = await self._ensure_client()
-        resp = await client.post(f"/api/v1/listings/{slug}/unsubscribe/")
+        resp = await client.post(listing_unsubscribe_path(slug))
         if resp.status_code == 404:
             raise ListingNotFoundError(f"Listing '{slug}' not found")
         return resp.status_code in (200, 204)
@@ -156,7 +166,7 @@ class MarketplaceBridge:
     async def list_subscriptions(self) -> list[dict]:
         self._require_listing_key()
         client = await self._ensure_client()
-        resp = await client.get("/api/v1/subscriptions/")
+        resp = await client.get(SUBSCRIPTIONS_COLLECTION_PATH)
         self._check_response(resp)
         return resp.json().get("results", [])
 
@@ -167,7 +177,7 @@ class MarketplaceBridge:
         self._require_ingest_key()
         client = await self._ensure_client()
         resp = await client.post(
-            f"/api/v1/listings/{slug}/metrics/",
+            listing_metrics_path(slug),
             json=metrics,
             headers={"X-Ingest-Key": self.cfg.ingest_api_key},
         )

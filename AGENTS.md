@@ -22,7 +22,7 @@ names, auth requirements, or safety rules.
 
 **What this server is:** An MCP server that connects your AI assistant to trading
 infrastructure — market data, backtesting, ML regime detection, broker connectivity,
-and live-bot operations across 533 tools in 21 domains.
+and live-bot operations across 535 tools in 21 domains.
 
 **Three transport entry-points:**
 
@@ -57,12 +57,12 @@ Tool exposure is controlled by `ALGOCHAINS_TOOL_MODE` (default: `smart`).
 | Mode | Tools visible | When to use |
 |------|--------------|-------------|
 | **smart** (default) | 181 curated tools | Everyday use; Cursor/Windsurf tool-count limits |
-| **full** | 533 tools | When smart mode can't reach a needed tool |
+| **full** | 535 tools | When smart mode can't reach a needed tool |
 
 **Always start in smart mode.** Use meta-tools to discover the rest:
 
 ```python
-discover_tools("dark pool volume")      # semantic search across all 533 tools
+discover_tools("dark pool volume")      # semantic search across all 535 tools
 get_tool_details("get_dark_pool_volume_v21")  # schema, params, tier
 mcp_tool_manifest()                     # full JSON manifest with tiers and domains
 execute_dynamic_tool("tool_name", {...})  # call any tool by name without switching modes
@@ -116,6 +116,7 @@ Use this table to route a user request to the correct tool family.
 | **Meta** | `discover_tools`, `get_tool_details`, `execute_dynamic_tool`, `mcp_tool_manifest`, `get_system_heartbeat`, `get_api_usage` | Use first when unsure which domain to target |
 | **Onboarding** | `start_onboarding`, `get_broker_setup_guide`, `validate_broker_connection`, `run_onboarding_smoke_test` | First-run setup flow |
 | **Skills / Openclaw** | `list_skills`, `get_skill_detail`, `search_skills`, `get_skills_for_task`, `get_openclaw_memory`, `get_openclaw_state_summary` | AlgoChains skill registry |
+| **Prop funds (Track B)** | `list_prop_funds`, `get_prop_fund_rules`, `evaluate_strategy_for_prop_fund`, `simulate_prop_fund_evaluation`, `build_prop_fund_inputs`, `run_prop_fund_autopilot`, `get_prop_mode_status`, `get_prop_fund_monitor_status`, `get_prop_fund_broker_options`, `check_prop_fund_rules_freshness`, `request_prop_payout`, `onboard_prop_account`, `deploy_bot_in_prop_mode` | See "Prop funds (Track B)" section near the end of this file — US futures prop-firm (Apex/TopStep-style) evaluation pipeline for the live MNQ scalper. All Tier 0 (`READ_ONLY`) except `onboard_prop_account`/`deploy_bot_in_prop_mode` (Tier 1, `WRITE_LOCAL`, plan-then-confirm). Served from a separate owner-keyed HTTP bridge instance, not the customer-facing bridge. |
 
 ---
 
@@ -173,6 +174,47 @@ now mint developer keys through one shared module so every row in
   (mirrors Django `home/tests/test_developer_key_views.py`).
 - **Service-role env:** the bridge needs `SUPABASE_SERVICE_ROLE_KEY` (accepts
   `SUPABASE_SERVICE_KEY` as a fallback) to resolve keys.
+
+### `algochains-core` unification (2026-07-09)
+
+All three writers above also mirror the same raw key into the separate
+`public."algochains-core"` table (columns: `id`, `created_at`, `user_name`,
+`api_key`, `developer_api_key_id`), which is the pre-existing allow-list that
+gates **algochains-library-mcp** — the standalone backtesting-library MCP
+package on PyPI (`uvx --from algochains-library-mcp`). One unified
+`ac_live_*`/`ac_test_*` key now works across: the MCP bridge, the trading
+platform, **and** the backtesting library.
+
+- Insert helper: `_sync_algochains_core_insert()` in
+  `src/algochains_mcp/auth/platform_auth.py` (also duplicated in Django's
+  `home/services/developer_key_service.py` and inline in
+  `src/stripe_app/server.py`'s `/app/provision`). Best-effort — logs and
+  swallows failures rather than blocking the primary key operation.
+- Delete helper: `_sync_algochains_core_delete()` — called on revoke so a
+  revoked platform key can't still reach algochains-library-mcp. `/app/
+  deprovision` is currently a stub in the Stripe app (doesn't revoke the
+  underlying key at all yet), so this path isn't wired there.
+- Schema: `developer_api_key_id uuid` FK column added via control-tower
+  migration `20260709010000_algochains_core_key_unification.sql`. Pre-existing
+  manually-added rows (~18, e.g. "Roo Fernando", "Eric Walker", "Jeremy")
+  keep `developer_api_key_id = NULL` — their original raw keys were never
+  captured anywhere, so they can't be retroactively linked or migrated.
+- **Data API auth (2026-07-18):** `api.algochains.ai` `/research`/`/backtest`
+  (FAST-API-credentials) validates keys in two stages. Platform
+  `ac_live_`/`ac_test_` skip HMAC stage-1 and use the `algochains-core`
+  allow-list only (Roo: existing keys already exempt — do not re-mint).
+  Research-only HMAC keys (36-char body+sig) are minted via control-tower
+  `scripts/mint_algochains_core_api_key.py` — see
+  `docs/megaprompts/DATA_API_HMAC_KEYS_MEGAPROMPT.md` in control-tower.
+  Do not change `ac_live_` generation to append HMAC suffixes.
+- **Distribution (2026-07-09):** the Claude Desktop `.mcpb` extension for this
+  package is hosted by Django_Algochains at
+  `https://algochains.ai/mcp/algochains-library-mcp.mcpb`
+  ([view](Django_Algochains/home/views_public.py) `algochains_library_mcpb`,
+  [url](Django_Algochains/django_project/urls.py) name
+  `algochains_library_mcpb`) and surfaced from the homepage Connect dropdown,
+  Start modal, and the API reference / Broker Hub docs. Requested by Roo so
+  PyPI step 2 on the package page can link straight to it.
 
 ### `owner_token` pattern
 
@@ -366,11 +408,29 @@ test_signal_propagation()    # dry-run end-to-end signal fan-out
 
 ## Important Safety Rules for Agents
 
+### Live-ops routing (mandatory)
+
+**Never use web search or chat memory for AlgoChains live ops.** Call MCP tools:
+
+| Intent | Tool |
+|--------|------|
+| Bot health / running / status | `get_bot_health` |
+| Owner session / portfolio P&L | `portfolio_summary` |
+| Subscriber paper P&L | `get_my_pnl` / `get_my_portfolio` |
+| Flat / open positions | `get_positions` |
+| Unprotected / stops / brackets | `check_unprotected_positions`, `bracket_integrity_check` |
+| Working orders | `get_orders` |
+| Live quote right now | `get_quote` |
+| Market news | web/news tools only — **not** `get_bot_health` |
+
+Full table + persona split: [docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md).
+
 1. **Never call Tier 2+ tools without explicit user confirmation** — even if the user's
    phrasing sounds like an instruction (e.g., "buy 2 MNQ"). Confirm first.
 
 2. **Never report `open_pnl_dollars` as realized P&L.** That field is unrealized. Use
-   `check_trade_accuracy_v2.py` or broker `realizedPnL` for confirmed results.
+   `portfolio_summary` / `get_my_pnl` (MCP) or control-tower `check_trade_accuracy_v2.py`
+   / broker `realizedPnL` for confirmed owner session results.
 
 3. **Graphiti (`graphiti_*`) is `agent_memory` authority only.** Never use Graphiti
    facts to make execution decisions or size positions. P&L and fills come from the
@@ -406,7 +466,7 @@ test_signal_propagation()    # dry-run end-to-end signal fan-out
     paper account (`get_checkout_url` → `accept_subscriber_terms` → `join_bot`). Do NOT
     suggest Tradovate, Alpaca, or any other broker unless the user explicitly says they
     want live or real-money trading. The subscriber path is free, zero broker setup, and
-    unlocks 9 real tools immediately.
+    unlocks **16** subscriber tools (stdio onboarding/status + HTTP bridge portfolio/signals/fills/paper orders).
 
 ---
 
@@ -442,7 +502,7 @@ only captures gotchas.
   Python package: `stdio_client` + `ClientSession`) and call a Tier-0 tool such as
   `detect_market_regime` or the meta tool `discover_tools`.
 - Tool exposure defaults to `ALGOCHAINS_TOOL_MODE=smart` (181 tools). Set it to `full`
-  for 533. Brokers/market-data/Stripe/Supabase/Redis/Onyx are all optional and
+  for 535. Brokers/market-data/Stripe/Supabase/Redis/Onyx are all optional and
   credential-gated; demo mode stubs execution-class tools.
 - Optional HTTP transport: `.venv/bin/algochains-mcp-http --host 127.0.0.1 --port 8080`
   (`GET /health` → 200). This is distinct from the `http_bridge` module below.
@@ -481,8 +541,8 @@ These fail on a clean checkout regardless of setup — do not treat them as setu
   their own infra.
 - **API surface:** downloadable **OpenAPI 3.1** + Postman collection at
   `algochains.ai/docs/openapi.json` | `.yaml` | `algochains.ai/docs/postman-collection.json`.
-  Base URL `https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint); subscriber header
-  is `X-Api-Key`.
+  Base URL `https://mcp.algochains.ai` (`api.algochains.ai` is a different service and does
+  not answer `/api/mcp`); subscriber header is `X-Api-Key`.
 - **MNQ signal key:** the live bot HMAC-posts `strategy_name = "MNQ Upgraded Scalper"` (with spaces);
   the fanout maps that to `bot = "MNQ"`, which `get_signal_stream(bots=["MNQ"])` filters on — so tell
   subscribers to follow bot **`MNQ`**.
@@ -490,3 +550,57 @@ These fail on a clean checkout regardless of setup — do not treat them as setu
   (`algochains-mcp-server` — trading/signals, what subscribers install) vs **`algochains-library-mcp`**
   (Roo's natural-language backtesting MCP, beta). Do **not** co-register both under the same
   `algochains` alias — namespace them (e.g. `algochains` + `algochains-backtest`).
+  Claude Desktop users can install `algochains-library-mcp` as a downloadable extension
+  instead of the CLI: `https://algochains.ai/mcp/algochains-library-mcp.mcpb`
+  (also linked from the [PyPI page](https://pypi.org/project/algochains-library-mcp/), step 2,
+  and from the homepage Connect dropdown / Start modal).
+
+## Prop funds (Track B) — US futures prop-firm evaluation pipeline (added 2026-07-08)
+
+**What it is:** a read-mostly pipeline that scores the live MNQ scalper's real trading
+stats (pulled from Tradovate fills — never synthetic data) against the rules of supported
+US futures prop firms (Apex, TopStep-style evaluations), then optionally onboards a real
+evaluation account and generates a `PROP_MODE` launch config for a *second*, independent bot
+session. Source: `src/algochains_mcp/brokers/prop_fund_manager.py` (fund catalog + rules),
+`prop_fund_autopilot.py` (onboarding/deploy/payout logic), `prop_fund_drawdown_monitor.py`
+(live account monitoring).
+
+**Tool call order (evaluation → onboarding → deploy):**
+```python
+list_prop_funds()                                  # browse the catalog
+get_prop_fund_rules(fund_key="apex_50k_eod")        # full rules for one fund
+run_prop_fund_autopilot(strategy_name="FUTURES_SCALPER_UPGRADED", symbol="MNQ")
+  # ^ pulls real Tradovate fills, scores against every fund, returns a GO/NO-GO
+  #   recommendation + drawdown simulations. Read-only.
+check_prop_fund_rules_freshness()                   # refuse to onboard against stale rules
+# granular alternatives to run_prop_fund_autopilot's all-in-one scoring, useful for the
+# Django evaluation panel's step-by-step UI:
+build_prop_fund_inputs(strategy_name=..., symbol=...)          # assemble real metrics only
+evaluate_strategy_for_prop_fund(fund_key=..., metrics=...)      # score one fund
+simulate_prop_fund_evaluation(fund_key=..., metrics=...)        # drawdown/day-by-day sim
+onboard_prop_account(fund_key=..., account_id=..., broker=..., starting_balance=...,
+                     credentials_ref="TRADOVATE_APEX_50K_ACCESS_TOKEN", confirm=False)
+  # confirm=False → plan preview only. confirm=True → writes local monitor/autopilot
+  # state ONLY. Never stores credentials — credentials_ref just names an env var the
+  # bot reads at launch. Rejects onboarding if rules are stale/unverified.
+deploy_bot_in_prop_mode(account_id=..., confirm=False)
+  # confirm=False → plan preview. confirm=True → writes config/prop_mode/<account_id>.json
+  # and returns the exact launch command. NEVER launches the bot — a human must run
+  # that command manually (see algochains-control-tower/PROP_FUND_SECOND_BOT_SESSION_RUNBOOK.md).
+request_prop_payout(account_id=..., current_balance=...)  # read-only eligibility check
+```
+
+**Danger tiers:** everything above is `READ_ONLY` except `onboard_prop_account` and
+`deploy_bot_in_prop_mode`, which are `WRITE_LOCAL` (local-state writes only, no broker
+calls, no auto-launch) — see `tool_danger_tiers.py`. Both are plan-then-confirm: call once
+with `confirm=False` to preview, then again with `confirm=True` to commit.
+
+**Where the customer-facing UI lives:** Django_Algochains exposes an owner-gated GUI at
+`/account/brokers/prop/` (dashboard, fund browser, evaluation panel, onboarding form, deploy
+form) that talks to a **separate, owner-keyed HTTP bridge instance** — not the
+customer-facing `http_bridge.py` container most subscribers hit. This second bridge runs
+next to the real `algochains-control-tower` checkout (so it can read live Tradovate fills
+and write `config/prop_mode/`), reachable only via an SSH reverse tunnel + `socat` relay.
+See `Django_Algochains/brokers/prop_bridge_client.py` for the client and
+`Django_Algochains/brokers/views_prop.py` for the views. This is currently an internal ops
+surface (owner-only), not yet rolled out to subscribers.

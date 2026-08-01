@@ -234,13 +234,19 @@ def get_position_state(bot_id: str) -> dict:
 
     try:
         data = json.loads(state_path.read_text())
+        _qty = int(data.get("qty") or 0)
+        _ep = data.get("entry_price")
+        try:
+            _entry = float(_ep) if _ep is not None else 0.0
+        except (TypeError, ValueError):
+            _entry = 0.0
         return {
             "bot": bot_id,
             "symbol": symbol,
             "direction": data.get("direction"),
-            "qty": int(data.get("qty", 0)),
-            "entry_price": float(data.get("entry_price", 0)),
-            "flat": bool(data.get("flat", data.get("qty", 0) == 0)),
+            "qty": _qty,
+            "entry_price": _entry,
+            "flat": bool(data.get("flat", _qty == 0)),
             "timestamp": data.get("timestamp"),
         }
     except Exception as e:
@@ -399,25 +405,49 @@ def get_all_bot_ops_status() -> dict:
     result = {}
     ps_output = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
     running_bots = scan_running_bot_keys(ps_output)
+
+    # Failover heartbeat (primary MNQ pid) — distinct from ~/.openclaw fill heartbeat
+    failover_hb = {}
+    try:
+        hb_path = CONTROL_TOWER / "logs" / "bot_heartbeat.json"
+        if hb_path.exists():
+            failover_hb = json.loads(hb_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        failover_hb = {}
+
     for bot_id, cfg in BOT_MAP.items():
         running = bot_id in running_bots
-        pid = None
+        pids: list[int] = []
         for line in ps_output.splitlines():
             if matching_bot_key(_command_from_ps_line(line)) == bot_id:
                 parts = line.split()
                 if len(parts) > 1:
                     try:
-                        pid = int(parts[1])
+                        pids.append(int(parts[1]))
                     except ValueError:
                         pass
-                break
-        result[bot_id] = {
+        # Prefer primary live PID from failover heartbeat when available (MNQ dual live+demo)
+        primary_pid = None
+        if bot_id == "mnq" and isinstance(failover_hb.get("pid"), int):
+            primary_pid = failover_hb["pid"]
+        elif pids:
+            primary_pid = pids[0]
+        entry = {
             "running": running,
-            "pid": pid,
+            "pid": primary_pid,
+            "pids": pids,
             "symbol": SYMBOL_MAP[bot_id],
             "position": get_position_state(bot_id),
             "bracket": get_bracket_status(bot_id),
         }
+        if bot_id == "mnq":
+            entry["is_primary"] = bool(failover_hb.get("is_primary")) if failover_hb else None
+            entry["failover_heartbeat"] = {
+                "pid": failover_hb.get("pid"),
+                "timestamp": failover_hb.get("timestamp"),
+                "is_primary": failover_hb.get("is_primary"),
+            } if failover_hb else None
+        result[bot_id] = entry
     result["pipeline_health"] = get_ai_pipeline_health("mnq")
     return result
 

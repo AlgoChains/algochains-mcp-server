@@ -6,6 +6,25 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [22.7.2] — 2026-07-13
+
+### Added — Live-ops tool routing for public agents
+
+- New [docs/LIVE_OPS_TOOL_ROUTING.md](docs/LIVE_OPS_TOOL_ROUTING.md): intent → MCP tool map
+  (bot health, P&L, positions, brackets, orders, live quotes) with explicit
+  **never web-search / memory for broker_truth** guidance and subscriber vs owner split.
+- README “Agent live-ops routing” section + Docs table entry.
+- `AGENTS.md` mandatory live-ops routing block; fixed “9 tools” → **16 subscriber tools**.
+- Hardened LLM-facing descriptions for `get_bot_health`, `portfolio_summary`,
+  `get_positions`, `get_orders`, `get_quote`, `check_unprotected_positions`.
+- `SERVER_INSTRUCTIONS` leading routing cue for IDEs at connect time.
+
+### Changed
+
+- Package / registry / server manifest version → **22.7.2**.
+
+---
+
 ## [22.7.1] — 2026-07-07
 
 ### Fixed — subscriber key env alias (2026-07-07)

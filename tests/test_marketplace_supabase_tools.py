@@ -49,7 +49,7 @@ def test_get_subscriber_bots_reads_subscriber_bot_assignments():
     ])
 
     with patch("algochains_mcp.marketplace.supabase_tools._get_sb_client", return_value=sb):
-        out = get_subscriber_bots("sub-uuid")
+        out = get_subscriber_bots("sub-uuid", owner_authorized=True)
 
     assert sb.tables == ["subscriber_bot_assignments"]
     assert "mode" in sb.query.selected

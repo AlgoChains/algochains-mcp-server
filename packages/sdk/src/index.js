@@ -42,12 +42,12 @@ async function createAlgoChainsClient(options = {}) {
  *
  * @param {object} options
  * @param {string} [options.apiKey]    Developer key (ac_live_* or AC_DEV_KEY env)
- * @param {string} [options.baseUrl]   Bridge URL (default: https://api.algochains.ai)
+ * @param {string} [options.baseUrl]   Bridge URL (default: https://mcp.algochains.ai)
  * @param {number} [options.timeoutMs] Request timeout ms (default: 30000)
  */
 function createBridgeClient(options = {}) {
   const apiKey = options.apiKey || process.env.AC_DEV_KEY || "";
-  const baseUrl = (options.baseUrl || process.env.ALGOCHAINS_BRIDGE_URL || "https://api.algochains.ai").replace(/\/$/, "");
+  const baseUrl = (options.baseUrl || process.env.ALGOCHAINS_BRIDGE_URL || "https://mcp.algochains.ai").replace(/\/$/, "");
   const timeoutMs = options.timeoutMs || 30_000;
 
   if (!apiKey) {

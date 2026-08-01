@@ -20,6 +20,10 @@ subscriber's data. The bridge resolves `subscriber_id` from the production or
 sandbox subscriber API key server-side; callers must not pass or trust a
 client-supplied `subscriber_id`.
 
+**P&L routing:** subscriber paper results → `get_my_pnl` / `get_my_portfolio` /
+`get_my_fills`. Never invent balances from web search or chat memory. Owner/broker
+live ops use a different tool set — see [LIVE_OPS_TOOL_ROUTING.md](LIVE_OPS_TOOL_ROUTING.md).
+
 ## Transport Surfaces
 
 There are two subscriber paths. They intentionally expose different surfaces.
@@ -69,14 +73,14 @@ or auto-fill consent on the subscriber's behalf.
 List the subscriber surface and required scopes:
 
 ```bash
-curl -sS https://api.algochains.ai/tools \
+curl -sS https://mcp.algochains.ai/tools \
   -H "X-Api-Key: <SUBSCRIBER_API_KEY>"
 ```
 
 Call a subscriber tool:
 
 ```bash
-curl -sS https://api.algochains.ai/api/mcp \
+curl -sS https://mcp.algochains.ai/api/mcp \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: <SUBSCRIBER_API_KEY>" \
   -d '{
@@ -88,7 +92,7 @@ curl -sS https://api.algochains.ai/api/mcp \
 Join a bot after consent:
 
 ```bash
-curl -sS https://api.algochains.ai/api/mcp \
+curl -sS https://mcp.algochains.ai/api/mcp \
   -H "Content-Type: application/json" \
   -H "X-Api-Key: <SUBSCRIBER_API_KEY>" \
   -d '{
@@ -105,7 +109,7 @@ curl -sS https://api.algochains.ai/api/mcp \
 Stream copy-trade signals over Server-Sent Events:
 
 ```bash
-curl -N https://api.algochains.ai/api/signals/stream?bots=MNQ \
+curl -N https://mcp.algochains.ai/api/signals/stream?bots=MNQ \
   -H "X-Api-Key: <SUBSCRIBER_API_KEY>"
 ```
 

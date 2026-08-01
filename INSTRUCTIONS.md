@@ -1,6 +1,6 @@
 # AlgoChains MCP Server — Setup Instructions
 
-`algochains-mcp-server` **v22.7.1** — the trading/signals MCP server + CLI that subscribers
+`algochains-mcp-server` **v22.7.2** — the trading/signals MCP server + CLI that subscribers
 install. It connects your AI assistant (Claude, Cursor, ChatGPT) to AlgoChains: live
 copy-trade signals, a hosted virtual paper account, real fills, P&L, and (optionally) your
 own broker.
@@ -54,7 +54,8 @@ never touches this repo.
 
 ## 3. Endpoint & auth
 
-- **Base URL:** `https://api.algochains.ai` (`mcp.algochains.ai` is the same endpoint).
+- **Base URL:** `https://mcp.algochains.ai` (`api.algochains.ai` is a different service —
+  AlgoChains' Data API — and does not answer `/api/mcp`).
 - **Header:** subscriber requests authenticate with `X-Api-Key: <your sub_live_… key>`.
 
 ---

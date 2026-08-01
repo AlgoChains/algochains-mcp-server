@@ -34,14 +34,14 @@ Keys use the prefix `ac_live_` (production) or `ac_test_` (sandbox).
 
 ## 3. Configure your MCP client
 
-Developer keys connect to the **hosted bridge** at `https://api.algochains.ai/api/mcp`.
+Developer keys connect to the **hosted bridge** at `https://mcp.algochains.ai/api/mcp`.
 That endpoint uses a custom JSON shape (`{"tool","arguments"}`) for the AlgoChains SDK
 and CLI — **not** standard MCP Streamable HTTP.
 
 ### Cursor / Claude Desktop / Windsurf (stdio — required)
 
 Desktop IDEs spawn the local `algochains-mcp` process over **stdio**. Do **not** point
-Cursor at `api.algochains.ai/api/mcp` — Cursor's MCP client expects Streamable HTTP at
+Cursor at `mcp.algochains.ai/api/mcp` — Cursor's MCP client expects Streamable HTTP at
 `/mcp`, and the bridge API will return 404 or fail protocol negotiation.
 
 Install and generate config:
@@ -82,7 +82,7 @@ from mcp.client.http import http_client
 dev_key = os.environ["AC_DEV_KEY"]   # ac_live_... stored in env
 
 async with http_client(
-    url="https://api.algochains.ai/api/mcp",
+    url="https://mcp.algochains.ai/api/mcp",
     headers={"X-Api-Key": dev_key},
 ) as (read, write):
     async with ClientSession(read, write) as session:
@@ -106,7 +106,7 @@ Developer keys have access to read-only and analysis tools only.
 No broker order execution access.
 
 ```
-GET https://api.algochains.ai/tools
+GET https://mcp.algochains.ai/tools
 X-Api-Key: ac_live_...
 ```
 

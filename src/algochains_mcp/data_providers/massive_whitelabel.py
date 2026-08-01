@@ -746,6 +746,48 @@ class MassiveWhiteLabelProvider:
         data["_applied"] = [s.get("function") for s in steps]
         return data
 
+
+    @staticmethod
+    def _assert_readonly_sql(sql: str) -> str:
+        """Allow only SELECT/EXPLAIN/WITH + SHOW/DESCRIBE/DROP TABLE helpers.
+
+        Rejects VACUUM/ATTACH/PRAGMA writes/DDL/DML that can side-effect the
+        ephemeral SQLite connection (security: READ_ONLY tier).
+        """
+        s = (sql or "").strip()
+        if not s:
+            raise MassiveQueryError("sql required")
+        # Strip comments
+        lines = []
+        for line in s.splitlines():
+            if "--" in line:
+                line = line[: line.index("--")]
+            lines.append(line)
+        s = "\n".join(lines).strip()
+        upper = s.upper()
+        # Multi-statement ban
+        if ";" in s.rstrip(";"):
+            raise MassiveQueryError("multiple SQL statements are not allowed")
+        if upper in ("SHOW TABLES",) or upper.startswith("DESCRIBE ") or upper.startswith("DROP TABLE "):
+            return s
+        # Read-only prefixes
+        if not (
+            upper.startswith("SELECT")
+            or upper.startswith("WITH")
+            or upper.startswith("EXPLAIN")
+        ):
+            raise MassiveQueryError(
+                "only SELECT/WITH/EXPLAIN (plus SHOW TABLES / DESCRIBE / DROP TABLE) allowed"
+            )
+        banned = (
+            "VACUUM", "ATTACH", "DETACH", "PRAGMA", "INSERT", "UPDATE", "DELETE",
+            "CREATE", "ALTER", "REPLACE", "INTO ", "COPY ", "LOAD_",
+        )
+        for b in banned:
+            if b in upper:
+                raise MassiveQueryError(f"disallowed SQL keyword: {b.strip()}")
+        return s
+
     async def query_data(
         self,
         sql: str,
@@ -759,7 +801,7 @@ class MassiveWhiteLabelProvider:
         - DESCRIBE <table>: show table schema
         - DROP TABLE <table>: remove a table
         """
-        sql_stripped = sql.strip()
+        sql_stripped = self._assert_readonly_sql(sql)
         upper = sql_stripped.upper()
 
         if upper == "SHOW TABLES":

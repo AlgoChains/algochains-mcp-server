@@ -75,7 +75,7 @@ on: [push, pull_request]
 
 env:
   AC_DEV_KEY: ${{ secrets.AC_DEV_KEY }}
-  ALGOCHAINS_BRIDGE_URL: https://api.algochains.ai
+  ALGOCHAINS_BRIDGE_URL: https://mcp.algochains.ai
 
 jobs:
   validate:
@@ -288,7 +288,7 @@ import { createBridgeClient } from "@algochains/sdk";
 
 const bridge = createBridgeClient({
   apiKey: process.env.AC_DEV_KEY,
-  // baseUrl defaults to https://api.algochains.ai
+  // baseUrl defaults to https://mcp.algochains.ai
 });
 
 async function main() {
@@ -325,7 +325,7 @@ import asyncio, os
 import httpx
 
 AC_DEV_KEY = os.environ["AC_DEV_KEY"]
-BRIDGE_URL = os.environ.get("ALGOCHAINS_BRIDGE_URL", "https://api.algochains.ai")
+BRIDGE_URL = os.environ.get("ALGOCHAINS_BRIDGE_URL", "https://mcp.algochains.ai")
 
 async def call_bridge(tool: str, params: dict) -> dict:
     async with httpx.AsyncClient(timeout=30) as client:
@@ -357,7 +357,7 @@ asyncio.run(main())
 | Variable | Purpose | Required for |
 |----------|---------|-------------|
 | `AC_DEV_KEY` | Developer API key (`ac_live_*` or `ac_test_*`) | Bridge access |
-| `ALGOCHAINS_BRIDGE_URL` | Bridge endpoint (default: `https://api.algochains.ai`) | Custom deployments |
+| `ALGOCHAINS_BRIDGE_URL` | Bridge endpoint (default: `https://mcp.algochains.ai`) | Custom deployments |
 | `SUPABASE_URL` | Supabase project URL | MCP account/key tools |
 | `SUPABASE_ANON_KEY` | Supabase anon key | MCP account/key tools |
 | `SUPABASE_SERVICE_KEY` | Supabase service role key | Key creation/rotation |

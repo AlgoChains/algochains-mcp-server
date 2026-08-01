@@ -867,7 +867,7 @@ def set_algochains_api_key(api_key: str) -> dict:
 
     # Validate against the authenticated /tools endpoint (not /health which is public/unauthenticated).
     # A 200 on /tools with X-Api-Key confirms the key is recognized by the bridge.
-    _bridge_url = os.environ.get("ALGOCHAINS_BRIDGE_URL", "https://api.algochains.ai").rstrip("/")
+    _bridge_url = os.environ.get("ALGOCHAINS_BRIDGE_URL", "https://mcp.algochains.ai").rstrip("/")
     validated = False
     validation_detail = "Bridge validation skipped (ALGOCHAINS_BRIDGE_URL not reachable)"
     try:

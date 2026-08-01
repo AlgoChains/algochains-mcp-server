@@ -127,6 +127,14 @@ def test_get_tool_details_unknown_tool():
     "list_support_tickets",
     "update_ticket_status",
     "get_ticket_stats",
+    # SEC-2026 prop-fund account data: real fills/P&L and account state are
+    # owner-only, never directly exposed to smart-mode callers.
+    "run_prop_fund_autopilot",
+    "build_prop_fund_inputs",
+    "get_prop_mode_status",
+    "onboard_prop_account",
+    "deploy_bot_in_prop_mode",
+    "request_prop_payout",
 ])
 def test_execute_dynamic_tool_blocks_order_exec_without_token(tool_name, monkeypatch):
     """execute_dynamic_tool must block ORDER_EXEC/DESTRUCTIVE tools without owner_token.
@@ -334,6 +342,21 @@ def test_all_order_exec_tools_blocked_without_token(monkeypatch):
         f"These ORDER_EXEC+ tools were NOT blocked by execute_dynamic_tool: {not_blocked}\n"
         "Add them to the tier system in tool_danger_tiers.py."
     )
+
+
+def test_prop_account_tools_not_exposed_in_smart_mode():
+    import algochains_mcp.server as srv
+
+    sensitive = {
+        "run_prop_fund_autopilot",
+        "build_prop_fund_inputs",
+        "get_prop_mode_status",
+        "onboard_prop_account",
+        "deploy_bot_in_prop_mode",
+        "request_prop_payout",
+    }
+    exposed = sensitive & set(srv.TIER1_TOOL_NAMES)
+    assert not exposed, f"Sensitive prop-account tools exposed in smart mode: {sorted(exposed)}"
 
 
 # ── Audit-fix regression tests (2026-06-14) ──────────────────────────────────

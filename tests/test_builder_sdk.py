@@ -1,4 +1,6 @@
 """Tests for Builder SDK module."""
+import hashlib
+
 import pytest
 from algochains_mcp.builder_sdk.data_warehouse import DataWarehouseClient, DataQuery
 from algochains_mcp.builder_sdk.strategy_runner import (
@@ -117,7 +119,7 @@ class TestSubmissionPipeline:
 
     @pytest.mark.asyncio
     async def test_valid_submission_platinum(self, monkeypatch):
-        monkeypatch.setenv("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", "1")
+        monkeypatch.delenv("LISTING_API_KEY", raising=False)
         pipeline = SubmissionPipeline()
         sub = StrategySubmission(
             symbol="AAPL", strategy_type="trend", timeframe="hour",
@@ -130,6 +132,60 @@ class TestSubmissionPipeline:
         assert result.passed
         assert result.tier in ("platinum", "gold")
         assert result.score > 70
+        assert result.dry_run is True
+        assert result.staged is False
+        assert result.status == "validated_dry_run"
+
+    @pytest.mark.asyncio
+    async def test_listing_key_requires_verified_artifact(self):
+        pipeline = SubmissionPipeline(api_key="listing-test-key")
+        sub = StrategySubmission(
+            symbol="AAPL", strategy_type="trend", timeframe="hour",
+            oos_sharpe=2.8, oos_trades=200, max_drawdown_pct=8.0,
+            is_sharpe=3.2, win_rate=60.0, profit_factor=2.1,
+            mcpt_p_value=0.01, mcpt_permutations=1000,
+            wf_folds=5, wf_avg_oos_sharpe=2.5, wf_worst_fold=1.8,
+        )
+
+        result = await pipeline.submit(sub)
+
+        assert result.passed is False
+        assert result.status == "staging_blocked"
+        assert result.staged is False
+
+    @pytest.mark.asyncio
+    async def test_verified_artifact_can_stage(self, monkeypatch, tmp_path):
+        artifact = tmp_path / "validated-result.json"
+        artifact.write_text('{"source":"real-backtest"}')
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        monkeypatch.setenv("ALGOCHAINS_VERIFIED_ARTIFACT_DIR", str(tmp_path))
+
+        pipeline = SubmissionPipeline(api_key="listing-test-key")
+
+        async def fake_stage(_sub, result):
+            result.feedback.append("Listing staged on marketplace")
+            return True
+
+        monkeypatch.setattr(pipeline, "_stage_listing", fake_stage)
+        sub = StrategySubmission(
+            symbol="AAPL", strategy_type="trend", timeframe="hour",
+            oos_sharpe=2.8, oos_trades=200, max_drawdown_pct=8.0,
+            is_sharpe=3.2, win_rate=60.0, profit_factor=2.1,
+            mcpt_p_value=0.01, mcpt_permutations=1000,
+            wf_folds=5, wf_avg_oos_sharpe=2.5, wf_worst_fold=1.8,
+            verification_artifact={
+                "path": str(artifact),
+                "sha256": digest,
+                "artifact_id": "artifact-test",
+            },
+        )
+
+        result = await pipeline.submit(sub)
+
+        assert result.passed is True
+        assert result.status == "staged"
+        assert result.dry_run is False
+        assert result.staged is True
 
     @pytest.mark.asyncio
     async def test_rejected_submission(self):

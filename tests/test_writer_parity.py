@@ -58,6 +58,7 @@ try:
         TEST_PREFIX,
         TIER_SCOPES,
         build_insert_payload,
+        build_core_mirror_payload,
         generate_platform_key,
         hash_platform_key,
         is_developer_key,
@@ -185,6 +186,23 @@ class TestScopesForTier:
         assert "read:signals" in scopes
         assert "read:backtest" in scopes
         assert "write:backtest" in scopes
+        assert "agent:sandbox" in scopes
+        assert "spend:llm_budget" in scopes
+        assert "agent:host" not in scopes
+
+    def test_enterprise_has_agent_host(self):
+        scopes = scopes_for_tier("enterprise")
+        assert "agent:sandbox" in scopes
+        assert "spend:llm_budget" in scopes
+        assert "agent:host" in scopes
+
+    def test_developer_pro_cannot_override_agent_host(self):
+        scopes = scopes_for_tier(
+            "developer_pro",
+            override=["read:market_data", "agent:host", "agent:sandbox"],
+        )
+        assert "agent:sandbox" in scopes
+        assert "agent:host" not in scopes
 
     def test_enterprise_is_superset_of_developer_pro(self):
         pro = set(scopes_for_tier("developer_pro"))
@@ -281,6 +299,31 @@ class TestBuildInsertPayload:
         raw = generate_platform_key("live")
         payload = build_insert_payload(raw, clerk_user_id="user_x")
         assert payload["key_prefix"] == raw[:12]
+
+
+class TestCoreMirrorPayload:
+    def test_hash_only_by_default(self):
+        raw = generate_platform_key("live")
+        payload = build_core_mirror_payload(
+            raw_key=raw,
+            developer_api_key_id="key-id",
+            user_name="dev@example.com",
+        )
+        assert payload["key_hash"] == hash_platform_key(raw)
+        assert payload["key_prefix"] == raw[:12]
+        assert payload["is_active"] is True
+        assert "api_key" not in payload
+        assert raw not in str(payload)
+
+    def test_plaintext_requires_explicit_compatibility_flag(self):
+        raw = generate_platform_key("test")
+        payload = build_core_mirror_payload(
+            raw_key=raw,
+            developer_api_key_id="key-id",
+            user_name="dev@example.com",
+            include_plaintext=True,
+        )
+        assert payload["api_key"] == raw
 
 
 class TestWriterParityIdenticalShape:

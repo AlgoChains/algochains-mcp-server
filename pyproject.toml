@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "algochains-mcp-server"
-version = "22.7.1"
+version = "22.7.2"
 description = "AlgoChains MCP Server — 533 tools for live algo trading: Tradovate/Alpaca/OANDA, Databento/Polygon data, Onyx RAG, Graphiti KG, AlphaLoop, HMM regimes, autonomous marketplace pipeline, Kalshi, physical-world event intelligence, real data only."
 readme = "README.md"
 license = { text = "MIT" }
@@ -21,14 +21,15 @@ classifiers = [
     "Topic :: Office/Business :: Financial :: Investment",
 ]
 dependencies = [
-    # Upper bound added 2026-08-01. mcp 2.0.0 renames Tool.inputSchema to
-    # Tool.input_schema; this server has 559 references, 537 in server.py alone.
-    # `mcp>=1.0.0` claimed compatibility with a major version that did not exist
-    # when it was written, so the 2.0 release broke CI on main and on every open
-    # PR at once, with no commit to blame — the failure looked like it belonged to
-    # whichever PR ran next. Migrating to 2.x is real work and gets its own change:
-    # raise this bound deliberately, not by letting a resolver decide it mid-merge.
-    "mcp>=1.0.0,<2.0.0",
+    # Upper bound added 2026-08-01, independently on two branches the same day —
+    # which is itself the finding. `mcp>=1.0.0` asserted compatibility with every
+    # future major version, so 2.0.0 broke CI on main and on every open PR at once,
+    # with no commit to blame; the failure landed on whichever PR ran next.
+    # Two separate 2.0 breakages were hit: Server.list_tools / call_tool decorators
+    # were removed, and Tool.inputSchema was renamed to Tool.input_schema (559
+    # references here, 537 in server.py alone). Migrating is real work and gets its
+    # own change — raise this bound deliberately, not via a resolver mid-merge.
+    "mcp>=1.0.0,<2",
     "httpx>=0.27.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",

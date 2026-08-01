@@ -1495,7 +1495,7 @@ export interface AlgochainsTools {
 export interface BridgeClientOptions {
   /** Developer API key (ac_live_* or ac_test_*). Falls back to AC_DEV_KEY env var. */
   apiKey?: string;
-  /** Bridge base URL. Defaults to https://api.algochains.ai */
+  /** Bridge base URL. Defaults to https://mcp.algochains.ai */
   baseUrl?: string;
   /** Request timeout in milliseconds. Default: 30000. */
   timeoutMs?: number;
