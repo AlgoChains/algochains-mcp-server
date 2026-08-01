@@ -3,34 +3,35 @@ support_tickets.py — IT Support Ticket System for AlgoChains
 =============================================================
 
 Backs the Support Page → creates, tracks, and resolves tickets.
-Primary store: Supabase (algochains_support_tickets table).
-Optional sync: Notion (NOTION_SUPPORT_DB_ID env var).
+Canonical store: Django SupportTicket via its signed internal API.
+Legacy Supabase tickets are read-only unless an explicit compatibility flag is set.
 
 Ticket lifecycle:  open → in_progress → resolved | closed
 
-No synthetic data. Every ticket read/write hits real Supabase rows.
+No synthetic data. Canonical operations hit Django; legacy reads hit real Supabase rows.
 Env vars required:
-  SUPABASE_URL              — Supabase project URL
-  SUPABASE_SERVICE_KEY      — Service-role key (can write tickets)
+  ALGOCHAINS_SUPPORT_API_URL     — Django internal support API base
+  ALGOCHAINS_SUPPORT_API_SECRET  — HMAC secret shared with Django
 Optional:
-  NOTION_API_KEY            — Sync tickets to Notion database
-  NOTION_SUPPORT_DB_ID      — Target Notion database ID
+  ALGOCHAINS_SUPPORT_LEGACY_WRITE_ENABLED — temporary legacy write fallback
+  SUPABASE_URL / SUPABASE_SERVICE_KEY     — legacy read compatibility
   RESEND_API_KEY            — Send email confirmations to users
   SUPPORT_FROM_EMAIL        — Sender address (default: support@algochains.ai)
 """
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 import httpx
 
@@ -39,13 +40,14 @@ logger = logging.getLogger("algochains_mcp.support_tickets")
 # ── Config ────────────────────────────────────────────────────────────────────
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
-NOTION_API_KEY = os.getenv("NOTION_API_KEY", "")
-NOTION_SUPPORT_DB_ID = os.getenv("NOTION_SUPPORT_DB_ID", "")
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 SUPPORT_FROM_EMAIL = os.getenv("SUPPORT_FROM_EMAIL", "support@algochains.ai")
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN", "")
+SLACK_SUPPORT_CHANNEL = os.getenv("SLACK_SUPPORT_CHANNEL", "#Support-tickets")
 
 _TABLE = "algochains_support_tickets"
 _TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+_CANONICAL_TICKETS_PATH = "/api/internal/v1/support/tickets/"
 
 
 class TicketStatus(str, Enum):
@@ -93,6 +95,72 @@ def _sb_available() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_KEY)
 
 
+def _env_enabled(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _canonical_support_config() -> tuple[str, str]:
+    base_url = os.getenv("ALGOCHAINS_SUPPORT_API_URL", "https://algochains.ai").rstrip("/")
+    secret = os.getenv("ALGOCHAINS_SUPPORT_API_SECRET", "")
+    return base_url, secret
+
+
+def _canonical_support_available() -> bool:
+    _, secret = _canonical_support_config()
+    return bool(secret)
+
+
+def _canonical_body(payload: Optional[dict[str, Any]]) -> bytes:
+    if payload is None:
+        return b""
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _canonical_headers(
+    method: str,
+    path: str,
+    payload: Optional[dict[str, Any]],
+    *,
+    idempotency_key: Optional[str] = None,
+) -> dict[str, str]:
+    _, secret = _canonical_support_config()
+    timestamp = str(int(time.time()))
+    body = _canonical_body(payload).decode("utf-8")
+    signed = f"{timestamp}.{method.upper()}.{path}.{body}".encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
+    headers = {
+        "Content-Type": "application/json",
+        "X-AlgoChains-Timestamp": timestamp,
+        "X-AlgoChains-Signature": f"sha256={signature}",
+    }
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    return headers
+
+
+async def _canonical_request(
+    method: str,
+    path: str,
+    *,
+    payload: Optional[dict[str, Any]] = None,
+    idempotency_key: Optional[str] = None,
+) -> httpx.Response:
+    base_url, _ = _canonical_support_config()
+    body = _canonical_body(payload)
+    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        return await client.request(
+            method,
+            f"{base_url}{path}",
+            headers=_canonical_headers(
+                method, path, payload, idempotency_key=idempotency_key
+            ),
+            content=body or None,
+        )
+
+
 # ── Fallback file store (when Supabase not configured) ────────────────────────
 
 _STATE_DIR = Path(os.getenv("ALGOCHAINS_STATE_DIR", "state"))
@@ -111,65 +179,6 @@ def _load_local_tickets() -> dict[str, dict]:
 def _save_local_tickets(tickets: dict[str, dict]) -> None:
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     _LOCAL_TICKETS_FILE.write_text(json.dumps(tickets, indent=2, default=str))
-
-
-# ── Notion sync ───────────────────────────────────────────────────────────────
-
-async def _sync_to_notion(ticket: dict) -> Optional[str]:
-    """Create or update a Notion page for the ticket. Returns Notion page ID."""
-    if not NOTION_API_KEY or not NOTION_SUPPORT_DB_ID:
-        return None
-
-    priority_color = {
-        "critical": "red",
-        "high": "orange",
-        "medium": "yellow",
-        "low": "default",
-    }.get(ticket.get("priority", "medium"), "default")
-
-    payload = {
-        "parent": {"database_id": NOTION_SUPPORT_DB_ID},
-        "properties": {
-            "Name": {"title": [{"text": {"content": f"[{ticket['ticket_id']}] {ticket['subject']}"}}]},
-            "Status": {"select": {"name": ticket.get("status", "open").replace("_", " ").title()}},
-            "Priority": {"select": {"name": ticket.get("priority", "medium").title(), "color": priority_color}},
-            "Category": {"select": {"name": ticket.get("category", "other").replace("_", " ").title()}},
-            "User Email": {"email": ticket.get("user_email", "")},
-            "Ticket ID": {"rich_text": [{"text": {"content": ticket["ticket_id"]}}]},
-            "Created": {"date": {"start": ticket.get("created_at", datetime.now(timezone.utc).isoformat())}},
-        },
-        "children": [
-            {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": ticket.get("description", "")}}]
-                },
-            }
-        ],
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            resp = await client.post(
-                "https://api.notion.com/v1/pages",
-                headers={
-                    "Authorization": f"Bearer {NOTION_API_KEY}",
-                    "Notion-Version": "2022-06-28",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            if resp.status_code == 200:
-                page_id = resp.json().get("id")
-                logger.info("Ticket %s synced to Notion page %s", ticket["ticket_id"], page_id)
-                return page_id
-            else:
-                logger.warning("Notion sync failed %s: %s", resp.status_code, resp.text[:200])
-                return None
-    except Exception as e:
-        logger.error("Notion sync error: %s", e)
-        return None
 
 
 # ── Email confirmation ────────────────────────────────────────────────────────
@@ -209,6 +218,47 @@ algochains.ai/support/tickets/{ticket['ticket_id']}</a></p>
 
 # ── Core CRUD ─────────────────────────────────────────────────────────────────
 
+async def _notify_slack_support(ticket: dict[str, Any]) -> None:
+    """Post a new-ticket alert to the Slack #Support-tickets channel.
+
+    Non-fatal: logs warning on failure, never raises.
+    Requires SLACK_BOT_TOKEN env var to be set.
+    """
+    if not SLACK_BOT_TOKEN:
+        logger.debug("_notify_slack_support: SLACK_BOT_TOKEN not set — skipping Slack alert")
+        return
+
+    ticket_id = ticket.get("ticket_id", "TKT-???")
+    category = ticket.get("category", "other")
+    priority = ticket.get("priority", "medium")
+    subject = ticket.get("subject", "(no subject)")
+    user_email = ticket.get("user_email", "unknown")
+
+    priority_emoji = {"critical": ":rotating_light:", "high": ":red_circle:", "medium": ":large_yellow_circle:", "low": ":white_circle:"}.get(priority, ":white_circle:")
+
+    text = (
+        f"{priority_emoji} *New Support Ticket — {ticket_id}*\n"
+        f"• *Subject:* {subject}\n"
+        f"• *Category:* {category}  |  *Priority:* {priority}\n"
+        f"• *Email:* {user_email}"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(8.0)) as client:
+            resp = await client.post(
+                "https://slack.com/api/chat.postMessage",
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+                json={"channel": SLACK_SUPPORT_CHANNEL, "text": text, "unfurl_links": False},
+            )
+            data = resp.json() if resp.status_code == 200 else {}
+            if not data.get("ok"):
+                logger.warning("_notify_slack_support: Slack API error for ticket %s: %s", ticket_id, data.get("error", resp.text[:120]))
+            else:
+                logger.info("_notify_slack_support: posted alert for ticket %s to %s", ticket_id, SLACK_SUPPORT_CHANNEL)
+    except Exception as exc:
+        logger.warning("_notify_slack_support: failed to post Slack alert for ticket %s: %s", ticket_id, exc)
+
+
 async def create_ticket(
     subject: str,
     description: str,
@@ -218,6 +268,7 @@ async def create_ticket(
     user_id: Optional[str] = None,
     attachments: Optional[list[str]] = None,
     metadata: Optional[dict] = None,
+    idempotency_key: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Create a new support ticket.
@@ -234,7 +285,7 @@ async def create_ticket(
         metadata:    Any extra context (browser, OS, bot name, etc.)
 
     Returns:
-        dict with ticket_id, status, notion_page_id (if synced)
+        Canonical Django ticket receipt.
     """
     if not subject or not description or not user_email:
         return {"success": False, "error": "subject, description, and user_email are required"}
@@ -259,14 +310,45 @@ async def create_ticket(
         "created_at": now,
         "updated_at": now,
         "resolved_at": None,
-        "notion_page_id": None,
         "attachments": attachments or [],
         "metadata": metadata or {},
         "responses": [],
     }
 
-    # Try Supabase first
-    notion_page_id = None
+    request_id = idempotency_key or f"support:{uuid.uuid4()}"
+    if _canonical_support_available():
+        try:
+            resp = await _canonical_request(
+                "POST",
+                _CANONICAL_TICKETS_PATH,
+                payload={**ticket, "external_event_id": request_id},
+                idempotency_key=request_id,
+            )
+            if resp.status_code in (200, 201):
+                result = resp.json()
+                result.setdefault("success", True)
+                result.setdefault("idempotency_key", request_id)
+                result.setdefault("source", "django")
+                return result
+            logger.warning("Canonical support create failed HTTP %s", resp.status_code)
+        except Exception as exc:
+            logger.warning("Canonical support create unavailable: %s", type(exc).__name__)
+
+        if not _env_enabled("ALGOCHAINS_SUPPORT_LEGACY_WRITE_ENABLED"):
+            return {
+                "success": False,
+                "error": "Canonical Django support API unavailable; legacy writes are disabled.",
+                "idempotency_key": request_id,
+            }
+    elif not _env_enabled("ALGOCHAINS_SUPPORT_LEGACY_WRITE_ENABLED"):
+        return {
+            "success": False,
+            "error": "Canonical Django support API is not configured; legacy writes are disabled.",
+            "required_env": ["ALGOCHAINS_SUPPORT_API_SECRET"],
+            "idempotency_key": request_id,
+        }
+
+    # Explicitly enabled temporary legacy write path.
     if _sb_available():
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -286,20 +368,8 @@ async def create_ticket(
     else:
         _save_local_tickets({**_load_local_tickets(), ticket_id: ticket})
 
-    # Sync to Notion
-    notion_page_id = await _sync_to_notion(ticket)
-    if notion_page_id:
-        ticket["notion_page_id"] = notion_page_id
-        if _sb_available():
-            try:
-                async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                    await client.patch(
-                        _sb_url(f"{_TABLE}?ticket_id=eq.{ticket_id}"),
-                        headers=_sb_headers(),
-                        json={"notion_page_id": notion_page_id},
-                    )
-            except Exception:
-                pass
+    # Slack alert — non-fatal, always attempt
+    await _notify_slack_support(ticket)
 
     # Send confirmation email
     await _send_ticket_confirmation(ticket)
@@ -308,7 +378,8 @@ async def create_ticket(
         "success": True,
         "ticket_id": ticket_id,
         "status": TicketStatus.OPEN.value,
-        "notion_page_id": notion_page_id,
+        "source": "legacy_supabase" if _sb_available() else "legacy_local",
+        "idempotency_key": request_id,
         "message": f"Ticket {ticket_id} created. Confirmation sent to {user_email}.",
     }
 
@@ -318,7 +389,21 @@ async def get_ticket(ticket_id: str) -> dict[str, Any]:
     if not ticket_id:
         return {"success": False, "error": "ticket_id required"}
 
-    if _sb_available():
+    if _canonical_support_available():
+        path = f"{_CANONICAL_TICKETS_PATH}{ticket_id}/"
+        try:
+            resp = await _canonical_request("GET", path)
+            if resp.status_code == 200:
+                result = resp.json()
+                result.setdefault("success", True)
+                result.setdefault("source", "django")
+                return result
+            if resp.status_code == 404:
+                return {"success": False, "error": f"Ticket {ticket_id} not found"}
+        except Exception as exc:
+            logger.warning("Canonical support read unavailable: %s", type(exc).__name__)
+
+    if _sb_available() and _env_enabled("ALGOCHAINS_SUPPORT_LEGACY_READ_ENABLED", True):
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 resp = await client.get(
@@ -332,12 +417,9 @@ async def get_ticket(ticket_id: str) -> dict[str, Any]:
                     return {"success": False, "error": f"Ticket {ticket_id} not found"}
         except Exception as e:
             logger.error("Supabase get_ticket error: %s", e)
+            return {"success": False, "error": f"Supabase get_ticket failed: {e}"}
 
-    tickets = _load_local_tickets()
-    ticket = tickets.get(ticket_id)
-    if ticket:
-        return {"success": True, "ticket": ticket}
-    return {"success": False, "error": f"Ticket {ticket_id} not found"}
+    return {"success": False, "error": "Supabase not configured — ticket reads require SUPABASE_URL + SUPABASE_SERVICE_KEY"}
 
 
 async def list_tickets(
@@ -349,7 +431,28 @@ async def list_tickets(
     offset: int = 0,
 ) -> dict[str, Any]:
     """List support tickets with optional filters."""
-    if _sb_available():
+    if _canonical_support_available():
+        filters = {
+            "status": status,
+            "priority": priority,
+            "category": category,
+            "user_email": user_email.lower() if user_email else None,
+            "limit": limit,
+            "offset": offset,
+        }
+        query = urlencode({key: value for key, value in filters.items() if value is not None})
+        path = f"{_CANONICAL_TICKETS_PATH}?{query}" if query else _CANONICAL_TICKETS_PATH
+        try:
+            resp = await _canonical_request("GET", path)
+            if resp.status_code == 200:
+                result = resp.json()
+                result.setdefault("success", True)
+                result.setdefault("source", "django")
+                return result
+        except Exception as exc:
+            logger.warning("Canonical support list unavailable: %s", type(exc).__name__)
+
+    if _sb_available() and _env_enabled("ALGOCHAINS_SUPPORT_LEGACY_READ_ENABLED", True):
         try:
             params: list[str] = []
             if status:
@@ -369,19 +472,9 @@ async def list_tickets(
                     return {"success": True, "tickets": rows, "count": len(rows)}
         except Exception as e:
             logger.error("Supabase list_tickets error: %s", e)
+            return {"success": False, "error": f"Supabase list_tickets failed: {e}"}
 
-    # Fallback to local
-    tickets = list(_load_local_tickets().values())
-    if status:
-        tickets = [t for t in tickets if t.get("status") == status]
-    if priority:
-        tickets = [t for t in tickets if t.get("priority") == priority]
-    if category:
-        tickets = [t for t in tickets if t.get("category") == category]
-    if user_email:
-        tickets = [t for t in tickets if t.get("user_email") == user_email.lower()]
-    tickets.sort(key=lambda t: t.get("created_at", ""), reverse=True)
-    return {"success": True, "tickets": tickets[offset:offset + limit], "count": len(tickets)}
+    return {"success": False, "error": "Supabase not configured — ticket list requires SUPABASE_URL + SUPABASE_SERVICE_KEY"}
 
 
 async def update_ticket_status(
@@ -389,6 +482,8 @@ async def update_ticket_status(
     status: str,
     agent_response: Optional[str] = None,
     agent_email: Optional[str] = None,
+    verification_receipt_id: Optional[str] = None,
+    resolution_confidence: Optional[float] = None,
 ) -> dict[str, Any]:
     """Update ticket status and optionally add an agent response."""
     valid_statuses = {s.value for s in TicketStatus}
@@ -401,13 +496,54 @@ async def update_ticket_status(
         "updated_at": now,
     }
     if status in (TicketStatus.RESOLVED.value, TicketStatus.CLOSED.value):
+        if not verification_receipt_id or resolution_confidence is None:
+            return {
+                "success": False,
+                "error": (
+                    "Automated resolution requires verification_receipt_id and "
+                    "resolution_confidence; sensitive tickets remain human-reviewed."
+                ),
+            }
+        try:
+            confidence_value = float(resolution_confidence)
+        except (TypeError, ValueError):
+            confidence_value = -1.0
+        if not 0.95 <= confidence_value <= 1.0:
+            return {
+                "success": False,
+                "error": "resolution_confidence must be between 0.95 and 1.0",
+            }
         updates["resolved_at"] = now
+        updates["verification_receipt_id"] = verification_receipt_id
+        updates["resolution_confidence"] = confidence_value
     if agent_response and agent_email:
         updates["last_agent_response"] = {
             "message": agent_response,
             "agent": agent_email,
             "timestamp": now,
         }
+
+    if _canonical_support_available():
+        path = f"{_CANONICAL_TICKETS_PATH}{ticket_id}/"
+        request_id = f"support-status:{ticket_id}:{status}:{hashlib.sha256(json.dumps(updates, sort_keys=True).encode()).hexdigest()[:16]}"
+        try:
+            resp = await _canonical_request(
+                "PATCH", path, payload=updates, idempotency_key=request_id
+            )
+            if resp.status_code in (200, 204):
+                if resp.status_code == 204:
+                    return {"success": True, "ticket_id": ticket_id, "new_status": status, "source": "django"}
+                result = resp.json()
+                result.setdefault("success", True)
+                result.setdefault("source", "django")
+                return result
+        except Exception as exc:
+            logger.warning("Canonical support update unavailable: %s", type(exc).__name__)
+
+        if not _env_enabled("ALGOCHAINS_SUPPORT_LEGACY_WRITE_ENABLED"):
+            return {"success": False, "error": "Canonical Django support API unavailable; legacy writes are disabled."}
+    elif not _env_enabled("ALGOCHAINS_SUPPORT_LEGACY_WRITE_ENABLED"):
+        return {"success": False, "error": "Canonical Django support API is not configured; legacy writes are disabled."}
 
     if _sb_available():
         try:
@@ -434,7 +570,19 @@ async def update_ticket_status(
 
 async def get_ticket_stats() -> dict[str, Any]:
     """Get aggregate ticket statistics for the support dashboard."""
-    if _sb_available():
+    if _canonical_support_available():
+        path = f"{_CANONICAL_TICKETS_PATH}stats/"
+        try:
+            resp = await _canonical_request("GET", path)
+            if resp.status_code == 200:
+                result = resp.json()
+                result.setdefault("success", True)
+                result.setdefault("source", "django")
+                return result
+        except Exception as exc:
+            logger.warning("Canonical support stats unavailable: %s", type(exc).__name__)
+
+    if _sb_available() and _env_enabled("ALGOCHAINS_SUPPORT_LEGACY_READ_ENABLED", True):
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 resp = await client.get(
@@ -462,25 +610,6 @@ async def get_ticket_stats() -> dict[str, Any]:
                     }
         except Exception as e:
             logger.error("Supabase ticket stats error: %s", e)
+            return {"success": False, "error": f"Supabase ticket stats failed: {e}"}
 
-    # Fallback local
-    tickets = list(_load_local_tickets().values())
-    by_status: dict[str, int] = {}
-    by_priority: dict[str, int] = {}
-    by_category: dict[str, int] = {}
-    for t in tickets:
-        s = t.get("status", "open")
-        by_status[s] = by_status.get(s, 0) + 1
-        p = t.get("priority", "medium")
-        by_priority[p] = by_priority.get(p, 0) + 1
-        c = t.get("category", "other")
-        by_category[c] = by_category.get(c, 0) + 1
-    return {
-        "success": True,
-        "total": len(tickets),
-        "by_status": by_status,
-        "by_priority": by_priority,
-        "by_category": by_category,
-        "open_critical": sum(1 for t in tickets if t.get("status") == "open" and t.get("priority") == "critical"),
-        "storage": "local (Supabase not configured)",
-    }
+    return {"success": False, "error": "Supabase not configured — ticket stats require SUPABASE_URL + SUPABASE_SERVICE_KEY"}

@@ -176,7 +176,7 @@ PROP_FUNDS: dict[str, PropFundRules] = {
         rules_verified_date="2026-04-17",
         rules_source_url="apextraderfunding.com/pricing (verify manually)",
         tier="eval",
-        fund_key="apex_50k_intraday",
+        fund_key="apex_50k_intraday",  # gitleaks:allow - catalog identifier, not a credential
         notes="Higher risk of early trip from intraday spikes. EOD variant recommended for scalpers.",
     ),
 
@@ -342,7 +342,7 @@ PROP_FUNDS: dict[str, PropFundRules] = {
         website="https://tradeify.co",
         rules_verified_date="2026-04-17",
         tier="eval",
-        fund_key="tradeify_daily_50k",
+        fund_key="tradeify_daily_50k",  # gitleaks:allow - catalog identifier, not a credential
         notes="Daily variant — has daily loss and consistency rule.",
     ),
 

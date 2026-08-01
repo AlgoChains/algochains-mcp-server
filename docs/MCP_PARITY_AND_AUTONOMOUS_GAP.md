@@ -27,7 +27,11 @@ These items align agents and OpenClaw-style automation with what the Mac/tower s
 
 ## 2. Gap analysis — what is still missing for “autonomous genius”
 
-The MCP server already exposes a very large surface (300+ tools in full mode, ~54 Tier-1 in smart mode): brokers, marketplace, validation, Onyx, Massive query, backtests, `get_bot_health` + `signal_health`, `dispatch_tower_job`, etc. Gaps below are **what an autonomous agent still cannot see or do in one coherent pass** without extra scripting or multiple repos.
+The MCP server already exposes a very large surface (533 tools in full mode,
+181 tools in smart mode): brokers, marketplace, validation, Onyx, Massive query,
+backtests, `get_bot_health` + `signal_health`, `dispatch_tower_job`, etc. Gaps
+below are **what an autonomous agent still cannot see or do in one coherent
+pass** without extra scripting or multiple repos.
 
 ### 2.1 Observability and single-pane health
 
@@ -35,7 +39,7 @@ The MCP server already exposes a very large surface (300+ tools in full mode, ~5
 |-----|----------------|-----------|
 | **No merged “incident” object** | Control tower writes `logs/incidents/incident_*.json`; CC watchdog writes `cc_health_state.json`; bridge has `guardrails_state.json`. Agents must know three paths. | One read-only tool or an extension of `get_bot_health` returning `{ cc_health, bridge_guardrails?, last_incident_summary? }` with size caps. |
 | **Copy-trade / paper executor** | OpenClaw alerts mention `paper_trade_executor` — not clearly exposed as MCP health. | Optional: parse bridge HTTP health or a small state file if the bridge writes it. |
-| **Supabase migration / schema drift** | MCP marketplace tools assume DB; agents do not get “migration 20260420 not applied” style signals. | Read-only `supabase_schema_probe` or document bridge endpoint only (avoid raw service_role in MCP). |
+| **Supabase migration / schema drift** | MCP marketplace tools assume DB; agents do not get “subscriber copy-trade / subscriber_api_keys migration not applied” style signals. | Read-only `supabase_schema_probe` or document bridge endpoint only (avoid raw service_role in MCP). |
 
 ### 2.2 ML ops and promotion discipline
 

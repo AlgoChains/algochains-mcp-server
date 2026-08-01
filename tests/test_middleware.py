@@ -102,8 +102,9 @@ class TestToolCallLogger:
     def test_backtest_code_stripped(self):
         logger = ToolCallLogger()
         logger.log_call("submit_strategy", {"symbol": "AAPL", "backtest_code": "SECRET"}, duration_ms=1.0)
-        assert "backtest_code" not in logger.recent()[0]["arguments"]
-        assert logger.recent()[0]["arguments"]["symbol"] == "AAPL"
+        args = logger.recent()[0]["arguments"]
+        assert args["backtest_code"] == "***REDACTED***"
+        assert args["symbol"] == "AAPL"
 
 
 class TestRetryDecorator:

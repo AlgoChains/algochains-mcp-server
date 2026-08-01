@@ -11,12 +11,13 @@ import os
 import re
 import time
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 # Resolve control tower path (works on Mac and Desktop WSL).
 # Uses the shared helper so ALGOCHAINS_CONTROL_TOWER env is honored everywhere.
+from algochains_mcp.bot_log_paths import BOT_LOG_CANDIDATES, bot_log_path
 from algochains_mcp.paths import default_control_tower
 
 CONTROL_TOWER = default_control_tower()
@@ -26,13 +27,9 @@ try:
 except Exception:
     pass
 
-BOT_LOG_PATHS: dict[str, Path] = {
-    "mnq": CONTROL_TOWER / "logs" / "futures_bot_live.log",
-    "cl":  CONTROL_TOWER / "logs" / "cl_futures_live.log",
-    # mes_swing.log and nq_swing.log are stale backup files — use the live paths
-    "mes": CONTROL_TOWER / "logs" / "mes_swing_live.log",
-    "nq":  CONTROL_TOWER / "logs" / "nq_swing_live.log",
-}
+def _bot_log_path(bot_id: str) -> Optional[Path]:
+    """Resolve freshest live log, including legacy aliases (e.g. cl_bot_live.log)."""
+    return bot_log_path(CONTROL_TOWER, bot_id)
 
 BOT_META: dict[str, dict] = {
     "mnq": {
@@ -73,6 +70,13 @@ BOT_META: dict[str, dict] = {
     },
 }
 
+# Back-compat export: canonical log paths (keys used for bot iteration).
+BOT_LOG_PATHS: dict[str, Path] = {
+    bot_id: CONTROL_TOWER / BOT_LOG_CANDIDATES[bot_id][0]
+    for bot_id in BOT_META
+    if bot_id in BOT_LOG_CANDIDATES
+}
+
 
 @dataclass
 class BotMetrics:
@@ -86,8 +90,8 @@ class BotMetrics:
     last_signal: str = "UNKNOWN"
     last_signal_confidence: float = 0.0
     last_signal_time: str = ""
-    # Today's stats
-    daily_pnl: float = 0.0
+    # Today's stats — daily_pnl None means missing/unknown (never silent 0.0)
+    daily_pnl: Optional[float] = None
     daily_trades: int = 0
     daily_wins: int = 0
     daily_losses: int = 0
@@ -107,6 +111,11 @@ class BotMetrics:
     # Error state
     last_error: str = ""
     error_count_1h: int = 0
+    # Multi-axis liveness / data quality (avoid greenwashing zombies)
+    process_alive: Optional[bool] = None
+    log_fresh: Optional[bool] = None
+    pnl_quality: str = "missing"  # missing | log_derived | broker_confirmed | stale_file
+    verdict: str = "unknown"  # healthy | degraded | zombie | down | unknown
     # Timestamp
     parsed_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -180,13 +189,37 @@ def _parse_last_signal(lines: list[str]) -> tuple[str, float, str]:
     return signal, confidence, signal_time
 
 
+def _line_epoch_seconds(line: str) -> float | None:
+    """Extract a log-line timestamp when present; naive timestamps are treated as UTC."""
+    ts_match = re.search(
+        r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)",
+        line,
+    )
+    if not ts_match:
+        return None
+
+    raw_ts = ts_match.group(1).replace("Z", "+00:00").replace(",", ".")
+    if re.search(r"[+-]\d{4}$", raw_ts):
+        raw_ts = f"{raw_ts[:-2]}:{raw_ts[-2:]}"
+    try:
+        parsed = datetime.fromisoformat(raw_ts)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
 def _parse_errors(lines: list[str]) -> tuple[str, int]:
-    """Count errors in last hour and get most recent error."""
+    """Count fresh errors in the last hour and get the most recent fresh error."""
     one_hour_ago = time.time() - 3600
     error_count = 0
     last_error = ""
     for line in lines:
         if re.search(r'\bERROR\b|\bException\b|\bTraceback\b|\b401\b|\b422\b', line, re.IGNORECASE):
+            line_ts = _line_epoch_seconds(line)
+            if line_ts is not None and line_ts < one_hour_ago:
+                continue
             error_count += 1
             last_error = line.strip()[-200:]
     return last_error, error_count
@@ -316,7 +349,7 @@ def parse_bot_metrics_from_supabase(bot_id: str, sb_client=None) -> BotMetrics |
     metrics.avg_fill_deviation_ticks = _avg("fill_deviation_ticks")
     metrics.avg_exit_slippage_ticks = _avg("exit_slippage_ticks")
     try:
-        log_path = BOT_LOG_PATHS.get(bot_id)
+        log_path = _bot_log_path(bot_id)
         if log_path and log_path.exists():
             metrics.last_log_age_sec = time.time() - log_path.stat().st_mtime
             metrics.is_running = metrics.last_log_age_sec < 300
@@ -325,23 +358,80 @@ def parse_bot_metrics_from_supabase(bot_id: str, sb_client=None) -> BotMetrics |
     return metrics
 
 
+def _resolve_liveness(
+    *,
+    process_alive: Optional[bool],
+    log_age_sec: Optional[float],
+    log_fresh_threshold: float = 300.0,
+    zombie_threshold: float = 600.0,
+) -> tuple[Optional[bool], str]:
+    """Return (log_fresh, verdict) without greenwashing hung processes."""
+    log_fresh: Optional[bool]
+    if log_age_sec is None:
+        log_fresh = None
+    else:
+        log_fresh = log_age_sec < log_fresh_threshold
+
+    if process_alive is True and log_fresh is True:
+        return log_fresh, "healthy"
+    if process_alive is True and log_fresh is False and (log_age_sec or 0) >= zombie_threshold:
+        return log_fresh, "zombie"
+    if process_alive is True and log_fresh is False:
+        return log_fresh, "degraded"
+    if process_alive is True and log_fresh is None:
+        return log_fresh, "degraded"
+    if process_alive is False and log_fresh is True:
+        return log_fresh, "zombie"
+    if process_alive is False:
+        return log_fresh, "down"
+    return log_fresh, "unknown"
+
+
 def parse_bot_metrics(bot_id: str) -> BotMetrics:
     """
     Parse bot metrics from Supabase truth first, then fall back to logs.
     """
     bot_id = bot_id.lower()
     meta = BOT_META.get(bot_id, {})
-    log_path = BOT_LOG_PATHS.get(bot_id)
+    log_path = _bot_log_path(bot_id)
+
+    process_alive: Optional[bool] = None
+    try:
+        from .heartbeat import scan_running_bot_keys
+        process_alive = bot_id in scan_running_bot_keys()
+    except Exception:
+        process_alive = None
 
     supabase_metrics = parse_bot_metrics_from_supabase(bot_id)
     if supabase_metrics is not None:
         # Still attach current log health/errors because Supabase is trade truth,
         # not process liveness truth.
+        supabase_metrics.process_alive = process_alive
         if log_path and log_path.exists():
             lines = _get_log_tail(log_path, 100)
             last_error, error_count = _parse_errors(lines)
             supabase_metrics.last_error = last_error
             supabase_metrics.error_count_1h = error_count
+            try:
+                log_age = time.time() - log_path.stat().st_mtime
+                supabase_metrics.last_log_age_sec = log_age
+                log_fresh, verdict = _resolve_liveness(
+                    process_alive=process_alive, log_age_sec=log_age
+                )
+                supabase_metrics.log_fresh = log_fresh
+                supabase_metrics.is_running = bool(process_alive and log_fresh)
+                supabase_metrics.verdict = verdict
+            except OSError:
+                pass
+        else:
+            log_fresh, verdict = _resolve_liveness(
+                process_alive=process_alive, log_age_sec=None
+            )
+            supabase_metrics.log_fresh = log_fresh
+            supabase_metrics.is_running = False
+            supabase_metrics.verdict = verdict
+        if supabase_metrics.daily_pnl is not None:
+            supabase_metrics.pnl_quality = "broker_confirmed"
         return supabase_metrics
 
     metrics = BotMetrics(
@@ -349,16 +439,31 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
         symbol=meta.get("symbol", bot_id.upper()),
         display_name=meta.get("display_name", bot_id),
         strategy_type=meta.get("strategy_type", "unknown"),
+        process_alive=process_alive,
     )
 
     if not log_path or not log_path.exists():
         metrics.last_error = f"Log not found: {log_path}"
+        metrics.daily_pnl = None
+        metrics.pnl_quality = "missing"
+        log_fresh, verdict = _resolve_liveness(
+            process_alive=process_alive, log_age_sec=None
+        )
+        metrics.log_fresh = log_fresh
+        metrics.is_running = False
+        metrics.verdict = verdict
         return metrics
 
     # Check if log is fresh (bot is running)
     log_age = time.time() - log_path.stat().st_mtime
     metrics.last_log_age_sec = log_age
-    metrics.is_running = log_age < 300  # stale if >5 min
+    log_fresh, verdict = _resolve_liveness(
+        process_alive=process_alive, log_age_sec=log_age
+    )
+    metrics.log_fresh = log_fresh
+    # is_running requires BOTH process + fresh log (no OR greenwash)
+    metrics.is_running = bool(process_alive and log_fresh) if process_alive is not None else bool(log_fresh)
+    metrics.verdict = verdict
 
     lines = _get_log_tail(log_path, 500)
 
@@ -369,6 +474,7 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
     metrics.daily_wins = wins
     metrics.daily_losses = losses
     metrics.win_rate_today = round((wins / trades * 100) if trades > 0 else 0.0, 1)
+    metrics.pnl_quality = "log_derived"
 
     # Last signal
     signal, confidence, signal_time = _parse_last_signal(lines)
@@ -393,4 +499,4 @@ def parse_bot_metrics(bot_id: str) -> BotMetrics:
 
 def parse_all_bots() -> dict[str, BotMetrics]:
     """Parse metrics for all 4 live bots. Returns dict keyed by bot_id."""
-    return {bot_id: parse_bot_metrics(bot_id) for bot_id in BOT_LOG_PATHS}
+    return {bot_id: parse_bot_metrics(bot_id) for bot_id in BOT_META}

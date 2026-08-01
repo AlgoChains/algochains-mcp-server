@@ -1,15 +1,15 @@
 """
-AlgoChains MCP Server v22.4 — institutional-grade trading platform.
+AlgoChains MCP Server v22.5 — institutional-grade trading platform.
 
-478 tools across the full owner surface, with smart tiered exposure:
+533 tools across the full owner surface, with smart tiered exposure:
 
   SMART MODE (default, ALGOCHAINS_TOOL_MODE=smart):
-    148 curated tools exposed directly — trading, data, strategy, intent, meta-tools.
+    181 curated tools exposed directly — trading, data, strategy, intent, meta-tools.
     Remaining tools discoverable via discover_tools → execute_dynamic_tool.
     ~4K tokens vs ~40K+. Works within Cursor (80-tool limit) and Windsurf.
 
   FULL MODE (ALGOCHAINS_TOOL_MODE=full):
-    All 478 tools exposed. For clients with their own lazy loading (Claude Code).
+    All 533 tools exposed. For clients with their own lazy loading (Claude Code).
 
 V20.0 additions: Account Protection (13 pre-trade guards), Builder SDK (3.09B+ row
 data warehouse, 7-gate MCPT validation pipeline), memory-safe architecture (OOM
@@ -31,9 +31,11 @@ Start with:  algochains-mcp  (or python -m algochains_mcp.server)
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from mcp.server import Server
@@ -55,6 +57,8 @@ import gc
 import os
 import sys
 from pathlib import Path as _PathGlobal
+
+from .e2e_sentinel import apply_effective_sentinel_resolution, summarize_e2e_sentinel_state
 
 
 def _default_control_tower() -> str:
@@ -112,6 +116,27 @@ def _pctl(values: list[float], pct: float) -> float:
 
 def _rate(count: int, total: int) -> float:
     return round(count / max(total, 1), 4)
+
+
+_TRACEABILITY_TRANSIENT_MARKERS = (
+    "connecterror",
+    "connection reset by peer",
+    "connectionreseterror",
+    "errno 54",
+    "readtimeout",
+    "read timeout",
+    "protocolerror",
+    "remoteprotocolerror",
+    "readerror",
+    "server disconnected",
+    "connection aborted",
+)
+
+
+def _is_traceability_transient_failure(*chunks: str | None) -> bool:
+    """Return true for traceability audit failures worth retrying locally."""
+    text = "\n".join(chunk for chunk in chunks if chunk).lower()
+    return any(marker in text for marker in _TRACEABILITY_TRANSIENT_MARKERS)
 
 
 def _summarize_desktop_inference_log(control_tower: _PathGlobal) -> dict[str, Any]:
@@ -207,7 +232,7 @@ logger = _logging_init.getLogger("algochains_mcp.server")
 # Graceful fallback: if module missing, order velocity checking is skipped
 # but a warning is logged on every place_order call.
 try:
-    from .trading_guardrails import get_guardrails, GuardrailTripped
+    from .trading_guardrails import get_guardrails, GuardrailTripped, GuardrailReason
     _GUARDRAILS_AVAILABLE = True
 except ImportError:
     _GUARDRAILS_AVAILABLE = False
@@ -221,8 +246,14 @@ except ImportError:
 # ─── V20 Memory Safety — import first so we can monitor from startup ─────────
 # Memory safety is lightweight and has no heavy sub-deps.
 from .memory_safety import get_memory_monitor, MemoryMonitor
+from .handlers.physical_world import PHYSICAL_WORLD_HANDLERS
+from .handlers.cricket_bot import CRICKET_BOT_HANDLERS
 from .tool_manifest import build_manifest
-from .tool_policy import evaluate_dynamic_tool, evaluate_stdio_direct_tool
+from .tool_policy import (
+    assp_policy_import_error,
+    evaluate_dynamic_tool,
+    evaluate_stdio_direct_tool,
+)
 from .otel_tracing import redacted_argument_hash, trace_span
 
 # ─── V20 Account Protection — lightweight, no ML deps ───────────────────────
@@ -406,7 +437,13 @@ from algochains_mcp import __version__ as _server_version
 
 SERVER_INSTRUCTIONS = (
     f"AlgoChains MCP Server v{_server_version} — The Ultimate Algo Quant Stack. "
-    "~481 tools across 20 domains: market data, trading, strategy building, ML/AI, execution, "
+    "LIVE-OPS ROUTING (mandatory): bot health/status → get_bot_health; "
+    "owner P&L → portfolio_summary; subscriber paper P&L → get_my_pnl/get_my_portfolio; "
+    "flat/positions → get_positions; brackets/unprotected → check_unprotected_positions; "
+    "working orders → get_orders; live quote now → get_quote. "
+    "NEVER use web search or chat memory for live AlgoChains ops — fail closed if tools fail. "
+    "See docs/LIVE_OPS_TOOL_ROUTING.md. "
+    "~533 tools across 21 domains: market data, trading, strategy building, ML/AI, execution, "
     "order flow analysis, institutional data, AlphaLoop self-improvement, DeFi/crypto, "
     "Onyx RAG intelligence, Graphiti temporal knowledge graph, MCP 2025-11-25 spec compliance, "
     "SaaS hardening, and autonomous marketplace pipeline (research→backtest→validate→stage). "
@@ -414,8 +451,8 @@ SERVER_INSTRUCTIONS = (
     "graphiti_health read-only Tier-1, graphiti_add_episode WRITE_LOCAL discover-only) — advisory "
     "agent_memory authority over Neo4j, NEVER broker truth, fails closed graphiti_unavailable. "
     "Real data only — all tools connect to live brokers, real tick feeds, and real APIs. "
-    "In smart mode (default), ~54 Tier-1 tools exposed. "
-    "Use 'discover_tools' to find 280+ additional tools on demand. "
+    "In smart mode (default), 181 Tier-1 tools exposed (SEC-2026: send_waitlist_invite + upsert_bot_performance moved to ORDER_EXEC). "
+    "Use 'discover_tools' to find 350+ additional tools on demand. "
     "V22.4: get_bot_health now includes e2e_sentinel lifecycle state for MNQ signal→order→bracket→fill traceability. "
     "V22.2: get_bot_health now includes ml_env_flags (MASSIVE_NEWS_FEATURES, MASSIVE_PCR_FEATURES, "
     "MASSIVE_HALT_GUARD) and cc_health (Command Center watchdog state from cc_health_state.json). "
@@ -434,10 +471,14 @@ SERVER_INSTRUCTIONS = (
     "encrypted key vault, desktop tower dispatcher (dispatch_tower_job). "
     "LIVE: 4 futures bots (MNQ/CL/MES/NQ, owner-only), Alpaca paper trader (equities+crypto, subscribable). "
     "Command Center: algochains-command-center (Next.js, port 3333). "
-    "Set ALGOCHAINS_TOOL_MODE=full to expose all ~481 tools."
+    "Set ALGOCHAINS_TOOL_MODE=full to expose all ~533 tools."
 )
 
 app = Server("algochains-mcp-server", instructions=SERVER_INSTRUCTIONS)
+_HANDLER_REGISTRY = {
+    **PHYSICAL_WORLD_HANDLERS,
+    **CRICKET_BOT_HANDLERS,
+}
 
 # ═══════════════════════════════════════════════════════════════════
 # MCP 2025-06-18 Tool Behavior Annotations — safety metadata
@@ -637,6 +678,66 @@ def _get_registry() -> BrokerRegistry:
         _config = load_config()
         _registry = BrokerRegistry(_config)
     return _registry
+
+
+def _coerce_fill_pnl(fill: Any) -> float | None:
+    """Return a fill's realized P&L without treating zero as missing."""
+    for attr in ("realized_pnl", "pnl"):
+        if isinstance(fill, Mapping):
+            value = fill.get(attr)
+        else:
+            value = getattr(fill, attr, None)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _compute_consecutive_losses_from_fills(fills: Any) -> tuple[int, bool]:
+    """Compute trailing loss streak from newest fills.
+
+    The boolean indicates whether broker fills were sufficient to derive an
+    authoritative streak. A latest winning or breakeven fill is authoritative
+    even though the streak is zero.
+    """
+    if not fills:
+        return 0, False
+
+    consecutive_losses = 0
+    for fill in reversed(list(fills)[-20:]):
+        fill_pnl = _coerce_fill_pnl(fill)
+        if fill_pnl is None:
+            return consecutive_losses, False
+        if fill_pnl < 0:
+            consecutive_losses += 1
+        else:
+            return consecutive_losses, True
+    return consecutive_losses, True
+
+
+def _accepts_keyword(func: Any, keyword: str) -> bool:
+    """Return whether a callable can accept a keyword argument."""
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return True
+    return any(
+        param.name == keyword or param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    )
+
+
+async def _get_recent_fills_for_guardrail(conn: Any, symbol: str) -> Any:
+    """Fetch recent fills using the narrowest broker-supported filter."""
+    get_fills = getattr(conn, "get_fills", None)
+    if not callable(get_fills):
+        return []
+    if symbol and _accepts_keyword(get_fills, "symbol"):
+        return await get_fills(symbol=symbol)
+    return await get_fills()
 
 
 def _get_validator() -> StrategyValidator:
@@ -911,7 +1012,7 @@ def _get_order_flow():
     if _order_flow is None:
         cls = _lazy_import(".realtime_analytics.order_flow_analyzer", "OrderFlowAnalyzer")
         if cls:
-            cfg = _load_config()
+            cfg = load_config()
             key = cfg.polygon.api_key if cfg.polygon else ""
             _order_flow = cls(polygon_key=key)
     return _order_flow
@@ -921,7 +1022,7 @@ def _get_microstructure():
     if _microstructure is None:
         cls = _lazy_import(".realtime_analytics.microstructure", "MicrostructureEngine")
         if cls:
-            cfg = _load_config()
+            cfg = load_config()
             key = cfg.polygon.api_key if cfg.polygon else ""
             _microstructure = cls(polygon_key=key)
     return _microstructure
@@ -931,7 +1032,7 @@ def _get_regime_detector():
     if _regime_detector is None:
         cls = _lazy_import(".realtime_analytics.regime_detector", "RegimeDetector")
         if cls:
-            cfg = _load_config()
+            cfg = load_config()
             key = cfg.polygon.api_key if cfg.polygon else ""
             _regime_detector = cls(polygon_key=key)
     return _regime_detector
@@ -1071,6 +1172,12 @@ def _get_defi_risk():
         cls = _lazy_import(".defi_engine.defi_risk_engine", "DeFiRiskEngine")
         if cls: _defi_risk = cls()
     return _defi_risk
+
+def _get_defi_portfolio():
+    return _get_defi_risk()
+
+def _get_swarm_mgr():
+    return _get_agent_orchestrator()
 
 # ── V16 getters (all lazy) ─────────────────────────────────────
 def _get_saas_tenant_mgr():
@@ -1297,6 +1404,27 @@ def _text(data: Any) -> list[TextContent]:
     return [TextContent(type="text", text=str(data))]
 
 
+def _assp_emit_deny(
+    *,
+    rule_id: str,
+    tool_name: str,
+    deny_reason: str,
+    **extras: Any,
+) -> None:
+    """Best-effort ASSP mcp_audit JSONL emit; never breaks tool execution."""
+    try:
+        from .assp_mcp_audit import emit_mcp_audit_denial
+
+        emit_mcp_audit_denial(
+            rule_id=rule_id,
+            tool_name=tool_name,
+            deny_reason=deny_reason,
+            **extras,
+        )
+    except Exception:
+        pass
+
+
 def _error_text(exc: Exception) -> list[TextContent]:
     """Structured error response for tool failures."""
     if isinstance(exc, AlgoChainsError):
@@ -1423,7 +1551,12 @@ TOOLS = [
     ),
     Tool(
         name="get_positions",
-        description="Get all open positions from a broker.",
+        description=(
+            "broker_truth / live ops — open positions from a connected broker "
+            "(flat check, exposure, unrealized P&L only). "
+            "Use for 'am I flat', 'open positions', 'exposure'. "
+            "Do NOT substitute web search or memory. unrealized_pnl ≠ realized session P&L."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -1431,32 +1564,16 @@ TOOLS = [
             },
             "required": ["broker"],
         },
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "positions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "symbol": {"type": "string"},
-                            "qty": {"type": "number"},
-                            "side": {"type": "string"},
-                            "avg_entry_price": {"type": "number"},
-                            "current_price": {"type": "number"},
-                            "unrealized_pnl": {"type": "number"},
-                            "market_value": {"type": "number"},
-                        },
-                    },
-                },
-                "count": {"type": "integer"},
-            },
-        },
+        # No outputSchema: TextContent JSON only (structuredContent gap breaks
+        # OpenClaw / Cursor MCP clients — same class as get_quote).
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="get_orders",
-        description="Get orders from a broker, optionally filtered by status.",
+        description=(
+            "broker_truth / live ops — working/open/closed orders from a connected broker. "
+            "Use for 'working orders', 'pending orders'. Do NOT use web search."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -1465,33 +1582,17 @@ TOOLS = [
             },
             "required": ["broker"],
         },
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "orders": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "order_id": {"type": "string"},
-                            "symbol": {"type": "string"},
-                            "side": {"type": "string"},
-                            "qty": {"type": "number"},
-                            "order_type": {"type": "string"},
-                            "status": {"type": "string"},
-                            "filled_qty": {"type": "number"},
-                            "limit_price": {"type": "number"},
-                        },
-                    },
-                },
-                "count": {"type": "integer"},
-            },
-        },
+        # No outputSchema: TextContent JSON only (structuredContent gap).
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
         name="portfolio_summary",
-        description="Get a unified portfolio summary across ALL connected brokers — total equity, positions, and P&L.",
+        description=(
+            "broker_truth / live ops — unified portfolio across connected brokers "
+            "(equity, positions, P&L). Use for owner 'today's P&L' / 'how did we do'. "
+            "Do NOT invent numbers from web search or memory. "
+            "Subscribers should use get_my_pnl / get_my_portfolio instead."
+        ),
         inputSchema={"type": "object", "properties": {}},
     
         annotations=ANNOT_READ_EXTERNAL,
@@ -1499,7 +1600,11 @@ TOOLS = [
     # ── Market Data ─────────────────────────────────────────────
     Tool(
         name="get_quote",
-        description="Get current quote (bid/ask/last) for a symbol from a broker.",
+        description=(
+            "broker_truth / live ops — right-now bid/ask/last for a symbol from a connected broker. "
+            "Use for 'MNQ price right now' / live quote. "
+            "Do NOT scrape CME/Yahoo via web search. For historical OHLCV bars use data/backtest tools."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -1508,17 +1613,7 @@ TOOLS = [
             },
             "required": ["broker", "symbol"],
         },
-        outputSchema={
-            "type": "object",
-            "properties": {
-                "symbol": {"type": "string"},
-                "bid": {"type": "number"},
-                "ask": {"type": "number"},
-                "last": {"type": "number"},
-                "volume": {"type": "number"},
-                "timestamp": {"type": "string"},
-            },
-        },
+        # No outputSchema: TextContent JSON only (structuredContent gap breaks OpenClaw).
         annotations=ANNOT_READ_EXTERNAL,
     ),
     Tool(
@@ -1560,11 +1655,11 @@ TOOLS = [
     Tool(
         name="get_bot_health",
         description=(
-            "Return a unified health snapshot for all four live futures bots (MNQ, CL, MES, NQ) "
-            "and the Kalshi daemon. For each bot: process up? last log mtime, last signal ts, "
-            "current regime, error count in last 100 log lines, token expiry (if Tradovate). "
-            "Includes E2E sentinel lifecycle state for MNQ execution traceability. "
-            "Pure read-only — reads logs/, state/, and ps aux on the control tower host."
+            "broker_truth / live ops — unified health for live futures bots (MNQ, CL, MES, NQ) "
+            "and Kalshi: process up?, log mtime, last signal, regime, recent errors, token expiry, "
+            "e2e_sentinel. Use for 'MNQ health check', 'is the bot running', 'bot status'. "
+            "Do NOT use web search (CME/Yahoo) for bot liveness — that is market news, not AlgoChains processes. "
+            "For live market price use get_quote. Pure read-only on control-tower host (logs/, state/, ps)."
         ),
         inputSchema={
             "type": "object",
@@ -1747,10 +1842,10 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "slug": {"type": "string"},
-                "broker": {"type": "string", "description": "Which broker to deploy on"},
+                "broker": {"type": "string", "description": "Which broker to deploy on. Required for live mode; optional for mode=paper."},
                 "mode": {"type": "string", "enum": ["paper", "live"], "default": "paper"},
             },
-            "required": ["slug", "broker"],
+            "required": ["slug"],
         },
     
         annotations=ANNOT_TRADE_EXEC,
@@ -1962,7 +2057,7 @@ TOOLS = [
     # ── V6: Notifications ─────────────────────────────────────
     Tool(
         name="configure_notifications",
-        description="Configure notification channels: slack, email, discord, telegram, mobile push (FCM/APNS).",
+        description="Configure notification channels (owner-only). Slack/Discord webhook URLs are SSRF-checked.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -1971,15 +2066,16 @@ TOOLS = [
                 "api_key": {"type": "string", "description": "API key (for email/FCM)"},
                 "bot_token": {"type": "string", "description": "Bot token (for Telegram)"},
                 "chat_id": {"type": "string", "description": "Chat ID (for Telegram)"},
+                "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"},
             },
-            "required": ["channel"],
+            "required": ["channel", "owner_token"],
         },
     
         annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(
         name="send_notification",
-        description="Send a notification across configured channels. Supports order fills, P&L alerts, drawdown warnings, and custom messages.",
+        description="Send a notification across owner-configured channels. Outbound webhook channels require owner_token.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -1988,6 +2084,7 @@ TOOLS = [
                 "body": {"type": "string"},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"], "default": "medium"},
                 "channels": {"type": "array", "items": {"type": "string"}, "description": "Override default channels"},
+                "owner_token": {"type": "string", "description": "Required when channels include slack/discord/telegram/email/fcm/apns"},
             },
             "required": ["title", "body"],
         },
@@ -2159,12 +2256,14 @@ TOOLS = [
     ),
     Tool(
         name="export_config",
-        description="Export your validated key configuration in various formats: env, json, mcp_windsurf, mcp_cursor, mcp_vscode.",
+        description="Export your validated key configuration in various formats: env, json, mcp_windsurf, mcp_cursor, mcp_vscode. REQUIRES owner_token matching OWNER_API_TOKEN — MCP callers receive masked values only without it.",
         inputSchema={
             "type": "object",
             "properties": {
                 "format": {"type": "string", "enum": ["env", "json", "mcp_windsurf", "mcp_cursor", "mcp_vscode"], "default": "env"},
+                "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required to export key values."},
             },
+            "required": ["owner_token"],
         },
     
         annotations=ANNOT_WRITE_SAFE,
@@ -2244,7 +2343,7 @@ TOOLS = [
     # V8: Strategy Builder SDK (8 tools)
     # ═══════════════════════════════════════════════════════════════
     Tool(name="create_strategy", description="Create a new AI-native declarative strategy specification (StrategySpec). Define indicators, entry/exit rules, position sizing in JSON.",
-         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "timeframe": {"type": "string"}, "asset_class": {"type": "string", "enum": ["equity", "forex", "crypto", "futures"]}, "indicators": {"type": "array"}, "entry_rules": {"type": "object"}, "exit_rules": {"type": "object"}, "position_sizing": {"type": "object"}}, "required": ["name", "symbols", "timeframe", "indicators", "entry_rules", "exit_rules"]},
+         inputSchema={"type": "object", "properties": {"name": {"type": "string"}, "symbols": {"type": "array", "items": {"type": "string"}}, "timeframe": {"type": "string"}, "asset_class": {"type": "string", "enum": ["equity", "forex", "crypto", "futures"]}, "indicators": {"type": "array", "items": {"type": "object"}}, "entry_rules": {"type": "object"}, "exit_rules": {"type": "object"}, "position_sizing": {"type": "object"}}, "required": ["name", "symbols", "timeframe", "indicators", "entry_rules", "exit_rules"]},
         annotations=ANNOT_WRITE_SAFE,
     ),
     Tool(name="validate_strategy", description="Validate a StrategySpec for schema correctness, parameter ranges, and internal consistency.",
@@ -3010,7 +3109,7 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════
     # V17: Dynamic Toolsets — Meta-Tools (3 tools)
     # ═══════════════════════════════════════════════════════════════
-    Tool(name="discover_tools", description="Search for relevant AlgoChains tools using natural language. Returns the top-K most relevant tools with descriptions. Use this FIRST to find which tools are available for your task — 90%+ context reduction vs listing all 150+ tools.",
+    Tool(name="discover_tools", description="Search for relevant AlgoChains tools using natural language. Returns the top-K most relevant tools with descriptions. Use this FIRST to find which tools are available for your task — 90%+ context reduction vs listing all 533 tools.",
          inputSchema={"type": "object", "properties": {"query": {"type": "string", "description": "Natural language description of what you want to do"}, "top_k": {"type": "integer", "default": 10}, "category": {"type": "string", "description": "Filter: trading, market_data, strategy, ml, analytics, alt_data, defi, cloud"}}, "required": ["query"]},
          annotations=ANNOT_SEARCH),
     Tool(name="get_tool_details", description="Get full details for a specific tool including its input schema, parameter types, and usage examples. Call after discover_tools to get the full spec before execution.",
@@ -3022,6 +3121,37 @@ TOOLS = [
     Tool(name="mcp_tool_manifest", description="Return JSON manifest of all registered MCP tools with implementation_status (full|partial|stub), required env vars, and Tier-1 flags. Use for CI, Onyx indexing, and honest agent planning — call before relying on V8-V20 tools.",
          inputSchema={"type": "object", "properties": {"include_tool_details": {"type": "boolean", "default": True, "description": "If false, return summary counts only (smaller payload)"}}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="get_physical_event_sources", description="List physical-world event sources polled by Sonia Air and tower nodes, including license/dependency status. Read-only; no broker or execution access.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="map_physical_event_assets", description="Map physical-world event classes to affected assets (CL/NG/MNQ/NQ/MES/ES/BTC/ETH). Read-only research mapping.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Optional symbol to filter, e.g. CL or BTC"}}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="score_physical_event_alpha", description="Compute an advisory physical-event priority score from provided real event fields. Research queue only; not broker truth and not a trade signal.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "event_type": {"type": "string"}, "severity": {"type": "number"}, "freshness_minutes": {"type": "number"}, "liquidity_proxy": {"type": "number"}}, "required": ["symbol", "event_type"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_sonia_air_heartbeat", description="Read Sonia Air heartbeat state and fallback status for three-node physical-world polling. Read-only.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    # ═══════════════════════════════════════════════════════════════
+    # Cricket Bot (Avi's external partner API — Agent Cricket007 listing, 5 tools)
+    # Read-only observability; advisory only, never a trading dependency.
+    # ═══════════════════════════════════════════════════════════════
+    Tool(name="get_cricket_bot_performance", description="Aggregate cricket-bot stats from Avi's partner API: win rate, total P&L, best/worst trade. Filter by platform (polymarket|kalshi|all), tournament ('MLC 2026' exact or 'MLC' any year), innings (1|2). Read-only, advisory; backs the Agent Cricket007 marketplace listing.",
+         inputSchema={"type": "object", "properties": {"platform": {"type": "string", "enum": ["all", "polymarket", "kalshi"], "default": "all"}, "tournament": {"type": "string", "description": "e.g. 'MLC 2026' (exact) or 'MLC' (any year)"}, "innings": {"type": "integer", "enum": [1, 2], "description": "1 = first innings, 2 = chase"}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_cricket_bot_trades", description="Cricket-bot individual trade history: player, tier (STAR|IN-FORM|LOW), entry/exit probability prices, size_usdc, pnl_usdc, exit_reason. Each trade carries platform=polymarket|kalshi. Paginated (limit max 500). Read-only, advisory.",
+         inputSchema={"type": "object", "properties": {"platform": {"type": "string", "enum": ["all", "polymarket", "kalshi"], "default": "all"}, "tournament": {"type": "string"}, "innings": {"type": "integer", "enum": [1, 2]}, "limit": {"type": "integer", "default": 100, "maximum": 500}, "offset": {"type": "integer", "default": 0}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_cricket_bot_matches", description="Cricket-bot per-match breakdown: trades, wins, losses, win_rate, total_pnl per cricket match. Filter by tournament and innings. Read-only, advisory.",
+         inputSchema={"type": "object", "properties": {"tournament": {"type": "string"}, "innings": {"type": "integer", "enum": [1, 2]}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_cricket_bot_signals", description="Cricket-bot signal feed — every evaluated signal including SKIPs: edge, effective_impact, expected_shift, wickets_fallen. Filter action=BUY|SKIP. Use for did-the-bot-consider-and-pass transparency. Read-only, advisory.",
+         inputSchema={"type": "object", "properties": {"action": {"type": "string", "enum": ["BUY", "SKIP"]}, "tournament": {"type": "string"}, "limit": {"type": "integer", "default": 100, "maximum": 500}, "offset": {"type": "integer", "default": 0}}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
+    Tool(name="get_cricket_bot_tournaments", description="List cricket tournaments available in Avi's bot database with trade counts (e.g. IPL 2026, MLC 2026). Use to discover tournament filter values. Read-only, advisory.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_EXTERNAL),
     # ═══════════════════════════════════════════════════════════════
     # V18: Intent-Based Trading + Autonomous Intelligence (8 tools)
     # ═══════════════════════════════════════════════════════════════
@@ -3141,11 +3271,26 @@ TOOLS = [
     Tool(name="list_data_warehouses", description="List available AlgoChains data warehouses with row counts, schemas, and access requirements.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+
+    Tool(name="start_sandboxed_agent",
+         description="Start an AlgoClaw MCP-only agent session in an app-owned sandbox (path allowlist, no inherited broker/owner env, runtime quotas). Requires agent:sandbox scope. Fail closed without the scope.",
+         inputSchema={"type": "object", "properties": {
+             "task": {"type": "string", "description": "Agent task / objective"},
+             "max_runtime_sec": {"type": "integer", "default": 300}
+         }, "required": ["task"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="reserve_llm_budget",
+         description="Atomically reserve USD against the developer key's daily LLM budget (spend:llm_budget). Fail closed on ledger errors or exhaustion.",
+         inputSchema={"type": "object", "properties": {
+             "amount_usd": {"type": "number"},
+             "daily_cap_usd": {"type": "number", "description": "Optional override; defaults to entitlement/env cap"}
+         }, "required": ["amount_usd"]},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="run_builder_backtest", description="Run a backtest using the Builder SDK. Supports built-in strategies (SMA crossover, RSI, Bollinger Bands, etc.) or custom data. Returns Sharpe, MaxDD, win rate, profit factor, and marketplace readiness check.",
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "default": "custom"}, "timeframe": {"type": "string", "default": "1d"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "initial_capital": {"type": "number", "default": 100000}}, "required": ["symbol"]},
          annotations=ANNOT_COMPUTE),
-    Tool(name="submit_to_marketplace", description="Submit a validated strategy to the AlgoChains marketplace. Runs 7-gate validation (schema, performance, overfitting, MCPT, walk-forward, paper trading, decay monitor). Returns tier classification (Platinum/Gold/Silver/Bronze) and next steps.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "enum": ["trend", "mean_reversion", "breakout", "momentum", "scalp", "pairs", "stat_arb"]}, "timeframe": {"type": "string"}, "oos_sharpe": {"type": "number"}, "oos_trades": {"type": "integer"}, "max_drawdown_pct": {"type": "number"}, "is_sharpe": {"type": "number"}, "win_rate": {"type": "number"}, "profit_factor": {"type": "number"}, "mcpt_p_value": {"type": "number"}, "mcpt_permutations": {"type": "integer"}, "wf_folds": {"type": "integer"}, "wf_avg_oos_sharpe": {"type": "number"}, "wf_worst_fold": {"type": "number"}, "description": {"type": "string"}, "asset_class": {"type": "string", "default": "stock"}, "price_monthly": {"type": "number", "default": 29.99}}, "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct"]},
+    Tool(name="submit_to_marketplace", description="Validate a strategy for marketplace readiness. Tier-1 calls are dry-run unless LISTING_API_KEY is configured; staging then requires a verified local artifact path + SHA-256.",
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy_type": {"type": "string", "enum": ["trend", "mean_reversion", "breakout", "momentum", "scalp", "pairs", "stat_arb"]}, "timeframe": {"type": "string"}, "oos_sharpe": {"type": "number"}, "oos_trades": {"type": "integer"}, "max_drawdown_pct": {"type": "number"}, "is_sharpe": {"type": "number"}, "win_rate": {"type": "number"}, "profit_factor": {"type": "number"}, "mcpt_p_value": {"type": "number"}, "mcpt_permutations": {"type": "integer"}, "wf_folds": {"type": "integer"}, "wf_avg_oos_sharpe": {"type": "number"}, "wf_worst_fold": {"type": "number"}, "description": {"type": "string"}, "asset_class": {"type": "string", "default": "stock"}, "price_monthly": {"type": "number", "default": 29.99}, "verification_artifact": {"type": "object", "description": "Required only for staging: {path, sha256, artifact_id?}. Path must be under ALGOCHAINS_VERIFIED_ARTIFACT_DIR.", "properties": {"path": {"type": "string"}, "sha256": {"type": "string"}, "artifact_id": {"type": "string"}}}}, "required": ["symbol", "strategy_type", "timeframe", "oos_sharpe", "oos_trades", "max_drawdown_pct"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_submission_guide", description="Get the step-by-step guide for submitting a strategy to the AlgoChains marketplace. Includes gate requirements, pricing guide, IP protection details, and revenue split information.",
          inputSchema={"type": "object", "properties": {}, "required": []},
@@ -3220,8 +3365,8 @@ TOOLS = [
     Tool(name="rollback_evolution", description="Roll back a strategy to its pre-evolution checkpoint if the promoted version underperforms.",
          inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}}, "required": ["strategy_id"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="record_trade_episode", description="Record a completed trade episode into episodic trade memory for AlphaLoop learning. Stores entry/exit, regime, P&L, and lessons.",
-         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "symbol": {"type": "string"}, "side": {"type": "string"}, "entry_price": {"type": "number"}, "exit_price": {"type": "number"}, "pnl_usd": {"type": "number"}, "regime": {"type": "string"}, "lesson": {"type": "string"}}, "required": ["strategy_id", "symbol", "side", "entry_price", "exit_price", "pnl_usd"]},
+    Tool(name="record_trade_episode", description="Record a completed trade episode into episodic trade memory for AlphaLoop learning. Stores entry/exit, regime, P&L, and lessons. Owner-only SQLite write.",
+         inputSchema={"type": "object", "properties": {"strategy_id": {"type": "string"}, "symbol": {"type": "string"}, "side": {"type": "string"}, "entry_price": {"type": "number"}, "exit_price": {"type": "number"}, "pnl_usd": {"type": "number"}, "regime": {"type": "string"}, "lesson": {"type": "string"}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."}}, "required": ["strategy_id", "symbol", "side", "entry_price", "exit_price", "pnl_usd", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="query_trade_memory", description="Semantic search over episodic trade memory. Find similar past trades by regime, setup, or performance characteristics.",
          inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "strategy_id": {"type": "string"}, "regime": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, "required": ["query"]},
@@ -3236,7 +3381,7 @@ TOOLS = [
     # V21: Order Flow & Institutional Data
     # ═══════════════════════════════════════════════════════════════
     Tool(name="get_footprint_chart", description="Compute footprint chart for a symbol: bid/ask volume at each price level per candle, detecting absorption (sellers absorbed at support), imbalance (>3:1 ratio), and delta exhaustion. Uses real Databento tick data.",
-         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "5min", "description": "Bar timeframe: 1min, 5min, 15min, 1hour"}, "bars": {"type": "integer", "default": 20, "description": "Number of bars to compute"}, "tick_data": {"type": "array", "description": "Optional: provide raw tick data array; otherwise fetches from Databento"}}, "required": ["symbol"]},
+         inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "5min", "description": "Bar timeframe: 1min, 5min, 15min, 1hour"}, "bars": {"type": "integer", "default": 20, "description": "Number of bars to compute"}, "tick_data": {"type": "array", "items": {"type": "object"}, "description": "Optional: provide raw tick data array; otherwise fetches from Databento"}}, "required": ["symbol"]},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="compute_cumulative_delta", description="Compute cumulative delta (net buy vs sell pressure) from OHLCV bars or raw ticks. Detects bullish/bearish divergence between price and delta — a leading indicator of reversals.",
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string"}, "timeframe": {"type": "string", "default": "5min"}, "bars": {"type": "integer", "default": 50}}, "required": ["symbol"]},
@@ -3540,7 +3685,7 @@ TOOLS = [
              "click_url": {"type": "string", "description": "URL to open when notification is tapped"},
          }, "required": ["title", "message"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="propagate_trade_signal", description="POST a signed trade signal to the AlgoChains Django propagation service (Roo architecture). Uses live endpoint http://172.232.170.168/signals/signal/ by default. Subscribers receive execution on connected PAPER Alpaca accounts. Register your bot at algochains.ai first.",
+    Tool(name="propagate_trade_signal", description="POST a signed trade signal to the AlgoChains Django propagation service. Requires ALGOCHAINS_SIGNAL_URL and ALGOCHAINS_SIGNAL_SECRET env vars — fails closed when unset. Subscribers receive execution on connected PAPER Alpaca accounts. Register your bot at algochains.ai first.",
          inputSchema={"type": "object", "properties": {
              "strategy_name": {"type": "string", "description": "Must match bot name on algochains.ai exactly (case-sensitive)"},
              "symbol": {"type": "string", "description": "e.g. BTC/USD, SPY, AAPL"},
@@ -3551,8 +3696,10 @@ TOOLS = [
              "take_profit": {"type": "number", "default": 0.0},
          }, "required": ["strategy_name", "symbol", "side", "qty"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="check_propagation_health", description="Check if the AlgoChains Django signal propagation service (Roo architecture) is reachable. Returns endpoint URL, reachability, and setup status. Use before running bots.",
-         inputSchema={"type": "object", "properties": {}, "required": []},
+    Tool(name="check_propagation_health", description="Check if the AlgoChains Django signal propagation service (Roo architecture) is reachable and whether copy-trade paper fanout has active backlog. Separates active_lag_seconds from idle_since_last_signal_seconds so quiet markets do not look stalled.",
+         inputSchema={"type": "object", "properties": {
+             "max_lag_seconds": {"type": "number", "default": 30.0, "description": "SLO threshold for active, unexpired signal backlog."},
+         }, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="run_guardrail", description="Run the GUARDRAIL pre-flight middleware chain before placing any order. Executes 6 gates: VIX, daily-loss, stoploss-guard, cooldown, confidence, R/R. Returns approved=true only if all gates pass. Wire this before every order execution.",
          inputSchema={"type": "object", "properties": {
@@ -3686,7 +3833,7 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_bot_heartbeat_openclaw",
-         description="Read the bot heartbeat state from OpenClaw — shows which bots are alive, last-seen timestamps, and LIVE/STALE status. Written by autonomous_watchdog.py every 5 minutes.",
+         description="Read ~/.openclaw/bot_heartbeat.json. This file is MNQ-only and fill-triggered (written by FUTURES_SCALPER_UPGRADED._track_openclaw_feedback on slippage/fill feedback), NOT by autonomous_watchdog every 5 minutes. Schema is typically {ts, bot, symbol}. For fleet process liveness use get_bot_health / get_all_bot_ops_status; for failover primary use control-tower logs/bot_heartbeat.json.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_agent_evaluations",
@@ -3710,12 +3857,13 @@ TOOLS = [
              "trigger_type": {"type": "string", "default": "mcp_manual"},
          }, "required": ["symbol", "direction", "confidence"]},
          annotations=ANNOT_READ_ONLY),
-    Tool(name="run_mcpt_pipeline",
+    Tool(name="run_mcpt_pipeline",  # ASSP: dry_run default True — see handler
          description="Run the MCPT marketplace autopilot pipeline. Steps: decay (check edge decay), graduate (30-day paper trading gates), audit (batch MCPT re-validation), listing (generate marketplace JSON), slack (post summary to #quant-lab). Calls scripts/mcpt_autopilot.py.",
          inputSchema={"type": "object", "properties": {
              "step": {"type": "string", "enum": ["all", "sync", "decay", "graduate", "audit", "listing", "slack"], "default": "all"},
-             "dry_run": {"type": "boolean", "default": False, "description": "Report only, no writes"},
+             "dry_run": {"type": "boolean", "default": True, "description": "ASSP: default true — report only, no writes. Set false only with owner_token."},
              "no_desktop": {"type": "boolean", "default": False},
+             "owner_token": {"type": "string", "description": "Required when dry_run=false"},
          }, "required": []},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="run_regime_detection",
@@ -3775,8 +3923,8 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════
     # Desktop Tower Job Dispatcher
     # ═══════════════════════════════════════════════════════════════
-    Tool(name="dispatch_tower_job", description="Dispatch a heavy compute job to a configured GPU compute node (set ALGOCHAINS_TOWER_HOST) via SSH. Jobs: optuna_optimize, walk_forward_backtest, ml_retrain, mcpt_validation. Returns job_id for polling. Small jobs (<500MB) run locally; large/GPU jobs route to the compute node automatically.",
-         inputSchema={"type": "object", "properties": {"job_type": {"type": "string", "enum": ["optuna_optimize", "walk_forward_backtest", "ml_retrain", "mcpt_validation", "large_backtest", "factor_model_compute"]}, "params": {"type": "object", "description": "Job parameters: bot, symbol, n_trials, data_start, data_end, model, etc."}, "force_local": {"type": "boolean", "default": False}}, "required": ["job_type"]},
+    Tool(name="dispatch_tower_job", description="Dispatch a heavy compute job to a configured GPU compute node (set ALGOCHAINS_TOWER_HOST) via SSH. Jobs: optuna_optimize, walk_forward_backtest, ml_retrain, mcpt_validation. Returns job_id for polling. Small jobs (<500MB) run locally; large/GPU jobs route to the compute node automatically. Owner-only (AC-MCP-007).",
+         inputSchema={"type": "object", "properties": {"job_type": {"type": "string", "enum": ["optuna_optimize", "walk_forward_backtest", "ml_retrain", "mcpt_validation", "large_backtest", "factor_model_compute"]}, "params": {"type": "object", "description": "Job parameters: bot, symbol, n_trials, data_start, data_end, model, etc."}, "force_local": {"type": "boolean", "default": False}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."}}, "required": ["job_type", "owner_token"]},
          annotations=ANNOT_COMPUTE),
     Tool(name="get_tower_job_status", description="Get status and result of a dispatched tower job. Polls the tower via SSH for the result file.",
          inputSchema={"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
@@ -3809,33 +3957,35 @@ TOOLS = [
              "limit": {"type": "integer", "default": 50, "description": "Max listings to return"},
          }, "required": []},
          annotations=ANNOT_READ_ONLY),
-    Tool(name="get_subscriber_bots", description="Get all active bot subscriptions for a given subscriber. Returns listing details, status, and join date. Requires SUPABASE_SERVICE_ROLE_KEY. Pass user_id as email or UUID.",
+    Tool(name="get_subscriber_bots", description="Owner-only: list bot assignments for a subscriber (service_role lookup). Subscribers should use get_my_assignments on their API key. REQUIRES owner_token.",
          inputSchema={"type": "object", "properties": {
-             "user_id": {"type": "string", "description": "Subscriber email address or UUID"},
-         }, "required": ["user_id"]},
+             "subscriber_id": {"type": "string", "description": "Subscriber UUID"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"},
+         }, "required": ["subscriber_id", "owner_token"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="deliver_strategy_to_subscriber",
          description="Deliver an approved marketplace strategy config to a subscriber's bot endpoint. "
-                     "Signs a time-limited config token with HMAC-SHA256 using ALGOCHAINS_SIGNAL_SECRET, "
-                     "POSTs it to the subscriber's webhook URL, and logs the delivery to Supabase "
-                     "marketplace_deliveries. Requires SUPABASE_SERVICE_ROLE_KEY + ALGOCHAINS_SIGNAL_SECRET.",
+                     "Verifies active subscription ownership, SSRF-checks webhook URL, signs token, POSTs to webhook. "
+                     "REQUIRES owner_token — SEC-2026-C2. Signed token is NOT returned in MCP response.",
          inputSchema={"type": "object", "properties": {
              "subscriber_id": {"type": "string", "description": "Subscriber Supabase user ID (auth.uid())"},
              "strategy_id": {"type": "string", "description": "Supabase marketplace_listing.id to deliver"},
-             "webhook_url": {"type": "string", "description": "Override webhook URL (optional — uses subscription record if not provided)"},
+             "webhook_url": {"type": "string", "description": "Override webhook URL (optional, SSRF-checked; private/link-local targets blocked)"},
              "token_ttl_seconds": {"type": "integer", "default": 86400, "description": "Config token lifetime in seconds (default 24h)"},
-         }, "required": ["subscriber_id", "strategy_id"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+         }, "required": ["subscriber_id", "strategy_id", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
-    Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the self-hosted Onyx RAG host (ONYX_API_URL).",
+    Tool(name="run_onyx_ingest", description="Trigger an incremental Onyx knowledge base ingest: indexes new strategy research, marketplace listings, blueprints, skills, and bot logs into the self-hosted Onyx RAG host (ONYX_API_URL). Owner-only side effect (AC-MCP-009).",
          inputSchema={"type": "object", "properties": {
              "full_sync": {"type": "boolean", "default": False, "description": "Full re-index vs incremental (new files only)"},
-         }, "required": []},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+         }, "required": ["owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_onyx_status", description="Check Onyx knowledge base status: health, last sync time, total indexed documents, connector status (self-hosted host via ONYX_API_URL).",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     Tool(name="get_learn_hub_health", description="Check AlgoChains Learn Hub health: HTTP status of /learn/, /learn/feed.xml RSS MIME, and learn.algochains.ai subdomain redirect. Read-only — does NOT deploy. Use to verify the live Learn Hub is up and public (no login required).",
-         inputSchema={"type": "object", "properties": {"base_url": {"type": "string", "description": "Base URL to check (default: https://algochains.ai)", "default": "https://algochains.ai"}}, "required": []},
+         inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_EXTERNAL),
     # ═══════════════════════════════════════════════════════════════
     # V22: Live Bot Intelligence — real metrics, heartbeat, academic citations
@@ -3854,7 +4004,15 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_system_heartbeat",
-         description="Check whether this MCP server node is the primary trader (MacBook offline) or standby (MacBook alive). Reads the Mac heartbeat file to determine heartbeat age, Mac liveness, and which node is currently running the bots. Critical for dual-node failover awareness.",
+         description="Check whether this MCP server node is the primary trader (MacBook offline) or standby (MacBook alive). Reads the Mac heartbeat file to determine heartbeat age, Mac liveness, desktop bot process counts (expected 5: MNQ/CL/MES/NQ + Kalshi), and which node is currently running the bots. Critical for dual-node failover awareness.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_adaptive_brain_status",
+         description="Read adaptive_brain.py daemon liveness from bounded process, script, state, and log evidence. Read-only; does not restart or mutate daemon state.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_system_health",
+         description="Run the trading-system-health audit: bot process/log liveness (with legacy log alias resolution), disk space on control-tower and home volumes, and optional health_snapshot.json. Use to triage SEV1 trading-system-health watchdog alerts without false inactive signals from stale cl_bot_live.log.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_strategy_academic_citations",
@@ -3913,11 +4071,21 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"symbol": {"type": "string", "description": "Symbol to flatten: MNQ | CL | MES | NQ"}, "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var"}}, "required": ["symbol", "owner_token"]},
          annotations=ANNOT_DESTRUCTIVE),
     Tool(name="check_unprotected_positions",
-         description="Cross-check ALL open Tradovate positions vs working orders to identify unprotected exposure (position open, no stop/target orders). Returns status OK | UNPROTECTED_EXPOSURE. Run before any P&L report or after any bot restart. Prevents repeat of Apr 14 2026 -$4.9k incident.",
+         description=(
+             "broker_truth / live ops — cross-check ALL open Tradovate positions vs working orders "
+             "to find unprotected exposure (position open, no stop/target). "
+             "Use for 'unprotected?', 'do I have stops?', 'bracket check'. Do NOT use web search. "
+             "Returns OK | UNPROTECTED_EXPOSURE. Run before P&L reports and after restarts "
+             "(prevents Apr 14 2026 -$4.9k class)."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="bracket_integrity_check",
+         description="Live Tradovate bracket audit for non-MNQ positions (CL/MES/NQ). Each open position must have BOTH a working stop and target order. Returns checked_count, missing_brackets, and formatted_line for BRACKET-INTEGRITY-MONITOR. Status DEGRADED when bot state files show open exposure but broker returns zero positions (fail-closed).",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_bracket_guardian_status",
-         description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. Guardian runs every 5 min via launchd (com.algochains.bracket-guardian).",
+         description="Read the bracket integrity guardian daemon state. Returns last check time, any unprotected positions currently flagged, and whether auto-flatten has fired. When guardian positions_count is 0 (or guardian inactive), also runs live bracket_integrity_check against Tradovate so watchdogs cannot report OK with 0 checked without broker verification.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
 
@@ -3955,11 +4123,25 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_onboarding_status",
-         description="Check current onboarding progress: steps completed, steps remaining, connected brokers and data providers, and next required action. Call this to see where you are in the setup process.",
+         description="Check current onboarding progress: steps completed, steps remaining, connected brokers/providers, AlgoChains API key status, guardrail prefs, and next required action.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
+    Tool(name="set_algochains_api_key",
+         description="Step 4: Set your AlgoChains developer API key (ac_live_* or ac_test_*) for marketplace and bridge access. Validates against the bridge health endpoint. Get a key via create_developer_key tool or at algochains.ai/account/developer-keys/.",
+         inputSchema={"type": "object", "properties": {
+             "api_key": {"type": "string", "description": "Your developer key (ac_live_... or ac_test_...)"},
+         }, "required": ["api_key"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="set_guardrail_preferences",
+         description="Step 6: Configure guardrail notification thresholds. Hard-coded limits (daily loss $500, max drawdown 15%, VIX>35 gate) cannot be changed — this only controls when you are notified.",
+         inputSchema={"type": "object", "properties": {
+             "notify_on_daily_loss_pct": {"type": "number", "default": 80, "description": "Notify when daily loss reaches this % of $500 limit (e.g. 80 = alert at $400 loss)"},
+             "pause_on_consecutive_losses": {"type": "integer", "default": 3, "description": "Pause and alert after N consecutive losing trades"},
+             "slack_alerts_enabled": {"type": "boolean", "default": False},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
     Tool(name="generate_ide_config",
-         description="Generate the MCP config file (mcporter.json / mcp.json) for your IDE based on your connected brokers and data providers. IDEs: cursor | windsurf | claude | vscode. Mode: smart (default, 25 tools) | full (262 tools). Output includes install instructions.",
+         description="Generate the MCP config file (mcporter.json / mcp.json) for your IDE based on your connected brokers and data providers. IDEs: cursor | windsurf | claude | vscode. Mode: smart (default, 181 tools) | full (533 tools). Output includes install instructions.",
          inputSchema={"type": "object", "properties": {"ide": {"type": "string", "enum": ["cursor", "windsurf", "claude", "vscode"]}, "tool_mode": {"type": "string", "enum": ["smart", "full"], "default": "smart"}}, "required": ["ide"]},
          annotations=ANNOT_READ_ONLY),
 
@@ -3971,6 +4153,10 @@ TOOLS = [
     # ═══════════════════════════════════════════════════════════════
     Tool(name="get_circuit_breaker_status",
          description="Read current state of all hard-coded trading circuit breakers. Shows which brokers are OPEN/CLOSED/HALF_OPEN, trip reasons, cooldown timers, and current order velocity. These limits are code-level constants — the AI cannot modify them. Use to understand why orders are being blocked.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="get_daily_loss_proximity",
+         description="Read daily loss proximity guard status: today's P&L vs the $500 hard limit, utilization %, alert/block thresholds (80% alert, 95% block scalpers, MNQ swing exempt), and whether P&L evidence is verified. Returns DEGRADED when P&L source is unknown instead of fail-open OK.",
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="get_agent_loop_status",
@@ -4010,14 +4196,15 @@ TOOLS = [
          },
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="connect_onyx_docs",
-         description="Index local research documents (PDF, Markdown, JSON, TXT) into the Onyx RAG knowledge base. Documents become searchable via onyx_ask() and onyx_search(). Supports recursive directory scanning. Requires Onyx to be running at ONYX_API_URL.",
+         description="Index local research documents (PDF, Markdown, JSON, TXT) into the Onyx RAG knowledge base. Documents become searchable via onyx_ask() and onyx_search(). Supports recursive directory scanning. Requires Onyx to be running at ONYX_API_URL. Owner-only side effect (AC-MCP-009).",
          inputSchema={
              "type": "object",
              "properties": {
                  "doc_paths": {"type": "array", "items": {"type": "string"}, "description": "List of absolute file or directory paths."},
                  "doc_type": {"type": "string", "enum": ["strategy_research", "blueprint", "backtest", "whitepaper", "general"], "description": "Document category for Onyx tagging."},
+                 "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
              },
-             "required": ["doc_paths", "doc_type"],
+             "required": ["doc_paths", "doc_type", "owner_token"],
          },
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="register_strategy",
@@ -4043,7 +4230,7 @@ TOOLS = [
 
     # ── Support Ticket System ──────────────────────────────────────────────
     Tool(name="create_support_ticket",
-         description="Create an IT support ticket. Stores in Supabase, syncs to Notion, and sends email confirmation. Use for bug reports, billing issues, broker connection problems, or onboarding help.",
+         description="Create an idempotent IT support ticket in the canonical Django support system. Use for bug reports, billing issues, broker connection problems, or onboarding help.",
          inputSchema={"type": "object", "properties": {
              "subject": {"type": "string", "description": "Short summary (max 200 chars)"},
              "description": {"type": "string", "description": "Full problem description"},
@@ -4052,10 +4239,11 @@ TOOLS = [
              "priority": {"type": "string", "enum": ["low","medium","high","critical"], "default": "medium"},
              "user_id": {"type": "string"},
              "metadata": {"type": "object"},
+             "idempotency_key": {"type": "string", "description": "Stable caller event ID used to deduplicate retries."},
          }, "required": ["subject","description","user_email"]},
          annotations=ANNOT_WRITE_SAFE),
     Tool(name="get_support_ticket",
-         description="Get a support ticket by ID. Returns full ticket details including status, responses, and Notion page link.",
+         description="Get a canonical support ticket by ID, including status and responses.",
          inputSchema={"type": "object", "properties": {"ticket_id": {"type": "string"}}, "required": ["ticket_id"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="list_support_tickets",
@@ -4118,6 +4306,336 @@ TOOLS = [
          }, "required": ["broker","user_id"]},
          annotations=ANNOT_WRITE_SAFE),
 
+    # ── Programmatic Account / MFA / Developer Key Tools ─────────────────
+    # Account creation & session management (Supabase Auth wrappers)
+    Tool(name="signup_algochains",
+         description="Create a new AlgoChains account with email + password via Supabase Auth. Returns session on success or requires_email_confirm. Next step: verify_email_otp → enroll_mfa → create_developer_key.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string", "description": "Account email address"},
+             "password": {"type": "string", "description": "Password (min 8 chars)"},
+         }, "required": ["email", "password"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="verify_email_otp",
+         description="Verify the email OTP token from the AlgoChains confirmation email. Activates your account and starts a session.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "token": {"type": "string", "description": "6-digit or link token from confirmation email"},
+         }, "required": ["email", "token"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="login_algochains",
+         description="Login to AlgoChains with email + password. Stores session locally for subsequent MFA and key operations.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "password": {"type": "string"},
+         }, "required": ["email", "password"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="refresh_session",
+         description="Refresh an expiring AlgoChains session using the stored refresh_token. Call before session expires to stay logged in.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="logout_algochains",
+         description="Revoke current AlgoChains session and clear stored credentials.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    # MFA enrollment and verification
+    Tool(name="enroll_mfa",
+         description="Enroll a new MFA factor (TOTP authenticator app or SMS). Returns QR code URI for TOTP — scan with Google Authenticator, Authy, etc. Then call verify_mfa to complete and upgrade session to AAL2.",
+         inputSchema={"type": "object", "properties": {
+             "factor_type": {"type": "string", "enum": ["totp", "phone"], "default": "totp"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="challenge_mfa",
+         description="Create an MFA challenge for login step-up verification. Required before verify_mfa during subsequent logins.",
+         inputSchema={"type": "object", "properties": {
+             "factor_id": {"type": "string", "description": "Factor ID from list_mfa_factors"},
+         }, "required": ["factor_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="verify_mfa",
+         description="Verify MFA code to complete enrollment or step up to AAL2 session. AAL2 is required for create_developer_key, rotate_developer_key, revoke_developer_key.",
+         inputSchema={"type": "object", "properties": {
+             "factor_id": {"type": "string"},
+             "code": {"type": "string", "description": "6-digit TOTP or SMS code"},
+             "challenge_id": {"type": "string", "description": "Challenge ID from challenge_mfa (required for login step-up, not for enrollment)"},
+         }, "required": ["factor_id", "code"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_mfa_factors",
+         description="List enrolled MFA factors for the current session.",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="remove_mfa_factor",
+         description="Remove an enrolled MFA factor. Requires owner_token — destructive, downgrades session to AAL1.",
+         inputSchema={"type": "object", "properties": {
+             "factor_id": {"type": "string"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN"},
+         }, "required": ["factor_id", "owner_token"]},
+         annotations=ANNOT_WRITE_SAFE),
+    # Developer key lifecycle (self-serve ac_live_* / ac_test_* keys)
+    Tool(name="create_developer_key",
+         description="Mint a new ac_live_* or ac_test_* developer API key. Requires AAL2 session (enroll_mfa + verify_mfa first). Plaintext key returned ONCE ONLY — save immediately.",
+         inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "AAL2 access token from verify_mfa response"},
+             "name": {"type": "string", "description": "Friendly name for the key", "default": "default"},
+             "scopes": {"type": "array", "items": {"type": "string"}, "description": "e.g. ['read:market_data','read:signals']"},
+             "env": {"type": "string", "enum": ["live", "test"], "default": "live"},
+         }, "required": ["access_token"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="list_developer_keys",
+         description="List your developer API keys (masked — plaintext never returned after creation).",
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="rotate_developer_key",
+         description="Atomically rotate a developer key (revoke old, mint new). Requires AAL2 session. New plaintext returned ONCE ONLY.",
+         inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "AAL2 access token from verify_mfa response"},
+             "key_id": {"type": "string", "description": "UUID of the key to rotate"},
+             "name": {"type": "string", "description": "Name for the new key (defaults to old key's name)"},
+         }, "required": ["access_token", "key_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="revoke_developer_key",
+         description="Revoke (soft-delete) a developer API key. Requires AAL2 session.",
+         inputSchema={"type": "object", "properties": {
+             "access_token": {"type": "string", "description": "AAL2 access token from verify_mfa response"},
+             "key_id": {"type": "string"},
+         }, "required": ["access_token", "key_id"]},
+         annotations=ANNOT_WRITE_SAFE),
+    Tool(name="get_developer_key_usage",
+         description="Get usage metadata for a developer key (last used, scopes, active status).",
+         inputSchema={"type": "object", "properties": {
+             "key_id": {"type": "string"},
+         }, "required": ["key_id"]},
+         annotations=ANNOT_READ_ONLY),
+    Tool(name="test_bridge_connection",
+         description="Test a developer API key against the hosted AlgoChains bridge (mcp.algochains.ai). Returns auth status and scopes.",
+         inputSchema={"type": "object", "properties": {
+             "api_key": {"type": "string", "description": "Developer key to test (or set AC_DEV_KEY env var)"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Subscriber Onramp ────────────────────────────────────────────────
+    # ── Onboarding meta-tools (public, no auth — first 30 seconds) ──────────
+    Tool(name="get_started",
+         description=(
+             "START HERE. Guided next-steps for a brand-new user, by goal. No auth, "
+             "no setup. Call get_started(goal='subscriber') for copy-trade signals, "
+             "'creator' to publish a strategy, 'developer' to build on the API, or "
+             "'explore' to look around with zero signup. Returns the exact tool calls to make next."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "goal": {"type": "string", "description": "subscriber | creator | developer | explore (optional — omit for a menu)"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_pricing",
+         description=(
+             "Transparent AlgoChains pricing: paper ($29/mo) and live ($99/mo) tiers, "
+             "what's included, usage overage, the 20%/3-month referral reward, and the "
+             "80% creator revenue share. Flat subscription + usage; no performance fees. "
+             "No auth required."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_system_status",
+         description=(
+             "Consumer-facing platform health: version, live signal-bot roster "
+             "(MNQ/CL/MES/NQ), tool count, and public marketplace listing count. "
+             "No auth, no secrets — safe to call anytime."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_checkout_url",
+         description=(
+             "Generate a Stripe checkout URL for an AlgoChains subscription. "
+             "Returns a URL the user clicks once to pay — Stripe handles the payment UI. "
+             "After payment, a sub_live_… key is emailed automatically and the subscriber "
+             "can subscribe to MNQ copy-trade signals (delivered for the subscriber to "
+             "review and act on — no automated execution; the subscriber stays in control). "
+             "Tiers: 'paper' ($29/mo — subscriber tools + MNQ copy-trade signals, simulated "
+             "paper account, no broker needed) or 'live' ($99/mo — subscriber connects their "
+             "own broker and places their own trades). Flat subscription only. "
+             "Set ALGOCHAINS_SUBSCRIBER_KEY=<received_key> to activate."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string", "description": "Email for subscription and key delivery"},
+             "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper",
+                      "description": "paper=$29/mo (MNQ signals + simulated paper, no broker), live=$99/mo (connect your own broker, you place trades)"},
+             "referral_code": {"type": "string", "description": "Optional referral code (AC-XXXXXX) — credits the referrer."},
+         }, "required": ["email"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="generate_payment_link",
+         description=(
+             "Return a direct payment link for an AlgoChains subscription tier. "
+             "Unlike get_checkout_url, this returns a pre-configured shareable URL "
+             "that works without entering an email first. "
+             "paper=$29/mo, live=$99/mo. "
+             "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key>."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "tier": {"type": "string", "enum": ["paper", "live"], "default": "paper"},
+         }, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Subscriber Tools (stdio path — sub key sets ALGOCHAINS_SUBSCRIBER_KEY) ─
+    Tool(name="join_bot",
+         description=(
+             "Subscribe the authenticated subscriber to a strategy's published "
+             "copy-trade SIGNALS (the subscriber reviews and acts on them — the "
+             "platform does not auto-execute or exercise discretion). The subscriber "
+             "sets their own size and can pause/leave anytime. "
+             "Strategies: MNQ (micro Nasdaq scalper), CL (crude oil scalper), "
+             "MES (micro S&P swing), NQ (Nasdaq swing). "
+             "Enforces a seat cap per strategy — returns bot_at_capacity if full. "
+             "Requires the futures risk disclosure to be acknowledged first "
+             "(accept_subscriber_terms) and ALGOCHAINS_SUBSCRIBER_KEY to be set. "
+             "Re-calling with an existing subscription updates size_multiplier and un-pauses."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "bot": {"type": "string", "enum": ["MNQ", "CL", "MES", "NQ"],
+                     "description": "Which strategy's published signals to subscribe to"},
+             "size_multiplier": {"type": "number", "default": 1.0,
+                                 "description": "Trade-size multiplier vs the master bot (0 < x <= 10)"},
+             "max_contracts": {"type": "integer", "default": 10,
+                               "description": "Hard cap on contracts per signal"},
+             "daily_loss_cap_usd": {"type": "number", "default": 5000.0,
+                                    "description": "Daily loss hard limit in USD"},
+         }, "required": ["bot"]},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_subscriber_status",
+         description=(
+             "Return a full status snapshot for the authenticated subscriber: "
+             "which bots they're assigned to, paper account balance, key_active flag, "
+             "and suggested next_steps based on their current state. "
+             "Good first call after setting ALGOCHAINS_SUBSCRIBER_KEY. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY to be set."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="accept_subscriber_terms",
+         description=(
+             "Record the authenticated subscriber's explicit acknowledgment of the "
+             "futures risk disclosure and Terms of Service. REQUIRED before active "
+             "copy-trade (join_bot). Call once with no arguments to retrieve the "
+             "disclosure text and the exact acknowledgment phrase, then call again "
+             "with acknowledgment=<phrase> to record consent. CFTC/NFA compliance "
+             "gate. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "acknowledgment": {"type": "string", "description": "Exact risk-acknowledgment phrase to record consent"},
+         }, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_usage",
+         description=(
+             "Your current-month MCP API usage: total metered calls, included quota, "
+             "overage calls, overage cost (USD), and a projected month-end overage cost. "
+             "Read-only; reflects this subscriber's billing tier. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Affiliate / referral system ─────────────────────────────────────────
+    Tool(name="create_referral_code",
+         description=(
+             "Create (or fetch) the authenticated subscriber's shareable referral code. "
+             "Returns the code and a share_url (https://algochains.ai/r/<code>). "
+             "One active code per subscriber. Referrers earn 20% of each referral's "
+             "subscription for their first 3 months. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_WRITE_SAFE),
+
+    Tool(name="get_my_referrals",
+         description=(
+             "Return the authenticated subscriber's referral summary: their referral code, "
+             "count of subscribers referred, and commission counts + sums by status. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="get_referral_earnings",
+         description=(
+             "Return total referral earnings (pending + paid commission_usd) for the "
+             "authenticated subscriber, with the 20%/3-month policy and compliance "
+             "disclaimer. Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    # ── Creator payouts (Stripe Connect ledger) ─────────────────────────────
+    Tool(name="create_creator_onboarding_link",
+         description=(
+             "Create a Stripe Connect Express onboarding link for a strategy creator. "
+             "Returns a URL where the creator completes KYC and links their bank account "
+             "for payouts, and mirrors the Connect account into the creator ledger. "
+             "Pass creator_id + creator_email."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Creator id."},
+             "creator_email": {"type": "string", "description": "Email for the Stripe Connect account and KYC."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required until creator-authenticated sessions exist."},
+             "confirm": {"type": "boolean", "description": "Required true when called through execute_dynamic_tool."},
+        }, "required": ["creator_id", "creator_email", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
+    Tool(name="get_my_creator_earnings",
+         description=(
+             "Read a creator's earnings summary (accrued / paid / reversed totals, 80/20 "
+             "revenue share) plus recent payout history. Read-only. Pass creator_id."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Creator id."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required until creator-authenticated sessions exist."},
+             "confirm": {"type": "boolean", "description": "Required true when called through execute_dynamic_tool."},
+        }, "required": ["creator_id", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
+    Tool(name="run_creator_payouts",
+         description=(
+             "Run the creator payout batch: sum accrued earnings per creator and pay out "
+             "those over min_payout_usd via Stripe Connect. MOVES REAL MONEY. "
+             "Defaults to dry_run=true (returns the computed plan, executes nothing). "
+             "REQUIRES owner_token matching OWNER_API_TOKEN. Set dry_run=false to execute."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "creator_id": {"type": "string", "description": "Optional — scope the run to a single creator."},
+             "dry_run": {"type": "boolean", "default": True, "description": "true (default) = plan only, no money moves."},
+             "min_payout_usd": {"type": "number", "default": 25.0, "description": "Minimum accrued balance to trigger a payout."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var. Required to run."},
+         }, "required": ["owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
+    # ── Realized P&L (live vs paper segregated) ─────────────────────────────
+    Tool(name="get_my_realized_pnl",
+         description=(
+             "Your realized P&L with LIVE (real broker) and PAPER (simulated) results "
+             "STRICTLY segregated. Paper results carry the CFTC Reg. 4.41(b) hypothetical-"
+             "performance disclaimer; they are never co-mingled with live results. "
+             "Requires ALGOCHAINS_SUBSCRIBER_KEY."
+         ),
+         inputSchema={"type": "object", "properties": {}, "required": []},
+         annotations=ANNOT_READ_ONLY),
+
+    Tool(name="reconcile_creator_pnl",
+         description=(
+             "Owner reconciliation: attribute subscribers' LIVE net realized P&L to "
+             "strategy creators for a period (per-subscriber then summed; 80/20 share). "
+             "Writes the creator_strategy_pnl ledger; does NOT move money (payout is "
+             "run_creator_payouts). Defaults to dry_run=true. REQUIRES owner_token."
+         ),
+         inputSchema={"type": "object", "properties": {
+             "period_start": {"type": "string", "description": "ISO8601 inclusive period start."},
+             "period_end": {"type": "string", "description": "ISO8601 exclusive period end."},
+             "dry_run": {"type": "boolean", "default": True, "description": "true (default) = plan only."},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+         }, "required": ["period_start", "period_end", "owner_token"]},
+         annotations=ANNOT_DESTRUCTIVE),
+
     # ── Waitlist ──────────────────────────────────────────────────────────
     Tool(name="join_waitlist",
          description="Add an email to the AlgoChains waitlist. Stores in Supabase, sends welcome email via Resend. Returns waitlist position.",
@@ -4135,8 +4653,11 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_ONLY),
     Tool(name="send_waitlist_invite",
-         description="Send an invite code to a waitlist user. Generates a unique code and emails it. Updates status to 'invited'.",
-         inputSchema={"type": "object", "properties": {"email": {"type": "string"}}, "required": ["email"]},
+         description="Send an invite to a waitlist user. Generates a unique code and emails it. Updates status to 'invited'. REQUIRES owner_token matching OWNER_API_TOKEN — invite codes are delivered by email only, never returned in MCP response.",
+         inputSchema={"type": "object", "properties": {
+             "email": {"type": "string"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+         }, "required": ["email", "owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
 
     # ── Email/SMS Verification ────────────────────────────────────────────
@@ -4226,7 +4747,7 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {"user_id": {"type": "string"}}, "required": ["user_id"]},
          annotations=ANNOT_READ_ONLY),
     Tool(name="upsert_bot_performance",
-         description="Record real performance data for a managed bot subscription. Called by the metrics streaming daemon. All values must come from actual execution.",
+         description="[DEPRECATED for autonomous callers] Record real performance data for a managed bot subscription. Use metrics_streaming_daemon.py instead. Requires owner_token — SEC-2026-C4.",
          inputSchema={"type": "object", "properties": {
              "subscription_id": {"type": "string"},
              "bot_id": {"type": "string"},
@@ -4239,7 +4760,8 @@ TOOLS = [
              "max_drawdown": {"type": "number"},
              "weekly_pnl": {"type": "number"},
              "last_trade_at": {"type": "string"},
-         }, "required": ["subscription_id","bot_id","daily_pnl","win_rate","trade_count","is_running","broker"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN env var."},
+         }, "required": ["subscription_id","bot_id","daily_pnl","win_rate","trade_count","is_running","broker","owner_token"]},
          annotations=ANNOT_WRITE_SAFE),
 
     # ── Kronos Foundation Model (shadow mode observer) ────────────────────────
@@ -4337,17 +4859,19 @@ TOOLS = [
          inputSchema={"type": "object", "properties": {}, "required": []},
          annotations=ANNOT_READ_SAFE),
     Tool(name="build_prop_fund_inputs",
-         description="Pull REAL Tradovate fills (no synthetic data) for a strategy over lookback_days, FIFO-match to realized trades, and return: daily_pnl series, win_rate, sharpe, avg_trade_pnl, max_drawdown_pct, and trade count. Fails closed if no real fills are found. Use this to feed evaluate_strategy_for_prop_fund and simulate_prop_fund_evaluation with live data.",
+         description="OWNER-ONLY: Pull REAL Tradovate fills for prop-fund analysis. Returns sensitive realized P&L and requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "strategy_name": {"type": "string", "description": "Bot name for tagging, e.g. FUTURES_SCALPER_UPGRADED"},
              "symbol": {"type": "string", "description": "Root symbol, e.g. MNQ"},
              "lookback_days": {"type": "integer", "default": 90},
              "account_id": {"type": "integer", "description": "Tradovate account id (defaults to primary)"},
-             "fills_override": {"type": "array", "description": "Optional pre-pulled fills list for offline analysis"},
-         }, "required": ["strategy_name", "symbol"]},
+             "fills_override": {"type": "array", "items": {"type": "object"}, "description": "Optional pre-pulled fills list for offline analysis"},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+             "confirm": {"type": "boolean", "description": "Explicit authorization to read broker fill P&L."},
+         }, "required": ["strategy_name", "symbol", "owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="onboard_prop_account",
-         description="Stage a new prop firm account for the autopilot. Two-phase: first call returns fee/rules confirmation preview; pass confirm=true to commit. Never pays the evaluation fee — operator does that manually on the firm's website. Writes autopilot state.",
+         description="OWNER-ONLY: Stage a new prop firm account for the autopilot. Requires owner_token + confirm=true. Never pays the evaluation fee.",
          inputSchema={"type": "object", "properties": {
              "fund_key": {"type": "string"},
              "account_id": {"type": "string"},
@@ -4355,40 +4879,48 @@ TOOLS = [
              "starting_balance": {"type": "number"},
              "credentials_ref": {"type": "string", "description": "Reference key in credential vault"},
              "confirm": {"type": "boolean", "default": False},
-         }, "required": ["fund_key", "account_id", "broker", "starting_balance"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+         }, "required": ["fund_key", "account_id", "broker", "starting_balance", "owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="deploy_bot_in_prop_mode",
-         description="Generate the prop_mode config JSON for a staged account and return the exact env vars (PROP_MODE=true, PROP_MODE_CONFIG=...) the operator must set to launch the bot. Does NOT start the bot — operator runs launch command. Requires confirm=true.",
+         description="OWNER-ONLY: Generate prop-mode config for a staged account. Does NOT start the bot. Requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "account_id": {"type": "string"},
              "bot_name": {"type": "string", "default": "FUTURES_SCALPER_UPGRADED"},
              "symbol": {"type": "string", "default": "MNQ"},
              "confirm": {"type": "boolean", "default": False},
-         }, "required": ["account_id"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+         }, "required": ["account_id", "owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="get_prop_mode_status",
-         description="Return autopilot status for all staged/active prop accounts — current phase (onboarded/deployed/evaluating/funded), balance, days traded, distance to profit target, distance to drawdown, consistency utilization.",
+         description="OWNER-ONLY: Return sensitive prop-account status and balances. Requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "account_id": {"type": "string", "description": "Optional — filter to one account"},
-         }, "required": []},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+             "confirm": {"type": "boolean", "description": "Explicit authorization to read account state."},
+         }, "required": ["owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="request_prop_payout",
-         description="Check if an account is eligible for a payout given the firm's safety net, first-payout-day, and cap rules. Returns preview only — operator requests payout manually.",
+         description="OWNER-ONLY: Check prop-account payout eligibility. Returns preview only and requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "account_id": {"type": "string"},
              "current_balance": {"type": "number"},
-         }, "required": ["account_id", "current_balance"]},
+             "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+             "confirm": {"type": "boolean", "description": "Explicit authorization to read payout state."},
+         }, "required": ["account_id", "current_balance", "owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="run_prop_fund_autopilot",
-         description="End-to-end read-only pipeline: build real-data inputs for a strategy, evaluate vs every eligible fund (or a filtered set), simulate drawdown, and return a prioritized recommendation (GO / HOLD / NO-GO) with rules-verified fields. Never commits fees or launches bots.",
+         description="OWNER-ONLY: Analyze real broker fills/P&L against prop-fund rules. Never commits fees or launches bots. Requires owner_token + confirm=true.",
          inputSchema={"type": "object", "properties": {
              "strategy_name": {"type": "string", "default": "FUTURES_SCALPER_UPGRADED"},
              "symbol": {"type": "string", "default": "MNQ"},
              "lookback_days": {"type": "integer", "default": 90},
              "account_id": {"type": "integer"},
-             "fund_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional filter, e.g. ['apex_50k_eod','mffu_core_50k']"},
-             "fills_override": {"type": "array"},
-         }, "required": []},
+            "fund_keys": {"type": "array", "items": {"type": "string"}, "description": "Optional filter, e.g. ['apex_50k_eod','mffu_core_50k']"},
+            "fills_override": {"type": "array", "items": {"type": "object"}},
+            "owner_token": {"type": "string", "description": "Must match OWNER_API_TOKEN."},
+            "confirm": {"type": "boolean", "description": "Explicit authorization to read broker fill P&L."},
+         }, "required": ["owner_token", "confirm"]},
          annotations=ANNOT_READ_SAFE),
     Tool(name="check_prop_fund_rules_freshness",
          description="Audit all supported prop fund entries for how recently their rules were verified. Flags any entry older than max_age_days.",
@@ -4528,8 +5060,8 @@ TOOLS = [
 #   - Cursor hard limit: 80 tools. Windsurf: context-bound.
 #
 # Modes (ALGOCHAINS_TOOL_MODE env var):
-#   "smart"  — Tier 1 only (38 core tools). 189 discoverable via meta-tools. DEFAULT.
-#   "full"   — All 227 tools exposed. For clients that manage their own filtering.
+#   "smart"  — Tier 1 only (181 core tools after SEC-2026 audit). Discoverable via meta-tools. DEFAULT.
+#   "full"   — All 533 tools exposed. For clients that manage their own filtering.
 #
 # Tier 1 tools are the minimum set to be productive:
 #   - 3 meta-tools (discover, detail, execute) — gateway to everything else
@@ -4597,7 +5129,7 @@ TIER1_TOOL_NAMES = {
     "record_prediction_market_bot_metric",
     "get_prediction_market_bot_metrics",
     "check_propagation_health",
-    "test_signal_propagation",
+    # "test_signal_propagation" removed from Tier-1: SEC-2026-C7 — live signal injection.
     "run_guardrail",
     # Skills Bridge (V22.7)
     "list_skills",
@@ -4636,13 +5168,16 @@ TIER1_TOOL_NAMES = {
     # Marketplace Autopilot + Onyx
     "run_marketplace_autopilot",
     "get_marketplace_listings",
-    "run_onyx_ingest",
+    # ASSP: run_onyx_ingest removed from Tier-1 (owner-gated RAG side effect, AC-MCP-009)
+    # "run_onyx_ingest",
     "get_onyx_status",
     "get_learn_hub_health",
     # V22 — Live Bot Intelligence (always Tier 1 — powers bot cards)
     "get_live_bot_metrics",
     "get_all_bot_metrics",
     "get_system_heartbeat",
+    "get_system_health",
+    "get_adaptive_brain_status",
     "get_strategy_academic_citations",
     "get_bot_card_data",
     "list_bot_research_attachments",
@@ -4650,15 +5185,18 @@ TIER1_TOOL_NAMES = {
     "get_bot_position_state",
     "get_bot_bracket_status",
     "get_ai_pipeline_health",
-    "get_all_bot_ops_status",
+    # ASSP: get_all_bot_ops_status removed from Tier-1 (position/bracket disclosure)
+    # "get_all_bot_ops_status",
     # V26.1 — Bracket integrity (always Tier 1 — safety critical)
     "check_unprotected_positions",
+    "bracket_integrity_check",
     "get_bracket_guardian_status",
     # V22.4 — Desktop tower ML visibility
     "get_tower_health",
     "get_tower_job_status",
     # V22.1 — Guardrails status (always Tier 1 — safety awareness)
     "get_circuit_breaker_status",
+    "get_daily_loss_proximity",
     "get_agent_loop_status",
     "get_latency_profile",
     # V22.2 — Onboarding (always Tier 1 — first thing new users see)
@@ -4670,6 +5208,8 @@ TIER1_TOOL_NAMES = {
     "validate_data_provider",
     "run_onboarding_smoke_test",
     "get_onboarding_status",
+    "set_algochains_api_key",
+    "set_guardrail_preferences",
     "generate_ide_config",
     # V22.3 — Data Ingestion (always Tier 1 — users need this early)
     "ingest_csv_data",
@@ -4680,29 +5220,67 @@ TIER1_TOOL_NAMES = {
     # Kronos + Rithmic live tools (always Tier 1 — bot operators need these)
     "get_kronos_shadow_stats",
     "get_signal_trade_correlation",
-    "get_rithmic_live_accounts",
-    "get_rithmic_live_pnl",
-    "get_rithmic_live_positions",
-    "get_rithmic_live_fills",
-    # Support Tickets
-    "create_support_ticket",
-    "get_support_ticket",
-    "list_support_tickets",
-    "update_ticket_status",
-    "get_ticket_stats",
+    "start_sandboxed_agent",
+    "reserve_llm_budget",
+    # ASSP: Rithmic live account tools removed from Tier-1 (owner-gated AC-MCP)
+    # "get_rithmic_live_accounts", "get_rithmic_live_pnl",
+    # "get_rithmic_live_positions", "get_rithmic_live_fills",
+    # Support Tickets — create only (public intake); admin tools require owner_token (SEC-2026-C8)
+    # ASSP: create_support_ticket escalated — side-effect spam (AC)
+    # "create_support_ticket",
+    # "get_support_ticket", "list_support_tickets", "update_ticket_status", "get_ticket_stats"
+    # removed from Tier-1: SEC-2026-C8 — service_role reads/writes without auth.
     # OAuth Broker Connection
     "generate_broker_auth_url",
     "exchange_broker_oauth_code",
-    "get_broker_oauth_status",
+    # "get_broker_oauth_status" removed from Tier-1: SEC-2026-C5 — token exfiltration.
     "get_connected_brokers",
     "revoke_broker_connection",
+    # Programmatic account / MFA / developer key tools
+    "signup_algochains",
+    "verify_email_otp",
+    "login_algochains",
+    "refresh_session",
+    "logout_algochains",
+    "enroll_mfa",
+    "challenge_mfa",
+    "verify_mfa",
+    "list_mfa_factors",
+    "remove_mfa_factor",
+    "create_developer_key",
+    "list_developer_keys",
+    "rotate_developer_key",
+    "revoke_developer_key",
+    "get_developer_key_usage",
+    "test_bridge_connection",
+    # Onboarding meta-tools (public)
+    "get_started",
+    "get_pricing",
+    "get_system_status",
+    # Subscriber onramp
+    "get_checkout_url",
+    "generate_payment_link",
+    # Subscriber tools (stdio path — key from ALGOCHAINS_SUBSCRIBER_KEY)
+    "join_bot",
+    "get_subscriber_status",
+    "accept_subscriber_terms",
+    "get_my_usage",
+    # Affiliate / referral
+    "create_referral_code",
+    "get_my_referrals",
+    "get_referral_earnings",
+    # Creator payout account/ledger tools intentionally NOT here: they affect
+    # Stripe payout routing or expose private creator financials and require
+    # owner authorization until creator-authenticated sessions exist.
+    # Realized P&L (reconcile_creator_pnl intentionally NOT here — owner-gated)
+    "get_my_realized_pnl",
     # Waitlist
     "join_waitlist",
     "get_waitlist_stats",
-    "send_waitlist_invite",
-    # Verification
-    "send_email_verification_code",
-    "send_sms_verification_code",
+    # "send_waitlist_invite" removed from Tier-1: SEC-2026-C3 FIX — invite minting
+    # requires owner_token (ORDER_EXEC tier). See tool_danger_tiers.py.
+    # Verification — ASSP: outbound email/SMS removed from Tier-1 (AC-MCP-006)
+    # "send_email_verification_code", "send_sms_verification_code",
     "verify_code",
     # Analytics
     "track_platform_event",
@@ -4713,9 +5291,10 @@ TIER1_TOOL_NAMES = {
     "initiate_account_recovery",
     "get_password_policy",
     # Multi-Bot Metrics
-    "get_user_bot_metrics",
-    "get_all_user_bots",
-    "upsert_bot_performance",
+    # ASSP: cross-tenant metrics removed from Tier-1
+    # "get_user_bot_metrics", "get_all_user_bots",
+    # "upsert_bot_performance" removed from Tier-1: SEC-2026-C4 FIX — metric writes
+    # go through metrics_streaming_daemon.py; MCP path requires owner_token (ORDER_EXEC).
     # V22.9 — PAI Integration (always Tier 1 — business context + macro data)
     "get_algochains_telos",
     "get_us_economic_indicators",
@@ -4725,11 +5304,10 @@ TIER1_TOOL_NAMES = {
     "get_learning_signals",
     "send_ntfy_notification",
     "update_algochains_telos",
-    # Prop Fund Evaluation — always Tier 1: operators need these to decide on eval fees
-    "run_prop_fund_autopilot",
+    # Prop Fund Evaluation — public catalog/scoring only. Account-bound status
+    # and real-fill P&L analysis are owner-gated hidden tools.
     "list_prop_funds",
     "evaluate_strategy_for_prop_fund",
-    "get_prop_mode_status",
     # Numerai tournament — status tool is Tier 1 for discoverability (§9)
     "numerai_status",
 }
@@ -4798,20 +5376,168 @@ async def list_tools() -> list[Tool]:
             _FULL_MODE_WARNED = True
             logger.warning(
                 "ALGOCHAINS_TOOL_MODE=full — DEVELOPMENT MODE ACTIVE. "
-                "All 338 tools are exposed for direct stdio call. "
+                "All 533 tools are exposed for direct stdio call. "
                 "ORDER_EXEC+ tools still require owner_token + ALGOCHAINS_REQUIRE_CONFIRMATION=0. "
                 "Do NOT run live production bots with ALGOCHAINS_TOOL_MODE=full. "
                 "Set ALGOCHAINS_TOOL_MODE=smart for production (default)."
             )
         return TOOLS_ANNOTATED
-    # Smart mode: expose only Tier 1 (21 tools ≈ 4K tokens vs 40K+ for all)
+    # Smart mode: expose only Tier 1 (181 tools ≈ 4K tokens vs 40K+ for all)
     return TOOLS_TIER1
+
+
+async def _execute_tool_with_runtime_guards(
+    name: str,
+    arguments: dict,
+    registry: BrokerRegistry,
+    *,
+    transport: str,
+    policy_decision: Any,
+) -> list[TextContent]:
+    """Run a tool through the shared runtime guards before dispatch.
+
+    Dynamic dispatch authorizes hidden tools before this helper is called; the
+    inner tool still needs the same rate limits, circuit breakers, timeouts, and
+    response guard that direct calls receive.
+    """
+    arguments = validate_arguments(name, arguments)
+    limiter = get_rate_limiter()
+    tlog = get_tool_logger()
+    t0 = time.monotonic()
+
+    try:
+        # Replay guard for signed destructive requests. Unsigned callers pass
+        # through; this activates only when timestamp + nonce are provided.
+        _x_ts = arguments.pop("_x_timestamp", None)
+        _x_nonce = arguments.pop("_x_nonce", None)
+        if _x_ts and _x_nonce:
+            try:
+                from .tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
+                _tier = get_tool_tier(name)
+                if _tier >= TIER_ORDER_EXEC:
+                    from .security.replay_guard import _GLOBAL_GUARD as _rg
+                    _rg_result = _rg.validate(_x_ts, _x_nonce)
+                    if not _rg_result.get("valid", True):
+                        return _text({
+                            "error_type": "ReplayGuardRejected",
+                            "tool": name,
+                            "reason": _rg_result.get("reason", "unknown"),
+                            "message": "Request rejected by replay guard. Timestamp too old or nonce already seen.",
+                        })
+            except ImportError:
+                return _text(assp_policy_import_error(
+                    name,
+                    transport,
+                    context="danger-tier replay guard",
+                ))
+
+        check_circuit(name)
+
+        broker_name = arguments.get("broker", "")
+        if broker_name:
+            await limiter.acquire(broker_name)
+
+        category = get_tool_category(name)
+        if category:
+            await limiter.acquire(category)
+
+        try:
+            from .security.per_tool_rate_limiter import check_rate_limit as _check_ptrl
+            _ptrl_result = _check_ptrl(name)
+            if not _ptrl_result.get("allowed", True):
+                return _text({
+                    "error_type": "RateLimitError",
+                    "tool": name,
+                    "message": f"Per-tool rate limit exceeded: {_ptrl_result.get('description', '')}",
+                    "calls_in_window": _ptrl_result.get("calls_in_window"),
+                    "limit": _ptrl_result.get("limit"),
+                    "window_seconds": _ptrl_result.get("window_seconds"),
+                    "reset_in_seconds": _ptrl_result.get("reset_in_seconds"),
+                })
+        except ImportError:
+            pass  # security module unavailable — category limiter is still active
+
+        sem = get_tool_semaphore(name)
+        timeout = get_tool_timeout(name)
+
+        async def _guarded_dispatch() -> list[TextContent]:
+            if sem:
+                async with sem:
+                    return await asyncio.wait_for(
+                        _dispatch_tool(name, arguments, registry),
+                        timeout=timeout,
+                    )
+            return await asyncio.wait_for(
+                _dispatch_tool(name, arguments, registry),
+                timeout=timeout,
+            )
+
+        with trace_span(
+            "mcp.tool.call",
+            {
+                "tool.name": name,
+                "mcp.server": "algochains",
+                "mcp.transport": transport,
+                "algochains.danger_tier": policy_decision.danger_tier,
+                "algochains.danger_label": policy_decision.danger_label,
+                "algochains.tier_source": policy_decision.tier_source,
+                "algochains.arguments_hash": redacted_argument_hash(arguments),
+            },
+        ) as span:
+            result = await _guarded_dispatch()
+            if span is not None:
+                span.set_attribute("algochains.tool.success", True)
+
+        for content in result:
+            if hasattr(content, "text"):
+                content.text = guard_response_size(content.text, name)
+
+        record_success(name)
+        tlog.log_call(name, arguments, duration_ms=(time.monotonic() - t0) * 1000)
+        return result
+
+    except asyncio.TimeoutError:
+        record_failure(name)
+        elapsed = (time.monotonic() - t0) * 1000
+        logger.error("Tool %s TIMED OUT after %.0fms (limit: %.0fs)", name, elapsed, get_tool_timeout(name))
+        tlog.log_call(name, arguments, error="timeout", duration_ms=elapsed)
+        return _text({"error_type": "TimeoutError", "message": f"Tool '{name}' timed out after {get_tool_timeout(name):.0f}s", "tool": name})
+
+    except CircuitOpenError as e:
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": "CircuitOpenError", "message": str(e), "tool": name, "retry_after_seconds": round(e.retry_after)})
+
+    except AlgoChainsError as e:
+        record_failure(name)
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _error_text(e)
+
+    except AttributeError as e:
+        record_failure(name)
+        msg = str(e)
+        if "NoneType" in msg or "None" in msg:
+            friendly = (
+                f"Engine for tool '{name}' failed to initialize (returned None). "
+                "Check server startup logs for import errors or missing env vars. "
+                f"Original error: {msg}"
+            )
+            logger.error("Tool %s: uninitialized engine — %s", name, msg)
+            tlog.log_call(name, arguments, error=friendly, duration_ms=(time.monotonic() - t0) * 1000)
+            return _text({"error_type": "EngineUnavailable", "message": friendly, "tool": name})
+        logger.error("Tool %s AttributeError: %s", name, msg, exc_info=True)
+        tlog.log_call(name, arguments, error=msg, duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": "AttributeError", "message": msg, "tool": name})
+
+    except Exception as e:
+        record_failure(name)
+        logger.error("Tool %s failed: %s", name, e, exc_info=True)
+        tlog.log_call(name, arguments, error=str(e), duration_ms=(time.monotonic() - t0) * 1000)
+        return _text({"error_type": type(e).__name__, "message": str(e), "tool": name})
 
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     registry = _get_registry()
-    limiter = get_rate_limiter()
     tlog = get_tool_logger()
     t0 = time.monotonic()
 
@@ -4836,6 +5562,29 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # ── 1. Sanitize inputs ───────────────────────────────────
         arguments = validate_arguments(name, arguments)
 
+        # ── 1b. Demo-mode stub for ORDER_EXEC+ tools ─────────────
+        # ALGOCHAINS_DEMO_MODE=1 stubs destructive/order tools so demo users
+        # cannot accidentally place real orders. Tier 0-1 tools (market data,
+        # signals, regime, backtesting) are NEVER stubbed — demo users expect
+        # real data from those paths. Only tier≥2 (ORDER_EXEC / DESTRUCTIVE)
+        # is stubbed. quickstart.py sets this env var in --mode demo.
+        if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
+            try:
+                from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_ORDER_EXEC, get_danger_tier as _get_tier
+            except ImportError:
+                return _text(assp_policy_import_error(name, "stdio", context="demo-mode tier gate"))
+            if _get_tier(name) >= _TIER_ORDER_EXEC:
+                return _text({
+                    "status": "demo_mode_stub",
+                    "tool": name,
+                    "message": (
+                        f"Tool '{name}' is an order/execution tool (tier≥2) and is stubbed "
+                        "in demo mode. No broker API call was made. "
+                        "Set credentials and remove ALGOCHAINS_DEMO_MODE to enable live execution."
+                    ),
+                    "demo_mode": True,
+                })
+
         # Smart mode is now an execution boundary for direct tool calls, not
         # just a list_tools token-saving filter. Hidden tools remain reachable
         # through execute_dynamic_tool, where danger-tier gating is centralized.
@@ -4845,13 +5594,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # (stdio/full parity). Previously full mode had no such gate.
         _stdio_owner_token = arguments.get("owner_token") if isinstance(arguments, dict) else None
         _stdio_require_confirm = os.getenv("ALGOCHAINS_REQUIRE_CONFIRMATION", "1") == "1"
-        direct_decision = evaluate_stdio_direct_tool(
-            name,
-            tool_mode=cfg.tool_mode,
-            tier1_names=set(TIER1_TOOL_NAMES),
-            owner_token=_stdio_owner_token,
-            require_confirmation=_stdio_require_confirm,
-        )
+        try:
+            direct_decision = evaluate_stdio_direct_tool(
+                name,
+                tool_mode=cfg.tool_mode,
+                tier1_names=set(TIER1_TOOL_NAMES),
+                owner_token=_stdio_owner_token,
+                require_confirmation=_stdio_require_confirm,
+            )
+        except ImportError:
+            return _text(assp_policy_import_error(name, "stdio", context="stdio direct policy"))
         if not direct_decision.allow:
             payload = direct_decision.as_error()
             payload["error_type"] = "SmartModeToolUnavailable"
@@ -4859,104 +5611,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             payload["message"] = direct_decision.reason
             return _text(payload)
 
-        # ── 1b. Replay guard for signed destructive requests ─────
-        # When a caller includes X-Timestamp + X-Nonce headers (passed as
-        # _x_timestamp / _x_nonce arguments), validate freshness and uniqueness
-        # for Tier-2+ tools.  Unsigned callers (no headers) pass through; this
-        # gate only activates when the caller opts into signed requests.
-        _x_ts = arguments.pop("_x_timestamp", None)
-        _x_nonce = arguments.pop("_x_nonce", None)
-        if _x_ts and _x_nonce:
-            try:
-                from .tool_danger_tiers import get_tool_tier, TIER_ORDER_EXEC
-                _tier = get_tool_tier(name)
-                if _tier >= TIER_ORDER_EXEC:
-                    from .security.replay_guard import _GLOBAL_GUARD as _rg
-                    _rg_result = _rg.validate(_x_ts, _x_nonce)
-                    if not _rg_result.get("valid", True):
-                        return _text({
-                            "error_type": "ReplayGuardRejected",
-                            "tool": name,
-                            "reason": _rg_result.get("reason", "unknown"),
-                            "message": "Request rejected by replay guard. Timestamp too old or nonce already seen.",
-                        })
-            except ImportError:
-                pass  # tier module unavailable — skip replay check
-
-        # ── 2. Circuit breaker — fail fast if engine is down ─────
-        check_circuit(name)
-
-        # ── 3. Rate limiting ─────────────────────────────────────
-        broker_name = arguments.get("broker", "")
-        if broker_name:
-            await limiter.acquire(broker_name)
-
-        category = get_tool_category(name)
-        if category:
-            await limiter.acquire(category)
-
-        # ── 3b. Per-tool rate limits (destructive tools) ─────────
-        # check_rate_limit() is O(1) for tools not in TOOL_RATE_LIMITS.
-        # Must run AFTER category limiter so both layers enforce sequentially.
-        try:
-            from .security.per_tool_rate_limiter import check_rate_limit as _check_ptrl
-            _ptrl_result = _check_ptrl(name)
-            if not _ptrl_result.get("allowed", True):
-                return _text({
-                    "error_type": "RateLimitError",
-                    "tool": name,
-                    "message": f"Per-tool rate limit exceeded: {_ptrl_result.get('description', '')}",
-                    "calls_in_window": _ptrl_result.get("calls_in_window"),
-                    "limit": _ptrl_result.get("limit"),
-                    "window_seconds": _ptrl_result.get("window_seconds"),
-                    "reset_in_seconds": _ptrl_result.get("reset_in_seconds"),
-                })
-        except ImportError:
-            pass  # security module unavailable — category limiter is still active
-
-        # ── 4. Concurrency semaphore — bound parallel calls ──────
-        sem = get_tool_semaphore(name)
-        timeout = get_tool_timeout(name)
-
-        async def _guarded_dispatch() -> list[TextContent]:
-            if sem:
-                async with sem:
-                    return await asyncio.wait_for(
-                        _dispatch_tool(name, arguments, registry),
-                        timeout=timeout,
-                    )
-            else:
-                return await asyncio.wait_for(
-                    _dispatch_tool(name, arguments, registry),
-                    timeout=timeout,
-                )
-
-        # ── 5. Execute with timeout ──────────────────────────────
-        with trace_span(
-            "mcp.tool.call",
-            {
-                "tool.name": name,
-                "mcp.server": "algochains",
-                "mcp.transport": "stdio",
-                "algochains.danger_tier": direct_decision.danger_tier,
-                "algochains.danger_label": direct_decision.danger_label,
-                "algochains.tier_source": direct_decision.tier_source,
-                "algochains.arguments_hash": redacted_argument_hash(arguments),
-            },
-        ) as span:
-            result = await _guarded_dispatch()
-            if span is not None:
-                span.set_attribute("algochains.tool.success", True)
-
-        # ── 6. Response size guard ───────────────────────────────
-        for content in result:
-            if hasattr(content, "text"):
-                content.text = guard_response_size(content.text, name)
-
-        # ── 7. Record success (circuit breaker) ──────────────────
-        record_success(name)
-        tlog.log_call(name, arguments, duration_ms=(time.monotonic() - t0) * 1000)
-        return result
+        return await _execute_tool_with_runtime_guards(
+            name,
+            arguments,
+            registry,
+            transport="stdio",
+            policy_decision=direct_decision,
+        )
 
     except asyncio.TimeoutError:
         record_failure(name)
@@ -5014,9 +5675,32 @@ def _require_broker(registry: BrokerRegistry, broker_name: str):
     return conn
 
 
+async def _require_broker_or_connect(registry: BrokerRegistry, broker_name: str):
+    """Like _require_broker, but warm the pool once (same as get_quote).
+
+    Fresh MCP subprocesses (OpenClaw ac_mcp, Cursor) start with brokers
+    configured but cold. Live-ops reads should not fail closed on that —
+    connect_all once, then require.
+    """
+    try:
+        return _require_broker(registry, broker_name)
+    except BrokerNotConnectedError:
+        results = await registry.connect_all()
+        if not results.get(broker_name):
+            raise BrokerNotConnectedError(
+                f"Broker '{broker_name}' is configured but connect failed. "
+                f"Call connect_broker first. connect_result={results.get(broker_name)!r}",
+                broker=broker_name,
+            )
+        return _require_broker(registry, broker_name)
+
+
 async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -> list[TextContent]:
     """Route tool calls to their implementations."""
     args = arguments  # alias used by some handlers
+    registered_handler = _HANDLER_REGISTRY.get(name)
+    if registered_handler is not None:
+        return _text(await registered_handler(arguments))
 
     # ── Trading ──────────────────────────────────────────────
     if name == "place_order":
@@ -5082,20 +5766,12 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 # If both fail: warn and assume 0 (gate weakened, logged explicitly).
                 _consecutive_losses = 0
                 _fills_source_ok = False
+                _loss_streak_from_fills = False
                 _fills_api_err_str: str = ""  # persist outside except block (Python 3 deletes except-vars)
                 try:
-                    _fills = await conn.get_fills()
-                    if _fills:
-                        # Scan last 20 fills newest-first for trailing loss streak
-                        for _f in reversed(_fills[-20:]):
-                            _f_pnl = getattr(_f, "realized_pnl", None) or getattr(_f, "pnl", None)
-                            if _f_pnl is None:
-                                break  # fill has no P&L — can't continue streak
-                            if float(_f_pnl) < 0:
-                                _consecutive_losses += 1
-                            else:
-                                break  # winner stops streak
-                        _fills_source_ok = True
+                    _fills = await _get_recent_fills_for_guardrail(conn, _symbol)
+                    _fills_source_ok = True
+                    _consecutive_losses, _loss_streak_from_fills = _compute_consecutive_losses_from_fills(_fills)
                 except Exception as _fills_err:
                     _fills_api_err_str = str(_fills_err)  # capture before Python 3 deletes the var
                     logger.warning(
@@ -5104,9 +5780,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                         _fills_api_err_str,
                     )
 
-                # Reconciliation: if fills API returned empty or failed, try signal_health.json
-                # (written by bot every candle). This is 1-bar behind at most, but better than 0.
-                if not _fills_source_ok or _consecutive_losses == 0:
+                # Reconciliation: only fall back when broker fills cannot produce
+                # an authoritative streak. A fresh winner/breakeven from the broker
+                # is authoritative streak=0 and must not be overwritten by stale state.
+                if not _loss_streak_from_fills:
                     try:
                         import json as _cljson
                         from pathlib import Path as _clPath
@@ -5119,11 +5796,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                                     _sh_streak = _bot_data.get("consecutive_losses", 0)
                                     if isinstance(_sh_streak, int) and _sh_streak > _consecutive_losses:
                                         _consecutive_losses = _sh_streak
-                                        if not _fills_source_ok:
-                                            logger.info(
-                                                "place_order guardrail: consecutive_losses=%d from signal_health.json reconciliation",
-                                                _consecutive_losses,
-                                            )
+                                        logger.info(
+                                            "place_order guardrail: consecutive_losses=%d from signal_health.json reconciliation",
+                                            _consecutive_losses,
+                                        )
                     except Exception as _sh_err:
                         if not _fills_source_ok:
                             logger.warning(
@@ -5175,12 +5851,14 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     "MNQ": 2.0, "NQ": 20.0, "MES": 5.0, "ES": 50.0,
                     "MCL": 100.0, "CL": 1000.0, "MGC": 10.0, "GC": 100.0,
                 }
+                import math as _math_notional
                 try:
-                    _price_hint = arguments.get("limit_price")
+                    _price_hint = arguments.get("limit_price") or arguments.get("stop_price")
                     if _price_hint:
                         _price = float(_price_hint)
                     else:
-                        # Try live quote; fall back to estimated_notional arg if provided
+                        # Try live quote; caller estimate is only a fallback when
+                        # a real price source is unavailable.
                         _q = await conn.get_quote(_symbol)
                         _price = float(getattr(_q, "last", 0) or getattr(_q, "bid", 0) or 0)
                     _root = "".join(c for c in _symbol.upper() if c.isalpha())[:3]
@@ -5189,9 +5867,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                     if _notional == 0.0:
                         # Ultimate fallback: caller-supplied estimated_notional
                         _notional = float(arguments.get("estimated_notional", 0))
+                    if not _math_notional.isfinite(_notional) or _notional <= 0.0:
+                        raise GuardrailTripped(
+                            GuardrailReason.MARKET_PRICE_UNAVAILABLE,
+                            "No live market price available and no positive estimated_notional was supplied. "
+                            "Order aborted fail-closed before reaching broker.",
+                        )
+                except GuardrailTripped:
+                    raise
                 except Exception as _not_err:
-                    _notional = float(arguments.get("estimated_notional", 0))
-                    logger.debug("Notional compute failed (%s), using arg fallback: %.2f", _not_err, _notional)
+                    try:
+                        _notional = float(arguments.get("estimated_notional", 0))
+                    except (TypeError, ValueError):
+                        _notional = 0.0
+                    if not _math_notional.isfinite(_notional) or _notional <= 0.0:
+                        raise GuardrailTripped(
+                            GuardrailReason.MARKET_PRICE_UNAVAILABLE,
+                            "No live market price available and no positive estimated_notional was supplied. "
+                            f"Order aborted fail-closed before reaching broker. Error: {_not_err}",
+                        )
+                    logger.warning("Notional compute failed (%s), using arg fallback: %.2f", _not_err, _notional)
 
                 try:
                     _acct = await conn.get_account()
@@ -5223,16 +5918,27 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 })
         # ── End V22 Guardrails ────────────────────────────────────
 
-        order = await conn.place_order(
-            symbol=arguments["symbol"],
-            side=OrderSide(arguments["side"]),
-            qty=arguments["qty"],
-            order_type=OrderType(arguments.get("order_type", "market")),
-            limit_price=arguments.get("limit_price"),
-            stop_price=arguments.get("stop_price"),
-            trail_pct=arguments.get("trail_pct"),
-            time_in_force=arguments.get("time_in_force", "day"),
-        )
+        try:
+            order = await conn.place_order(
+                symbol=arguments["symbol"],
+                side=OrderSide(arguments["side"]),
+                qty=arguments["qty"],
+                order_type=OrderType(arguments.get("order_type", "market")),
+                limit_price=arguments.get("limit_price"),
+                stop_price=arguments.get("stop_price"),
+                trail_pct=arguments.get("trail_pct"),
+                time_in_force=arguments.get("time_in_force", "day"),
+            )
+        except Exception as _order_err:
+            if _GUARDRAILS_AVAILABLE:
+                try:
+                    get_guardrails().record_order_failure(
+                        arguments.get("broker", "tradovate"),
+                        str(_order_err),
+                    )
+                except Exception:
+                    pass
+            raise
         # V22: Record successful order for circuit breaker health tracking
         if _GUARDRAILS_AVAILABLE:
             try:
@@ -5349,21 +6055,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── Portfolio ────────────────────────────────────────────
     elif name == "get_account":
-        conn = _require_broker(registry, arguments["broker"])
+        conn = await _require_broker_or_connect(registry, arguments["broker"])
         acct = await conn.get_account()
         return _text(acct.to_dict())
 
     elif name == "get_positions":
-        conn = _require_broker(registry, arguments["broker"])
+        conn = await _require_broker_or_connect(registry, arguments["broker"])
         positions = await conn.get_positions()
-        return _text([p.to_dict() for p in positions])
+        rows = [p.to_dict() for p in positions]
+        return _text({"positions": rows, "count": len(rows), "broker": arguments["broker"]})
 
     elif name == "get_orders":
-        conn = _require_broker(registry, arguments["broker"])
+        conn = await _require_broker_or_connect(registry, arguments["broker"])
         orders = await conn.get_orders(arguments.get("status"))
-        return _text([o.to_dict() for o in orders])
+        rows = [o.to_dict() for o in orders]
+        return _text({"orders": rows, "count": len(rows), "broker": arguments["broker"]})
 
     elif name in ("portfolio_summary", "get_portfolio_summary"):
+        # Warm cold pool so a fresh MCP subprocess does not return empty brokers{}
+        if not registry.list_available() and registry.list_configured():
+            await registry.connect_all()
         summary = {"brokers": {}, "total_equity": 0.0, "total_positions": 0}
         for bname in registry.list_available():
             conn = registry.get(bname)
@@ -5384,9 +6095,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── Market Data ─────────────────────────────────────────
     elif name == "get_quote":
-        conn = _require_broker(registry, arguments["broker"])
-        quote = await conn.get_quote(arguments["symbol"])
-        return _text(quote.to_dict())
+        try:
+            broker_name = arguments["broker"]
+            try:
+                conn = await _require_broker_or_connect(registry, broker_name)
+            except BrokerNotConnectedError as e:
+                return _text({
+                    "error": str(e),
+                    "ok": False,
+                    "broker": broker_name,
+                    "symbol": arguments.get("symbol"),
+                })
+            quote = await conn.get_quote(arguments["symbol"])
+            return _text(quote.to_dict())
+        except Exception as e:
+            return _text({
+                "error": str(e),
+                "ok": False,
+                "broker": arguments.get("broker"),
+                "symbol": arguments.get("symbol"),
+            })
 
     elif name == "search_tradovate_contracts":
         conn = _require_broker(registry, "tradovate")
@@ -5445,29 +6173,41 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
         bot_filter = (arguments.get("bot") or "all").lower()
         control_tower = _Path(_default_control_tower())
+        from algochains_mcp.bot_log_paths import resolve_bot_log
         bots = {
-            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py", "log": "logs/futures_bot_live.log"},
-            "cl":  {"script": "CL_FUTURES_SCALPER.py",       "log": "logs/cl_futures_live.log"},
-            "mes": {"script": "mes_swing_live.py",           "log": "logs/mes_swing_live.log"},
-            "nq":  {"script": "nq_swing_live.py",            "log": "logs/nq_swing_live.log"},
-            "kalshi": {"script": "kalshi_daemon.py",         "log": "logs/kalshi_bot.log"},
+            "mnq": {"script": "FUTURES_SCALPER_UPGRADED.py"},
+            "cl":  {"script": "CL_FUTURES_SCALPER.py"},
+            "mes": {"script": "mes_swing_live.py"},
+            "nq":  {"script": "nq_swing_live.py"},
+            "kalshi": {"script": "kalshi_daemon.py"},
         }
         try:
+            from .live_bot_intelligence.heartbeat import scan_running_bot_keys
+
             ps_out = _subp.run(["ps", "aux"], capture_output=True, text=True, timeout=5).stdout
+            running_bots = scan_running_bot_keys(ps_out)
         except Exception:
             ps_out = ""
+            running_bots = set()
 
         now = _time.time()
         results = {}
         for key, meta in bots.items():
             if bot_filter not in ("all", key):
                 continue
-            log_path = control_tower / meta["log"]
-            running = meta["script"] in ps_out
+            log_path = None
+            log_candidates = []
+            legacy_stale_mismatch = False
+            log_resolution = resolve_bot_log(control_tower, key, now=now)
+            if log_resolution.get("path") is not None:
+                log_path = log_resolution["path"]
+            log_candidates = log_resolution.get("candidates") or []
+            legacy_stale_mismatch = bool(log_resolution.get("legacy_stale_mismatch"))
+            running = key in running_bots
             last_log_mtime = None
             error_count = 0
             tail_preview = ""
-            if log_path.exists():
+            if log_path is not None and log_path.exists():
                 try:
                     last_log_mtime = int(now - log_path.stat().st_mtime)
                     # Read last 100 lines with tail for speed
@@ -5487,6 +6227,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 "log_age_seconds": last_log_mtime,
                 "error_count_last_100": error_count,
                 "last_line_preview": tail_preview,
+                "log_path": str(log_path) if log_path else None,
+                "log_candidates": log_candidates,
+                "legacy_stale_mismatch": legacy_stale_mismatch,
             }
 
         # Tradovate token expiry (best-effort)
@@ -5518,11 +6261,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 _sh_data = _json_gh.loads(_sh_path.read_text())
                 _bot_key_map = {
                     "mnq": "MNQ_Upgraded_Scalper",
-                    "cl":  "CL_Futures_Scalper",
+                    "cl":  "CL_Scalper",
                     "mes": "MES_EMA_Swing",
                     "nq":  "NQ_EMA_Swing",
                 }
-                _legacy_bot_key_map = {"cl": "CL_Swing_Scalper"}
+                _legacy_bot_key_map = {
+                    "cl": "CL_Futures_Scalper",  # older writers / health aliases
+                }
                 def _bounded_slice(_entry: dict, _name: str) -> dict | None:
                     _value = _entry.get(_name)
                     if not isinstance(_value, dict):
@@ -5665,36 +6410,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             try:
                 import json as _json_e2e
                 _e2e_raw = _json_e2e.loads(_e2e_state_path.read_text())
-                _e2e_class = _e2e_raw.get("classification", {}) or {}
-                _e2e_evidence = _e2e_raw.get("evidence", {}) or {}
-                _e2e_broker = _e2e_evidence.get("broker", {}) or {}
-                _e2e_process = _e2e_evidence.get("process", {}) or {}
-                _e2e_log = _e2e_evidence.get("log", {}) or {}
-                _e2e_rate = _e2e_raw.get("rate_limits", {}) or {}
-                e2e_sentinel = {
-                    "generated_at": _e2e_raw.get("generated_at"),
-                    "state": _e2e_class.get("state"),
-                    "severity": _e2e_class.get("severity"),
-                    "issue_class": _e2e_class.get("issue_class"),
-                    "incident_id": _e2e_class.get("incident_id"),
-                    "why": _e2e_class.get("why"),
-                    "needs_owner": _e2e_class.get("needs_owner"),
-                    "safe_auto_action": _e2e_class.get("safe_auto_action"),
-                    "skill_routes": _e2e_class.get("skill_routes", []),
-                    "broker_flat": (
-                        _e2e_broker.get("positions_count") == 0
-                        and _e2e_broker.get("working_orders_count") == 0
-                    ),
-                    "positions_count": _e2e_broker.get("positions_count"),
-                    "working_orders_count": _e2e_broker.get("working_orders_count"),
-                    "pids": _e2e_process.get("pids", []),
-                    "fd_count": _e2e_process.get("fd_count"),
-                    "last_scan_age_sec": _e2e_log.get("last_scan_age_sec"),
-                    "memory_status": (_e2e_raw.get("memory", {}) or {}).get("status"),
-                    "slack_status": (_e2e_raw.get("slack", {}) or {}).get("status"),
-                    "last_memory_at": _e2e_rate.get("last_memory_at"),
-                    "last_slack_at": _e2e_rate.get("last_slack_at"),
-                }
+                e2e_sentinel = summarize_e2e_sentinel_state(_e2e_raw)
+                e2e_sentinel = apply_effective_sentinel_resolution(e2e_sentinel, _e2e_raw)
             except Exception as _e2e_err:
                 e2e_sentinel = {"status": "error", "detail": f"e2e_execution_sentinel.json parse failure: {_e2e_err}"}
 
@@ -5896,7 +6613,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         bridge = _get_bridge()
         result = await bridge.subscribe(
             slug=arguments["slug"],
-            broker=arguments["broker"],
+            broker=arguments.get("broker"),
             mode=arguments.get("mode", "paper"),
         )
         return _text(result)
@@ -6121,21 +6838,30 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     # ── V6: Notifications ────────────────────────────────────
     elif name == "configure_notifications":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "configure_notifications requires owner_token matching OWNER_API_TOKEN.",
+            })
         notifier = _get_notifier()
         ch = arguments["channel"]
-        if ch == "slack":
-            notifier.configure_slack(arguments.get("webhook_url", ""))
-        elif ch == "email":
-            notifier.configure_email(arguments.get("api_key", ""))
-        elif ch == "discord":
-            notifier.configure_discord(arguments.get("webhook_url", ""))
-        elif ch == "telegram":
-            notifier.configure_telegram(arguments.get("bot_token", ""), arguments.get("chat_id", ""))
-        elif ch in ("fcm", "apns"):
-            notifier.configure_mobile_push(
-                fcm_key=arguments.get("api_key", "") if ch == "fcm" else "",
-                apns_cert=arguments.get("api_key", "") if ch == "apns" else "",
-            )
+        try:
+            if ch == "slack":
+                notifier.configure_slack(arguments.get("webhook_url", ""))
+            elif ch == "email":
+                notifier.configure_email(arguments.get("api_key", ""))
+            elif ch == "discord":
+                notifier.configure_discord(arguments.get("webhook_url", ""))
+            elif ch == "telegram":
+                notifier.configure_telegram(arguments.get("bot_token", ""), arguments.get("chat_id", ""))
+            elif ch in ("fcm", "apns"):
+                notifier.configure_mobile_push(
+                    fcm_key=arguments.get("api_key", "") if ch == "fcm" else "",
+                    apns_cert=arguments.get("api_key", "") if ch == "apns" else "",
+                )
+        except ValueError as exc:
+            return _text({"error": str(exc), "channel": ch})
         return _text({"channel": ch, "status": "configured", "all_channels": notifier.configured_channels()})
 
     elif name == "send_notification":
@@ -6147,6 +6873,21 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         event_str = arguments.get("event", "bot_status")
         event = NotificationEvent(event_str) if event_str != "custom" else NotificationEvent.BOT_STATUS
         channels = [NotificationChannel(c) for c in arguments.get("channels", [])] or [NotificationChannel.WEBSOCKET]
+        outbound = {
+            NotificationChannel.SLACK,
+            NotificationChannel.DISCORD,
+            NotificationChannel.TELEGRAM,
+            NotificationChannel.EMAIL,
+            NotificationChannel.FCM,
+            NotificationChannel.APNS,
+        }
+        if any(c in outbound for c in channels):
+            _owner_token_provided = arguments.get("owner_token", "")
+            _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+                return _text({
+                    "error": "send_notification with outbound channels requires owner_token matching OWNER_API_TOKEN.",
+                })
         notification = Notification(
             event=event,
             priority=NotificationPriority(arguments.get("priority", "medium")),
@@ -6278,6 +7019,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(result)
 
     elif name == "export_config":
+        # SEC-2026-C1 FIX: export_config reads plaintext env secrets.
+        # Require owner_token before returning any key data.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "export_config requires owner_token matching OWNER_API_TOKEN. "
+                         "MCP output returns masked keys only — full export requires "
+                         "owner confirmation via OWNER_API_TOKEN.",
+                "masked_preview": "Set owner_token to your OWNER_API_TOKEN value to proceed.",
+            })
         orch = _get_key_orchestrator()
         if not orch._discovered:
             await orch.discover_keys()
@@ -7195,15 +7947,45 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 expected_owner_token=os.environ.get("OWNER_API_TOKEN", ""),
             )
         except ImportError:
-            return _text({
-                "error": "execute_dynamic_tool: danger-tier module unavailable; execution blocked for safety.",
-                "blocked": True,
-                "tool": inner_name,
-            })
+            return _text(assp_policy_import_error(
+                inner_name,
+                "dynamic",
+                context="execute_dynamic_tool",
+            ))
 
         if not decision.allow:
             return _text(decision.as_error())
-        return await _dispatch_tool(inner_name, inner_args, registry)
+
+        # Demo mode guard: also stub ORDER_EXEC+ tools dispatched via execute_dynamic_tool.
+        # call_tool stubs direct calls; this catches the dynamic dispatch path.
+        if os.getenv("ALGOCHAINS_DEMO_MODE", "0") == "1":
+            try:
+                from .tool_danger_tiers import TIER_ORDER_EXEC as _TIER_OE, get_danger_tier as _gdt
+            except ImportError:
+                return _text(assp_policy_import_error(
+                    inner_name,
+                    "dynamic",
+                    context="execute_dynamic_tool demo-mode tier gate",
+                ))
+            if _gdt(inner_name) >= _TIER_OE:
+                return _text({
+                    "status": "demo_mode_stub",
+                    "tool": inner_name,
+                    "message": (
+                        f"Tool '{inner_name}' is an order/execution tool (tier≥2) and is stubbed "
+                        "in demo mode. No broker API call was made. "
+                        "Remove ALGOCHAINS_DEMO_MODE to enable live execution."
+                    ),
+                    "demo_mode": True,
+                })
+
+        return await _execute_tool_with_runtime_guards(
+            inner_name,
+            inner_args,
+            registry,
+            transport="dynamic",
+            policy_decision=decision,
+        )
 
     # ── V18: Intent-Based Trading ─────────────────────────────
     elif name == "execute_intent":
@@ -7479,6 +8261,33 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         output["marketplace_readiness"] = result.passes_marketplace_gates()
         return _text(output)
 
+    elif name == "start_sandboxed_agent":
+        from algochains_mcp.agent_sandbox import start_sandboxed_agent as _start_sb
+        scopes = tuple(arguments.pop("_developer_scopes", ()) or ())
+        clerk_user_id = str(arguments.pop("_clerk_user_id", "") or "")
+        # Prefer scopes injected by http_bridge; fail closed if absent.
+        if not scopes:
+            return _text({"ok": False, "error": "missing_scope:agent:sandbox", "authority": "agent_memory"})
+        return _text(_start_sb(
+            scopes=scopes,
+            task=str(arguments.get("task") or ""),
+            clerk_user_id=clerk_user_id,
+            max_runtime_sec=arguments.get("max_runtime_sec"),
+        ))
+
+    elif name == "reserve_llm_budget":
+        from algochains_mcp.agent_sandbox import reserve_llm_budget as _reserve
+        scopes = tuple(arguments.pop("_developer_scopes", ()) or ())
+        clerk_user_id = str(arguments.pop("_clerk_user_id", "") or "")
+        if not scopes:
+            return _text({"ok": False, "error": "missing_scope:spend:llm_budget", "authority": "agent_memory"})
+        return _text(_reserve(
+            scopes=scopes,
+            clerk_user_id=clerk_user_id,
+            amount_usd=float(arguments.get("amount_usd") or 0),
+            daily_cap_usd=arguments.get("daily_cap_usd"),
+        ))
+
     elif name == "submit_to_marketplace":
         pipeline = _get_submission_pipeline()
         sub = StrategySubmission(
@@ -7499,6 +8308,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             description=arguments.get("description", ""),
             asset_class=arguments.get("asset_class", "stock"),
             price_monthly=arguments.get("price_monthly", 29.99),
+            verification_artifact=arguments.get("verification_artifact") or {},
         )
         result = await pipeline.submit(sub)
         return _text(result.to_dict())
@@ -7643,6 +8453,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         return _text(get_evolution_daemon().rollback(args.get("strategy_id", "")))
 
     elif name == "record_trade_episode":
+        _ot = str(args.get("owner_token") or "")
+        _expected = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected or not _ot or _ot != _expected:
+            _assp_emit_deny(
+                rule_id="AC-MCP-sqlite-write",
+                tool_name="record_trade_episode",
+                deny_reason="owner_token_required",
+            )
+            return _text({
+                "error": "owner_token required for record_trade_episode",
+                "assp_rule": "AC-MCP-sqlite-write",
+            })
         get_trade_memory = _lazy_import("trade_memory", "get_trade_memory")
         if not get_trade_memory:
             return _text({"error": "Trade memory not available"})
@@ -7995,12 +8817,26 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "check_propagation_health":
         from .trade_propagation import check_propagation_health
         try:
-            out = await check_propagation_health()
+            out = await check_propagation_health(
+                max_lag_seconds=float(args.get("max_lag_seconds", 30.0))
+            )
             return _text(out)
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
     elif name == "test_signal_propagation":
+        # SEC-2026-C7: posts signed signals to live copy-trade ingest — owner + confirm.
+        _owner_token_provided = args.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "test_signal_propagation requires owner_token matching OWNER_API_TOKEN.",
+            })
+        if not args.get("confirm"):
+            return _text({
+                "error": "test_signal_propagation requires confirm=true — sends live paper signals.",
+                "required_arg": "confirm=true",
+            })
         from .trade_propagation import run_dummy_signal_test
         try:
             out = await run_dummy_signal_test(
@@ -8461,8 +9297,17 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             import subprocess, sys as _sys
             control_tower = _default_control_tower()
             step = str(args.get("step", "all"))
-            dry_run = bool(args.get("dry_run", False))
+            # ASSP: default dry_run=True; live runs require owner_token
+            dry_run = bool(args.get("dry_run", True))
             no_desktop = bool(args.get("no_desktop", False))
+            if not dry_run:
+                _ot = str(args.get("owner_token") or "")
+                _expected = os.environ.get("OWNER_API_TOKEN", "")
+                if not _expected or not _ot or _ot != _expected:
+                    return _text({
+                        "error": "owner_token required when dry_run=false",
+                        "assp_rule": "AC-MCP-008",
+                    })
 
             cmd = [_sys.executable, "scripts/mcpt_autopilot.py", "--json"]
             if step != "all":
@@ -8626,6 +9471,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name in ("dispatch_tower_job", "get_tower_job_status", "get_tower_health", "list_tower_jobs"):
         import os as _os_tower
         import sys as _sys
+        # ASSP AC-MCP-007: deny before importing dispatcher (fail-closed without CT path)
+        if name == "dispatch_tower_job":
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-007",
+                    tool_name="dispatch_tower_job",
+                    deny_reason="owner_token_required",
+                )
+                return _text({
+                    "error": "owner_token required for dispatch_tower_job",
+                    "assp_rule": "AC-MCP-007",
+                })
         _ct_path = _default_control_tower()
         if _ct_path not in _sys.path:
             _sys.path.insert(0, _ct_path)
@@ -8803,6 +9662,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Marketplace listings error: {exc}"})
 
     elif name == "run_onyx_ingest":
+        _ot = str(args.get("owner_token") or "")
+        _expected = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected or not _ot or _ot != _expected:
+            _assp_emit_deny(
+                rule_id="AC-MCP-009",
+                tool_name="run_onyx_ingest",
+                deny_reason="owner_token_required",
+            )
+            return _text({
+                "error": "owner_token required for run_onyx_ingest",
+                "assp_rule": "AC-MCP-009",
+            })
         try:
             import subprocess as _sp
             import sys as _sys
@@ -8844,7 +9715,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_learn_hub_health":
         try:
             import httpx as _httpx
-            _base = (args.get("base_url") or "https://algochains.ai").rstrip("/")
+            # Tier-1 callers must not choose the request destination. Ignoring
+            # legacy base_url arguments also protects dynamic callers that
+            # bypass the published tool schema.
+            _base = "https://algochains.ai"
             _results: dict = {"base_url": _base, "checks": {}}
             async with _httpx.AsyncClient(timeout=10, follow_redirects=False) as _hc:
                 # Hub page — must be 200 (no login redirect)
@@ -8904,14 +9778,23 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "get_subscriber_bots":
         try:
             from .marketplace.supabase_tools import get_subscriber_bots as _sb_subs
-            user_id = args.get("user_id", "")
-            if not user_id:
-                return _text({"error": "user_id is required (email or UUID)"})
-            return _text(_sb_subs(user_id))
+            _owner_token_provided = args.get("owner_token", "")
+            _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+            owner_ok = bool(_expected_owner_token and _owner_token_provided == _expected_owner_token)
+            subscriber_id = args.get("subscriber_id", "") or args.get("user_id", "")
+            if not subscriber_id:
+                return _text({"error": "subscriber_id is required"})
+            return _text(_sb_subs(subscriber_id, owner_authorized=owner_ok))
         except Exception as exc:
             return _text({"error": f"Subscriber bots error: {exc}"})
 
     elif name == "deliver_strategy_to_subscriber":
+        # SEC-2026-C2 FIX: require owner_token; subscription verification + SSRF guard
+        # are enforced inside deliver_strategy_to_subscriber (supabase_tools.py).
+        _owner_token_provided = args.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "deliver_strategy_to_subscriber requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .marketplace.supabase_tools import deliver_strategy_to_subscriber as _deliver
             return _text(_deliver(
@@ -8938,6 +9821,20 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(hb.to_dict())
         except Exception as exc:
             return _text({"error": f"Heartbeat read error: {exc}"})
+
+    elif name == "get_system_health":
+        try:
+            from .trading_system_health import get_system_health
+            return _text(get_system_health())
+        except Exception as exc:
+            return _text({"error": f"System health error: {exc}"})
+
+    elif name == "get_adaptive_brain_status":
+        try:
+            from .adaptive_brain_status import get_adaptive_brain_status
+            return _text(get_adaptive_brain_status())
+        except Exception as exc:
+            return _text({"error": f"Adaptive brain status error: {exc}"})
 
     elif name == "get_strategy_academic_citations":
         try:
@@ -9048,6 +9945,22 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_all_bot_ops_status":
         try:
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                # ASSP: redacted health only for non-owner
+                _assp_emit_deny(
+                    rule_id="AC-MCP-010",
+                    tool_name="get_all_bot_ops_status",
+                    deny_reason="owner_token_required",
+                    redacted=True,
+                )
+                return _text({
+                    "redacted": True,
+                    "assp_rule": "AC-MCP-010",
+                    "bots": {"mnq": "unknown", "cl": "unknown", "mes": "unknown", "nq": "unknown"},
+                    "hint": "owner_token required for positions/brackets/PIDs",
+                })
             from .live_bot_intelligence.bot_ops import get_all_bot_ops_status
             return _text(get_all_bot_ops_status())
         except Exception as exc:
@@ -9057,6 +9970,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         try:
             from .live_bot_intelligence.bot_ops import check_unprotected_positions
             return _text(check_unprotected_positions())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "bracket_integrity_check":
+        try:
+            from .live_bot_intelligence.bot_ops import bracket_integrity_check
+            return _text(bracket_integrity_check())
         except Exception as exc:
             return _text({"error": str(exc)})
 
@@ -9152,9 +10072,36 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": f"Onboarding status error: {exc}"})
 
+    elif name == "set_algochains_api_key":
+        try:
+            from .onboarding import set_algochains_api_key as _set_ac_key
+            return _text(_set_ac_key(api_key=arguments["api_key"]))
+        except Exception as exc:
+            return _text({"error": f"API key configuration error: {exc}"})
+
+    elif name == "set_guardrail_preferences":
+        try:
+            from .onboarding import set_guardrail_preferences as _set_guardrail_prefs
+            return _text(_set_guardrail_prefs(
+                notify_on_daily_loss_pct=float(arguments.get("notify_on_daily_loss_pct", 80)),
+                pause_on_consecutive_losses=int(arguments.get("pause_on_consecutive_losses", 3)),
+                slack_alerts_enabled=bool(arguments.get("slack_alerts_enabled", False)),
+            ))
+        except Exception as exc:
+            return _text({"error": f"Guardrail prefs error: {exc}"})
+
     elif name == "generate_ide_config":
+        # SEC-2026-C6: full config contains env secrets — owner_token required.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
         try:
             from .onboarding import generate_mcporter_config as _gen_config
+            from .onboarding import generate_mcporter_config_masked as _gen_masked
+            if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+                return _text(_gen_masked(
+                    ide=arguments.get("ide", "cursor"),
+                    tool_mode=arguments.get("tool_mode", "smart"),
+                ))
             return _text(_gen_config(
                 ide=arguments.get("ide", "cursor"),
                 tool_mode=arguments.get("tool_mode", "smart"),
@@ -9195,6 +10142,18 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Signal ingestion error: {exc}"})
 
     elif name == "connect_onyx_docs":
+        _ot = str(arguments.get("owner_token") or "")
+        _expected = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected or not _ot or _ot != _expected:
+            _assp_emit_deny(
+                rule_id="AC-MCP-009",
+                tool_name="connect_onyx_docs",
+                deny_reason="owner_token_required",
+            )
+            return _text({
+                "error": "owner_token required for connect_onyx_docs",
+                "assp_rule": "AC-MCP-009",
+            })
         try:
             from .data_ingestion import connect_onyx_docs as _connect_onyx
             return _text(_connect_onyx(
@@ -9246,6 +10205,7 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
                 priority=arguments.get("priority", "medium"),
                 user_id=arguments.get("user_id"),
                 metadata=arguments.get("metadata"),
+                idempotency_key=arguments.get("idempotency_key"),
             ))
         except KeyError as exc:
             return _text({"error": f"Missing required argument: {exc}"})
@@ -9253,6 +10213,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": f"Support ticket create error: {exc}"})
 
     elif name == "get_support_ticket":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "get_support_ticket requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .support_tickets import get_ticket as _get_ticket
             return _text(await _get_ticket(arguments["ticket_id"]))
@@ -9260,6 +10224,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "list_support_tickets":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "list_support_tickets requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .support_tickets import list_tickets as _list_tickets
             return _text(await _list_tickets(
@@ -9273,6 +10241,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "update_ticket_status":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "update_ticket_status requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .support_tickets import update_ticket_status as _update_ticket
             return _text(await _update_ticket(
@@ -9287,6 +10259,10 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "get_ticket_stats":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "get_ticket_stats requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .support_tickets import get_ticket_stats as _ticket_stats
             return _text(await _ticket_stats())
@@ -9320,9 +10296,16 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "get_broker_oauth_status":
+        # SEC-2026-C5: never return plaintext access_token; owner_token required.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "get_broker_oauth_status requires owner_token matching OWNER_API_TOKEN.",
+            })
         try:
-            from .brokers.oauth_manager import get_token as _get_token
-            return _text(await _get_token(
+            from .brokers.oauth_manager import get_oauth_status as _get_oauth_status
+            return _text(await _get_oauth_status(
                 broker=arguments["broker"],
                 user_id=arguments["user_id"],
                 auto_refresh=True,
@@ -9351,17 +10334,196 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": str(exc)})
 
+    elif name == "get_checkout_url":
+        try:
+            from .cloud_saas.billing_engine import BillingEngine as _BillingEngine
+            _be = _BillingEngine()
+            return _text(await _be.create_platform_checkout_session(
+                email=arguments["email"],
+                tier=arguments.get("tier", "paper"),
+                referral_code=arguments.get("referral_code"),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "generate_payment_link":
+        tier = arguments.get("tier", "paper")
+        env_var = "STRIPE_PAPER_LINK" if tier == "paper" else "STRIPE_LIVE_LINK"
+        link = os.environ.get(env_var, "")
+        if not link:
+            link = f"https://algochains.ai/pricing#{tier}"
+        price = "$29/mo" if tier == "paper" else "$99/mo"
+        return _text({
+            "payment_link": link,
+            "tier": tier,
+            "price": price,
+            "note": "After payment, set ALGOCHAINS_SUBSCRIBER_KEY=<emailed key> and run get_my_portfolio()",
+        })
+
+    elif name in ("get_started", "get_pricing", "get_system_status"):
+        # Public onboarding meta-tools — no auth, never raise.
+        try:
+            from . import onboarding_meta as _om
+            if name == "get_started":
+                return _text(_om.get_started(arguments.get("goal")))
+            elif name == "get_pricing":
+                return _text(_om.get_pricing())
+            else:
+                return _text(_om.get_system_status())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name in ("join_bot", "get_subscriber_status", "accept_subscriber_terms",
+                  "get_my_usage", "create_referral_code", "get_my_referrals",
+                  "get_referral_earnings", "get_my_realized_pnl"):
+        _sub_key = os.environ.get("ALGOCHAINS_SUBSCRIBER_KEY") or os.environ.get("ALGOCHAINS_SUB_KEY", "")
+        if not _sub_key:
+            return _text({
+                "error": "ALGOCHAINS_SUBSCRIBER_KEY not set. "
+                         "Get a subscriber key from algochains.ai or run get_checkout_url() to subscribe.",
+            })
+        from .subscriber_auth import resolve_subscriber_key as _resolve_sub
+        _sub = _resolve_sub(_sub_key)
+        if not _sub:
+            return _text({"error": "Invalid or expired subscriber key. Check ALGOCHAINS_SUBSCRIBER_KEY."})
+        if name == "get_my_usage":
+            try:
+                from .subscriber_tools import get_my_usage as _get_my_usage
+                return _text(_get_my_usage(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "get_my_realized_pnl":
+            try:
+                from .cloud_saas.realized_pnl import get_my_realized_pnl as _grp
+                return _text(_grp(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name in ("create_referral_code", "get_my_referrals", "get_referral_earnings"):
+            try:
+                from .cloud_saas import referrals as _referrals
+                if name == "create_referral_code":
+                    return _text(_referrals.create_referral_code(_sub.subscriber_id))
+                elif name == "get_my_referrals":
+                    return _text(_referrals.get_my_referrals(_sub.subscriber_id))
+                else:
+                    return _text(_referrals.get_referral_earnings(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "join_bot":
+            try:
+                from .subscriber_tools import join_bot as _join_bot
+                return _text(_join_bot(
+                    _sub.subscriber_id,
+                    arguments["bot"],
+                    size_multiplier=float(arguments.get("size_multiplier", 1.0)),
+                    max_contracts=int(arguments.get("max_contracts", 10)),
+                    daily_loss_cap_usd=float(arguments.get("daily_loss_cap_usd", 5000.0)),
+                ))
+            except KeyError as exc:
+                return _text({"error": f"Missing required argument: {exc}"})
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "get_subscriber_status":
+            try:
+                from .subscriber_tools import get_subscriber_status as _get_sub_status
+                return _text(_get_sub_status(_sub.subscriber_id))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+        elif name == "accept_subscriber_terms":
+            try:
+                from .subscriber_tools import accept_subscriber_terms as _accept_terms
+                return _text(_accept_terms(
+                    _sub.subscriber_id,
+                    acknowledgment=arguments.get("acknowledgment"),
+                ))
+            except Exception as exc:
+                return _text({"error": str(exc)})
+
+    elif name == "create_creator_onboarding_link":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "create_creator_onboarding_link requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            _creator_id = arguments.get("creator_id", "")
+            if not _creator_id:
+                return _text({"error": "creator_id required."})
+            return _text(await _cp.create_creator_onboarding_link(
+                creator_id=_creator_id,
+                creator_email=arguments["creator_email"],
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_my_creator_earnings":
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "get_my_creator_earnings requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            _creator_id = arguments.get("creator_id", "")
+            if not _creator_id:
+                return _text({"error": "creator_id required."})
+            return _text(_cp.get_my_creator_earnings(_creator_id))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "run_creator_payouts":
+        # OWNER-GATED — moves real money. Fails closed when OWNER_API_TOKEN unset.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "run_creator_payouts requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas import connect_payouts as _cp
+            return _text(await _cp.run_creator_payouts(
+                creator_id=arguments.get("creator_id"),
+                dry_run=bool(arguments.get("dry_run", True)),
+                min_payout_usd=float(arguments.get("min_payout_usd", 25.0)),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "reconcile_creator_pnl":
+        # OWNER-GATED — writes the creator earnings ledger. Fails closed.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "reconcile_creator_pnl requires owner_token matching OWNER_API_TOKEN."})
+        try:
+            from .cloud_saas.realized_pnl import reconcile_creator_pnl as _rec
+            return _text(await _rec(
+                arguments["period_start"],
+                arguments["period_end"],
+                dry_run=bool(arguments.get("dry_run", True)),
+            ))
+        except KeyError as exc:
+            return _text({"error": f"Missing required argument: {exc}"})
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
     elif name == "join_waitlist":
         try:
             from .waitlist import join_waitlist as _join_waitlist
-            return _text(await _join_waitlist(
+            result = await _join_waitlist(
                 email=arguments["email"],
                 first_name=arguments.get("first_name", ""),
                 last_name=arguments.get("last_name", ""),
                 broker=arguments.get("broker", ""),
                 use_case=arguments.get("use_case", ""),
                 referral_code=arguments.get("referral_code"),
-            ))
+            )
+            # Append checkout link so the user can pay immediately without waiting for an invite
+            from urllib.parse import quote as _url_quote
+            result["checkout_url"] = f"https://algochains.ai/pricing?email={_url_quote(arguments['email'], safe='')}"
+            result["note"] = "Skip the waitlist — subscribe directly at the checkout URL above."
+            return _text(result)
         except KeyError as exc:
             return _text({"error": f"Missing required argument: {exc}"})
         except Exception as exc:
@@ -9375,6 +10537,11 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text({"error": str(exc)})
 
     elif name == "send_waitlist_invite":
+        # SEC-2026-C3 FIX: invite minting must not be available to unauthenticated callers.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({"error": "send_waitlist_invite requires owner_token matching OWNER_API_TOKEN."})
         try:
             from .waitlist import send_invite as _send_invite
             return _text(await _send_invite(arguments["email"]))
@@ -9474,8 +10641,163 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         except Exception as exc:
             return _text({"error": str(exc)})
 
+    # ── Programmatic Account / MFA / Developer Key Tools ─────────────────
+    elif name == "signup_algochains":
+        try:
+            from .auth.platform_auth import signup_algochains as _signup
+            return _text(await _signup(
+                email=arguments["email"],
+                password=arguments["password"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "verify_email_otp":
+        try:
+            from .auth.platform_auth import verify_email_otp as _verify_email
+            return _text(await _verify_email(
+                email=arguments["email"],
+                token=arguments["token"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "login_algochains":
+        try:
+            from .auth.platform_auth import login_algochains as _login
+            return _text(await _login(
+                email=arguments["email"],
+                password=arguments["password"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "refresh_session":
+        try:
+            from .auth.platform_auth import refresh_session as _refresh_session
+            return _text(await _refresh_session())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "logout_algochains":
+        try:
+            from .auth.platform_auth import logout_algochains as _logout
+            return _text(await _logout())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "enroll_mfa":
+        try:
+            from .auth.platform_auth import enroll_mfa as _enroll_mfa
+            return _text(await _enroll_mfa(
+                factor_type=arguments.get("factor_type", "totp"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "challenge_mfa":
+        try:
+            from .auth.platform_auth import challenge_mfa as _challenge_mfa
+            return _text(await _challenge_mfa(factor_id=arguments["factor_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "verify_mfa":
+        try:
+            from .auth.platform_auth import verify_mfa as _verify_mfa
+            return _text(await _verify_mfa(
+                factor_id=arguments["factor_id"],
+                code=arguments["code"],
+                challenge_id=arguments.get("challenge_id"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "list_mfa_factors":
+        try:
+            from .auth.platform_auth import list_mfa_factors as _list_factors
+            return _text(await _list_factors())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "remove_mfa_factor":
+        try:
+            from .auth.platform_auth import remove_mfa_factor as _remove_factor
+            return _text(await _remove_factor(
+                factor_id=arguments["factor_id"],
+                owner_token=arguments.get("owner_token", ""),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "create_developer_key":
+        try:
+            from .auth.platform_auth import create_developer_key as _create_key
+            return _text(await _create_key(
+                access_token=arguments.get("access_token", ""),
+                name=arguments.get("name", "default"),
+                scopes=arguments.get("scopes"),
+                env=arguments.get("env", "live"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "list_developer_keys":
+        try:
+            from .auth.platform_auth import list_developer_keys as _list_keys
+            return _text(await _list_keys())
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "rotate_developer_key":
+        try:
+            from .auth.platform_auth import rotate_developer_key as _rotate_key
+            return _text(await _rotate_key(
+                access_token=arguments.get("access_token", ""),
+                key_id=arguments["key_id"],
+                name=arguments.get("name"),
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "revoke_developer_key":
+        try:
+            from .auth.platform_auth import revoke_developer_key as _revoke_key
+            return _text(await _revoke_key(
+                access_token=arguments.get("access_token", ""),
+                key_id=arguments["key_id"],
+            ))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "get_developer_key_usage":
+        try:
+            from .auth.platform_auth import get_developer_key_usage as _key_usage
+            return _text(await _key_usage(key_id=arguments["key_id"]))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
+    elif name == "test_bridge_connection":
+        try:
+            from .auth.platform_auth import test_bridge_connection as _test_bridge
+            return _text(await _test_bridge(api_key=arguments.get("api_key")))
+        except Exception as exc:
+            return _text({"error": str(exc)})
+
     elif name == "get_user_bot_metrics":
         try:
+            _ot = str(arguments.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-metrics-owner",
+                    tool_name="get_user_bot_metrics",
+                    deny_reason="owner_token_required",
+                )
+                return _text({
+                    "error": "owner_token required for cross-subscriber metrics",
+                    "assp_rule": "AC-MCP-metrics-owner",
+                })
             from .live_bot_intelligence.multi_account_metrics import get_user_bot_metrics as _get_ubm
             result = await _get_ubm(
                 user_id=arguments["user_id"],
@@ -9489,12 +10811,33 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
 
     elif name == "get_all_user_bots":
         try:
+            _ot = str(arguments.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-metrics-owner",
+                    tool_name="get_all_user_bots",
+                    deny_reason="owner_token_required",
+                )
+                return _text({
+                    "error": "owner_token required for get_all_user_bots",
+                    "assp_rule": "AC-MCP-metrics-owner",
+                })
             from .live_bot_intelligence.multi_account_metrics import get_all_user_bots as _get_all_bots
             return _text(await _get_all_bots(arguments["user_id"]))
         except Exception as exc:
             return _text({"error": str(exc)})
 
     elif name == "upsert_bot_performance":
+        # SEC-2026-C4 FIX: metrics_streaming_daemon.py is the canonical writer.
+        # This MCP path is deprecated for autonomous callers; require owner_token.
+        _owner_token_provided = arguments.get("owner_token", "")
+        _expected_owner_token = os.environ.get("OWNER_API_TOKEN", "")
+        if not _expected_owner_token or _owner_token_provided != _expected_owner_token:
+            return _text({
+                "error": "upsert_bot_performance requires owner_token matching OWNER_API_TOKEN. "
+                         "Autonomous metric writes go through metrics_streaming_daemon.py, not MCP.",
+            })
         try:
             from .live_bot_intelligence.multi_account_metrics import upsert_managed_bot_performance as _upsert_perf
             return _text(await _upsert_perf(
@@ -9530,6 +10873,13 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             return _text(status)
         except Exception as exc:
             return _text({"error": f"Guardrail status error: {exc}"})
+
+    elif name == "get_daily_loss_proximity":
+        try:
+            from .daily_loss_proximity import get_daily_loss_proximity
+            return _text(get_daily_loss_proximity())
+        except Exception as exc:
+            return _text({"error": f"Daily loss proximity error: {exc}"})
 
     elif name == "get_agent_loop_status":
         if not _GUARDRAILS_AVAILABLE:
@@ -9812,7 +11162,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
         end = _date.today()
         start = end - _td(days=days + 10)
         import httpx as _hx
-        async with _hx.AsyncClient(base_url=POLYGON_BASE, params={"apiKey": polygon_key}, timeout=30.0) as client:
+        _POLYGON_BASE = "https://api.polygon.io"
+        async with _hx.AsyncClient(base_url=_POLYGON_BASE, params={"apiKey": polygon_key}, timeout=30.0) as client:
             all_rets = {}
             for sym in symbols[:20]:
                 resp = await client.get(f"/v2/aggs/ticker/{sym}/range/1/day/{start.isoformat()}/{end.isoformat()}",
@@ -10237,23 +11588,56 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             # Default to filled-only (matches the launchd plist) unless explicitly disabled.
             if args.get("filled_only", True):
                 _cmd.append("--filled-only")
-            _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
-            if _proc.returncode != 0:
-                return _text({
-                    "error": "correlation audit failed",
-                    "returncode": _proc.returncode,
-                    "stderr": (_proc.stderr or "")[:500],
-                })
-            try:
-                return _text(_json.loads(_proc.stdout))
-            except Exception:
-                return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+            _max_attempts = max(
+                1,
+                min(int(os.getenv("ALGOCHAINS_TRACEABILITY_AUDIT_ATTEMPTS", "3")), 5),
+            )
+            for _attempt in range(1, _max_attempts + 1):
+                _proc = _subp.run(_cmd, capture_output=True, text=True, timeout=60, cwd=str(_ct))
+                if _proc.returncode == 0:
+                    try:
+                        return _text(_json.loads(_proc.stdout))
+                    except Exception:
+                        return _text({"error": "could not parse audit JSON", "stdout": (_proc.stdout or "")[:500]})
+
+                _transient = _is_traceability_transient_failure(_proc.stderr, _proc.stdout)
+                if not _transient or _attempt == _max_attempts:
+                    payload = {
+                        "error": "correlation audit failed",
+                        "returncode": _proc.returncode,
+                        "stderr": (_proc.stderr or "")[:500],
+                    }
+                    if _transient:
+                        payload.update({
+                            "error": "correlation audit transient failure",
+                            "transient": True,
+                            "attempts": _attempt,
+                            "retry_attempts": _attempt - 1,
+                        })
+                    return _text(payload)
+
+                time.sleep(min(0.25 * _attempt, 1.0))
         except Exception as exc:
             return _text({"error": str(exc), "error_type": type(exc).__name__})
 
     elif name in ("get_rithmic_live_accounts", "get_rithmic_live_pnl",
                   "get_rithmic_live_positions", "get_rithmic_live_fills"):
         try:
+            # ASSP: owner-gate prop-account telemetry (removed from Tier-1)
+            _ot = str(args.get("owner_token") or "")
+            _expected = os.environ.get("OWNER_API_TOKEN", "")
+            if not _expected or not _ot or _ot != _expected:
+                _assp_emit_deny(
+                    rule_id="AC-MCP-rithmic-owner",
+                    tool_name=name,
+                    deny_reason="owner_token_required",
+                    redacted=True,
+                )
+                return _text({
+                    "error": "owner_token required for Rithmic live account tools",
+                    "assp_rule": "AC-MCP-rithmic-owner",
+                    "redacted": True,
+                })
             import sys as _sys
             from pathlib import Path as _Path
             _ct = str(_Path(__file__).resolve().parent.parent.parent.parent.parent / "algochains-control-tower")
@@ -11410,7 +12794,7 @@ def _print_ide_config(target: str) -> None:
             f.write("\n")
 
         print(f"\n  ✓  Config written to: {path}")
-        print(f"     Restart {t.title().replace('-', ' ')} to connect AlgoChains (482 tools, smart mode).")
+        print(f"     Restart {t.title().replace('-', ' ')} to connect AlgoChains (181 tools, smart mode).")
 
     print(f"\n  Config block added:")
     print(config_json)

@@ -125,12 +125,9 @@ _TOOL_TIERS: dict[str, int] = {
     "compute_correlation_risk": TIER_READ_ONLY,
     "check_vix_gate": TIER_READ_ONLY,
     "get_daily_loss_proximity": TIER_READ_ONLY,
+    "bracket_integrity_check": TIER_READ_ONLY,
     "event_risk_check": TIER_READ_ONLY,
     # Strategy research (read only)
-    # NOTE: validate_strategy appears again at TIER_WRITE_LOCAL below — that
-    # entry overrides this one. The final effective tier is TIER_WRITE_LOCAL
-    # (correct: validation writes sandbox state). Left here for documentation.
-    "validate_strategy": TIER_READ_ONLY,
     "run_backtest": TIER_READ_ONLY,
     "walk_forward_test": TIER_READ_ONLY,
     "optimize_strategy": TIER_READ_ONLY,
@@ -152,6 +149,16 @@ _TOOL_TIERS: dict[str, int] = {
     "get_polymarket_market_history": TIER_READ_ONLY,
     "list_polymarket_markets": TIER_READ_ONLY,
     "get_kalshi_settlements": TIER_READ_ONLY,
+    "get_physical_event_sources": TIER_READ_ONLY,
+    "map_physical_event_assets": TIER_READ_ONLY,
+    "score_physical_event_alpha": TIER_READ_ONLY,
+    "get_sonia_air_heartbeat": TIER_READ_ONLY,
+    # Cricket bot (Avi's external partner API — read-only observability)
+    "get_cricket_bot_performance": TIER_READ_ONLY,
+    "get_cricket_bot_trades": TIER_READ_ONLY,
+    "get_cricket_bot_matches": TIER_READ_ONLY,
+    "get_cricket_bot_signals": TIER_READ_ONLY,
+    "get_cricket_bot_tournaments": TIER_READ_ONLY,
     "place_kalshi_order": TIER_ORDER_EXEC,
     # BUG-07 FIX: run_safe_compounder and run_kalshi_full_pipeline call
     # kalshi_signed_post (live Kalshi orders) when execute=true + confirmed=true.
@@ -161,6 +168,41 @@ _TOOL_TIERS: dict[str, int] = {
     "run_safe_compounder": TIER_ORDER_EXEC,
     "run_kalshi_full_pipeline": TIER_ORDER_EXEC,
     "run_kalshi_strategy_order": TIER_ORDER_EXEC,
+    # SEC-2026-C1 FIX: export_config reads actual os.environ values and returns
+    # plaintext API keys in JSON/env format. Default WRITE_LOCAL tier allowed
+    # any smart-mode MCP caller to exfiltrate all configured broker/data API keys.
+    # Escalated to ORDER_EXEC so owner_token is required before any export.
+    "export_config": TIER_ORDER_EXEC,
+    # SEC-2026-C2 FIX: deliver_strategy_to_subscriber uses service_role Supabase
+    # client, accepts caller-supplied webhook URL (SSRF vector), and returns the
+    # signed strategy config token in the tool response. Default WRITE_LOCAL tier.
+    # Escalated to ORDER_EXEC; handler also adds subscription verification + SSRF block.
+    "deliver_strategy_to_subscriber": TIER_ORDER_EXEC,
+    # SEC-2026-C3 FIX: send_waitlist_invite minted invite codes and returned them
+    # plaintext in MCP output, bypassing the email-only invite workflow. Removing
+    # from TIER1_TOOL_NAMES (see server.py); tier escalation is defence-in-depth.
+    "send_waitlist_invite": TIER_ORDER_EXEC,
+    # SEC-2026-C4 FIX: upsert_bot_performance used service_role key with no
+    # subscription ownership check, allowing metric forgery on marketplace dashboards.
+    # metrics_streaming_daemon.py is the canonical writer. MCP path deprecated.
+    "upsert_bot_performance": TIER_ORDER_EXEC,
+    # SEC-2026-C5: get_broker_oauth_status returned plaintext access_token via get_ prefix.
+    "get_broker_oauth_status": TIER_ORDER_EXEC,
+    # SEC-2026-07-06: broker OAuth state stores caller-supplied user_id and
+    # exchange persists broker tokens under broker:user_id. Owner-gate the whole
+    # connection-management surface until callers are bound to authenticated users.
+    "generate_broker_auth_url": TIER_ORDER_EXEC,
+    "exchange_broker_oauth_code": TIER_ORDER_EXEC,
+    "get_connected_brokers": TIER_ORDER_EXEC,
+    "revoke_broker_connection": TIER_ORDER_EXEC,
+    # SEC-2026-C6: generate_ide_config — WRITE_LOCAL + handler masks secrets (Tier-1 safe template).
+    # SEC-2026-C7: test_signal_propagation posts live signed signals to copy-trade ingest.
+    "test_signal_propagation": TIER_ORDER_EXEC,
+    # SEC-2026-C8: support ticket admin tools used service_role without auth.
+    "get_support_ticket": TIER_ORDER_EXEC,
+    "list_support_tickets": TIER_ORDER_EXEC,
+    "update_ticket_status": TIER_ORDER_EXEC,
+    "get_ticket_stats": TIER_ORDER_EXEC,
     # V22.9 — PAI Integration
     "get_algochains_telos": TIER_READ_ONLY,
     "update_algochains_telos": TIER_WRITE_LOCAL,
@@ -232,6 +274,26 @@ _TOOL_TIERS: dict[str, int] = {
     "massive_screener": TIER_READ_ONLY,
     # Ingestion (read/list)
     "list_ingested_data": TIER_READ_ONLY,
+    # Prop-fund account state and autopilot analysis are owner-only. The run and
+    # input builder read real broker fills/P&L; status exposes account metadata;
+    # onboard/deploy mutate live-account configuration. Keep the public fund
+    # catalog/scoring tools below, but gate every account-bound path.
+    "get_prop_mode_status": TIER_ORDER_EXEC,
+    "run_prop_fund_autopilot": TIER_ORDER_EXEC,
+    "build_prop_fund_inputs": TIER_ORDER_EXEC,
+    "onboard_prop_account": TIER_ORDER_EXEC,
+    "deploy_bot_in_prop_mode": TIER_ORDER_EXEC,
+    "request_prop_payout": TIER_ORDER_EXEC,
+    # Fund browser / evaluation panel reads (Phase 1, Django /account/brokers/prop/).
+    # Pure catalog data + scoring against a strategy's already-fetched live stats —
+    # no broker calls, no writes.
+    "list_prop_funds": TIER_READ_ONLY,
+    "evaluate_strategy_for_prop_fund": TIER_READ_ONLY,
+    "simulate_prop_fund_evaluation": TIER_READ_ONLY,
+    "get_prop_fund_rules": TIER_READ_ONLY,
+    "get_prop_fund_monitor_status": TIER_READ_ONLY,
+    "get_prop_fund_broker_options": TIER_READ_ONLY,
+    "check_prop_fund_rules_freshness": TIER_READ_ONLY,
 
     # ── Tier 1: WRITE_LOCAL ───────────────────────────────────────────────────
     # These write to internal server state only
@@ -275,6 +337,18 @@ _TOOL_TIERS: dict[str, int] = {
     "get_white_label_config": TIER_READ_ONLY,
     "create_tenant": TIER_WRITE_LOCAL,
     "get_tenant": TIER_READ_ONLY,
+    # 2026-06-19 security finding (Cursor automated scan, #incident-response):
+    # neither tool had an explicit entry, so both fell through to the
+    # conservative-by-name-only prefix rules — create_saas_tenant matched no
+    # prefix at all (no "create_" rule exists) and landed on the unauthenticated
+    # TIER_WRITE_LOCAL default; update_saas_tenant matched the generic
+    # ("update_", TIER_WRITE_LOCAL) rule. Either way, any caller through
+    # execute_dynamic_tool could create or take over a tenant (status/plan/
+    # config) with the Supabase service role and no owner_token. ORDER_EXEC
+    # forces requires_owner_secret=True over dynamic/HTTP-bridge transports
+    # (tool_policy.py:79-90) — matches the finding's own remediation ask.
+    "create_saas_tenant": TIER_ORDER_EXEC,
+    "update_saas_tenant": TIER_ORDER_EXEC,
     "create_sandbox": TIER_WRITE_LOCAL,
     "destroy_sandbox": TIER_WRITE_LOCAL,
     "get_tenant_audit_log": TIER_READ_ONLY,
@@ -321,6 +395,9 @@ _TOOL_TIERS: dict[str, int] = {
     "create_payment_session": TIER_ORDER_EXEC,
     "execute_intent": TIER_ORDER_EXEC,
     "approve_intent": TIER_ORDER_EXEC,
+    # Prop-fund monitor mutations/checks can lead to emergency broker flattening.
+    "register_prop_fund_account": TIER_ORDER_EXEC,
+    "run_prop_fund_check": TIER_ORDER_EXEC,
 
     # ── Tier 3: DESTRUCTIVE ───────────────────────────────────────────────────
     # Irreversible bulk actions
@@ -346,6 +423,33 @@ _TOOL_TIERS: dict[str, int] = {
     # Requires NUMERAI_ALLOW_LIVE=1 AND model_id. Gated in submit.py gate logic.
     "numerai_upload_predictions": TIER_ORDER_EXEC,
 
+    # ── Programmatic account / MFA / developer key tools ─────────────────────
+    # Account tools: write session state locally, no broker/order execution
+    "signup_algochains": TIER_WRITE_LOCAL,
+    "verify_email_otp": TIER_WRITE_LOCAL,
+    "login_algochains": TIER_WRITE_LOCAL,
+    "refresh_session": TIER_READ_ONLY,
+    "logout_algochains": TIER_WRITE_LOCAL,
+    # MFA tools
+    "enroll_mfa": TIER_WRITE_LOCAL,
+    "challenge_mfa": TIER_WRITE_LOCAL,
+    "verify_mfa": TIER_WRITE_LOCAL,
+    "list_mfa_factors": TIER_READ_ONLY,
+    "remove_mfa_factor": TIER_ORDER_EXEC,  # Destructive — removes security factor
+    # Developer key lifecycle
+    "create_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
+    "list_developer_keys": TIER_READ_ONLY,
+    "rotate_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
+    "revoke_developer_key": TIER_WRITE_LOCAL,   # AAL2 gate in handler
+    "get_developer_key_usage": TIER_READ_ONLY,
+    "test_bridge_connection": TIER_READ_ONLY,
+    # Creator payout account/ledger tools touch payout routing or private creator
+    # financials. Keep them owner-gated until a creator-authenticated context exists.
+    "create_creator_onboarding_link": TIER_ORDER_EXEC,
+    "get_my_creator_earnings": TIER_ORDER_EXEC,
+    "run_creator_payouts": TIER_ORDER_EXEC,
+    "reconcile_creator_pnl": TIER_ORDER_EXEC,
+
     # ── Subscriber tools (HTTP bridge SUBSCRIBER_TOOLS surface) ──────────────
     # Read-only subscriber views
     "get_signal_stream": TIER_READ_ONLY,
@@ -353,7 +457,6 @@ _TOOL_TIERS: dict[str, int] = {
     "get_my_fills": TIER_READ_ONLY,
     "get_my_assignments": TIER_READ_ONLY,
     "get_my_portfolio": TIER_READ_ONLY,
-    "get_marketplace_listings": TIER_READ_ONLY,
     "get_my_paper_positions": TIER_READ_ONLY,
     "place_paper_order": TIER_WRITE_LOCAL,
     "cancel_paper_order": TIER_WRITE_LOCAL,
@@ -488,5 +591,5 @@ TOOL_TIERS = _TOOL_TIERS
 # AST-parses this source (the only place the dup survives) and asserts:
 #   1. every duplicate key is whitelisted below, and
 #   2. no duplicate lowers a tool's effective tier (no silent downgrade).
-# Keep this set in sync with that test. validate_strategy: READ_ONLY -> WRITE_LOCAL.
-_EXPECTED_INTENTIONAL_DUPES: set[str] = {"validate_strategy"}
+# Keep this set in sync with that test.
+_EXPECTED_INTENTIONAL_DUPES: set[str] = set()

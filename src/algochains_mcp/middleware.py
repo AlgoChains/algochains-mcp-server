@@ -66,6 +66,9 @@ class RateLimiter:
         "v14_agent_swarm": 20,
         "v15_defi": 30,
         "v16_cloud": 30,
+        "v17_physical_events": 60,
+        # Avi's cricket-bot partner box is small — keep our footprint polite.
+        "cricket_bot": 30,
     }
 
     def __init__(self, overrides: dict[str, int] | None = None):
@@ -177,6 +180,17 @@ TOOL_RATE_LIMIT_CATEGORY: dict[str, str] = {
     # V16: Cloud SaaS
     "create_tenant": "v16_cloud", "get_tenant_dashboard": "v16_cloud",
     "get_sub_account_status": "v16_cloud", "set_sub_account_permissions": "v16_cloud",
+    # V17: Physical-world event intelligence
+    "get_physical_event_sources": "v17_physical_events",
+    "map_physical_event_assets": "v17_physical_events",
+    "score_physical_event_alpha": "v17_physical_events",
+    "get_sonia_air_heartbeat": "v17_physical_events",
+    # Cricket bot (Avi's external partner API)
+    "get_cricket_bot_performance": "cricket_bot",
+    "get_cricket_bot_trades": "cricket_bot",
+    "get_cricket_bot_matches": "cricket_bot",
+    "get_cricket_bot_signals": "cricket_bot",
+    "get_cricket_bot_tournaments": "cricket_bot",
 }
 
 
@@ -310,8 +324,12 @@ def validate_arguments(tool_name: str, arguments: dict) -> dict:
     - Truncates oversized strings to MAX_STRING_LENGTH
     - Truncates oversized lists to MAX_LIST_LENGTH
     - Strips leading/trailing whitespace from string values
+    - Strips unsigned internal auth-context keys (stdio/dynamic spoof guard)
     - Raises InputValidationError for missing required fields
     """
+    from .security.internal_auth_context import strip_untrusted_internal_auth
+
+    arguments = strip_untrusted_internal_auth(dict(arguments or {}))
     cleaned: dict[str, Any] = {}
     for key, value in arguments.items():
         if isinstance(value, str):

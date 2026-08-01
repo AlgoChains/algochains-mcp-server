@@ -4,13 +4,13 @@ supabase_tools.py — Supabase-backed marketplace and metrics tools for AlgoChai
 Implements three tools:
   get_marketplace_listings  — marketplace_listing rows with RLS (approved only)
   get_live_bot_metrics      — bot_metrics_live rows (all bots or one)
-  get_subscriber_bots       — marketplace_botsubscription rows for a given subscriber
+  get_subscriber_bots       — subscriber_bot_assignments rows for a given subscriber
 
 The Supabase client uses SUPABASE_URL + SUPABASE_ANON_KEY from env.
 RLS on the tables controls what the anon key can see:
   - marketplace_listing: only status IN ('approved', 'validated', 'live') AND lifecycle_status = 'PUBLISHED'
   - bot_metrics_live:    public SELECT (owner-readable, anon read)
-  - marketplace_botsubscription: requires service_role or auth.uid() match
+  - subscriber_bot_assignments: requires service_role or auth.uid() match
 
 All three functions fall back gracefully (empty list + error key) if Supabase is
 unreachable or credentials are missing — the MCP server stays operational.
@@ -52,7 +52,9 @@ def _get_sb_client(use_service_role: bool = False):
 
         url = os.getenv("SUPABASE_URL", "")
         if use_service_role:
-            key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+            # Accept both naming conventions: CT uses SUPABASE_SERVICE_ROLE_KEY,
+            # mcp-server .env uses SUPABASE_SERVICE_KEY (per config.py).
+            key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_SERVICE_KEY", "")
         else:
             key = os.getenv("SUPABASE_ANON_KEY", "") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")
 
@@ -189,34 +191,50 @@ def get_live_bot_metrics(bot_id: str | None = None) -> dict[str, Any]:
         return {"error": str(exc), "bots": [], "source": "supabase_error"}
 
 
-def get_subscriber_bots(user_id: str) -> dict[str, Any]:
+def get_subscriber_bots(
+    subscriber_id: str,
+    *,
+    owner_authorized: bool = False,
+) -> dict[str, Any]:
     """
-    Fetch active bot subscriptions for a given subscriber.
+    Fetch active bot assignments for a subscriber.
 
-    Uses service_role key to bypass RLS — this function must only be called
-    server-side with a verified user_id (never expose to untrusted clients).
+    Uses service_role key to bypass RLS. Cross-subscriber lookup requires
+    ``owner_authorized=True`` (caller verified OWNER_API_TOKEN). Subscribers
+    should use ``get_my_assignments`` on the subscriber tool surface instead.
 
     Args:
-        user_id: Subscriber ID or email to look up
+        subscriber_id: Subscriber UUID to look up
+        owner_authorized: True when caller passed owner_token gate
 
     Returns:
         Dict with keys: subscriptions (list), total, active, source
     """
+    if not owner_authorized:
+        return {
+            "error": (
+                "get_subscriber_bots requires owner_token matching OWNER_API_TOKEN. "
+                "Subscribers: use get_my_assignments on your subscriber API key."
+            ),
+            "subscriptions": [],
+        }
+
+    if not (subscriber_id or "").strip():
+        return {"error": "subscriber_id is required", "subscriptions": []}
+
     sb = _get_sb_client(use_service_role=True)
     if sb is None:
         return {"error": "Supabase service_role not configured", "subscriptions": []}
 
     try:
-        # Query by subscriber_email (Django auth model) or subscriber_id (UUID)
-        q = sb.table("marketplace_botsubscription").select(
-            "id,listing_id_id,status,created_at,subscriber_email,requester_slack_id,"
-            "marketplace_listing(strategy_title,symbol,sharpe,win_rate,asset_class)"
+        q = (
+            sb.table("subscriber_bot_assignments")
+            .select(
+                "bot,mode,paused,size_multiplier,max_contracts,daily_loss_cap_usd,created_at,updated_at"
+            )
+            .eq("subscriber_id", subscriber_id.strip())
+            .order("bot")
         )
-
-        if "@" in user_id:
-            q = q.eq("subscriber_email", user_id)
-        else:
-            q = q.eq("subscriber_id", user_id)
 
         result = q.execute()
         subs = result.data or []
@@ -224,12 +242,16 @@ def get_subscriber_bots(user_id: str) -> dict[str, Any]:
         return {
             "subscriptions": subs,
             "total": len(subs),
-            "active": sum(1 for s in subs if s.get("status") == "active"),
+            "active": sum(1 for s in subs if not s.get("paused")),
             "source": "supabase",
+            "subscriber_id": subscriber_id.strip(),
         }
     except Exception as exc:
         log.error("get_subscriber_bots failed: %s", exc)
         return {"error": str(exc), "subscriptions": [], "source": "supabase_error"}
+
+
+from ..security.ssrf_guard import is_ssrf_target as _is_ssrf_target, validate_webhook_url
 
 
 def deliver_strategy_to_subscriber(
@@ -242,24 +264,37 @@ def deliver_strategy_to_subscriber(
     Deliver an approved marketplace strategy config to a subscriber's bot endpoint.
 
     Flow:
-      1. Read approved listing from Supabase marketplace_listing (service_role).
-      2. Build a time-limited, HMAC-signed config token containing strategy params.
-      3. POST the signed payload to the subscriber's webhook URL.
-      4. Log the delivery event to Supabase marketplace_deliveries table.
+      1. Verify caller has an active subscription for (subscriber_id, strategy_id).
+      2. Read approved listing from Supabase marketplace_listing (service_role).
+      3. Build a time-limited, HMAC-signed config token containing strategy params.
+      4. POST the signed payload to the subscriber's webhook URL (from subscription record
+         — caller-supplied webhook_url override is SSRF-checked against private ranges).
+      5. Log the delivery event to Supabase marketplace_deliveries table.
+
+    Security:
+      - Active subscription ownership is verified before any config data is accessed.
+      - Caller-supplied webhook_url is blocked if it targets private/link-local ranges.
+      - signed_token is NOT returned in the tool response — delivery receipt only.
 
     Args:
         subscriber_id: Subscriber's Supabase user ID (auth.uid())
         strategy_id:   Supabase marketplace_listing.id to deliver
-        webhook_url:   Override subscriber's webhook URL from subscription record
+        webhook_url:   Optional override; if omitted, subscription record URL is used.
+                       Private/link-local targets are blocked (SSRF guard).
         token_ttl_seconds: Config token lifetime in seconds (default 24h)
 
-    Returns delivery receipt with signed token and webhook response status.
+    Returns delivery receipt (no signed token in response).
     """
     import hashlib
     import hmac as _hmac
     import json as _json
     import time as _time
     import uuid as _uuid
+
+    # ── Step 0: SSRF guard on caller-supplied webhook URL ─────────────────────
+    ssrf_err = validate_webhook_url(webhook_url or "")
+    if ssrf_err:
+        return {"error": ssrf_err}
 
     sb = _get_sb_client(use_service_role=True)
     if sb is None:
@@ -269,7 +304,48 @@ def deliver_strategy_to_subscriber(
     if not _signal_secret:
         return {"error": "ALGOCHAINS_SIGNAL_SECRET not set — cannot sign delivery token"}
 
-    # ── Step 1: Load approved listing ──────────────────────────────────────────
+    # ── Step 1: Verify active subscription ownership ───────────────────────────
+    try:
+        sub_check = (
+            sb.table("marketplace_botsubscription")
+            .select("id,status,webhook_url")
+            .eq("subscriber_id", subscriber_id)
+            .eq("listing_id_id", strategy_id)
+            .limit(1)
+            .execute()
+        )
+        sub_rows = sub_check.data or []
+        if not sub_rows:
+            # Also try algochains_subscriptions table
+            sub_check2 = (
+                sb.table("algochains_subscriptions")
+                .select("id,status,webhook_url")
+                .eq("subscriber_id", subscriber_id)
+                .eq("strategy_id", strategy_id)
+                .limit(1)
+                .execute()
+            )
+            sub_rows = sub_check2.data or []
+        if not sub_rows:
+            return {
+                "error": f"No active subscription found for subscriber={subscriber_id!r} "
+                         f"strategy={strategy_id!r}. Cannot deliver strategy config.",
+            }
+        sub_row = sub_rows[0]
+        if sub_row.get("status") not in ("active", "trialing", "past_due"):
+            return {
+                "error": f"Subscription status={sub_row.get('status')!r} is not active. "
+                         "Cannot deliver strategy config.",
+            }
+        # Prefer subscription-record webhook URL over caller override
+        trusted_webhook_url = sub_row.get("webhook_url") or webhook_url
+        # SSRF guard on subscription-record URL too (defence-in-depth)
+        if trusted_webhook_url and _is_ssrf_target(trusted_webhook_url):
+            trusted_webhook_url = None
+    except Exception as exc:
+        return {"error": f"Subscription verification failed: {exc}"}
+
+    # ── Step 2: Load approved listing ──────────────────────────────────────────
     try:
         listing_resp = (
             sb.table("marketplace_listing")
@@ -288,7 +364,7 @@ def deliver_strategy_to_subscriber(
     except Exception as exc:
         return {"error": f"Failed to fetch listing: {exc}"}
 
-    # ── Step 2: Build time-limited config token ────────────────────────────────
+    # ── Step 3: Build time-limited config token ────────────────────────────────
     delivery_id = _uuid.uuid4().hex[:16]
     issued_at = int(_time.time())
     expires_at = issued_at + token_ttl_seconds
@@ -318,24 +394,8 @@ def deliver_strategy_to_subscriber(
         "token_version": "1",
     }
 
-    # ── Step 3: Resolve webhook URL ────────────────────────────────────────────
-    target_url = webhook_url
-    if not target_url:
-        try:
-            sub_resp = (
-                sb.table("algochains_subscriptions")
-                .select("webhook_url")
-                .eq("subscriber_id", subscriber_id)
-                .eq("strategy_id", strategy_id)
-                .limit(1)
-                .execute()
-            )
-            sub_rows = sub_resp.data or []
-            if sub_rows:
-                target_url = sub_rows[0].get("webhook_url")
-        except Exception:
-            pass
-
+    # ── Step 4: POST to webhook (subscription-record URL preferred) ───────────
+    target_url = trusted_webhook_url
     webhook_status: str
     webhook_code: int | None = None
 
@@ -359,7 +419,7 @@ def deliver_strategy_to_subscriber(
     else:
         webhook_status = "no_webhook_url"
 
-    # ── Step 4: Log delivery to Supabase ──────────────────────────────────────
+    # ── Step 5: Log delivery to Supabase ──────────────────────────────────────
     try:
         sb.table("marketplace_deliveries").upsert({
             "delivery_id": delivery_id,
@@ -374,6 +434,8 @@ def deliver_strategy_to_subscriber(
     except Exception as _log_exc:
         log.warning("deliver_strategy: could not log delivery to Supabase: %s", _log_exc)
 
+    # SEC-2026-C2 FIX: signed_token is NOT returned to the caller.
+    # The signed config is posted to the subscriber's verified webhook only.
     return {
         "status": webhook_status,
         "delivery_id": delivery_id,
@@ -383,5 +445,4 @@ def deliver_strategy_to_subscriber(
         "webhook_url": target_url,
         "webhook_http_code": webhook_code,
         "token_expires_at": expires_at,
-        "signed_token": signed_token,
     }

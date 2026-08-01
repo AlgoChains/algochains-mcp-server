@@ -32,29 +32,47 @@ Keys use the prefix `ac_live_` (production) or `ac_test_` (sandbox).
 
 ---
 
-## 3. Configure your MCP client (bridge-first — recommended)
+## 3. Configure your MCP client
 
-Developer keys connect to the **hosted bridge**. You do not need broker credentials.
+Developer keys connect to the **hosted bridge** at `https://mcp.algochains.ai/api/mcp`.
+That endpoint uses a custom JSON shape (`{"tool","arguments"}`) for the AlgoChains SDK
+and CLI — **not** standard MCP Streamable HTTP.
 
-### Cursor / Claude / Windsurf IDE config
+### Cursor / Claude Desktop / Windsurf (stdio — required)
 
-Add to your MCP server config (`~/.cursor/mcp.json` or equivalent):
+Desktop IDEs spawn the local `algochains-mcp` process over **stdio**. Do **not** point
+Cursor at `mcp.algochains.ai/api/mcp` — Cursor's MCP client expects Streamable HTTP at
+`/mcp`, and the bridge API will return 404 or fail protocol negotiation.
+
+Install and generate config:
+
+```bash
+pip install algochains-mcp-server
+algochains-mcp --generate-config cursor   # writes ~/.cursor/mcp.json
+```
+
+The generated block uses **command only** (no `url`, no `transport`):
 
 ```json
 {
   "mcpServers": {
-    "algochains-dev": {
-      "transport": "http",
-      "url": "https://mcp.algochains.ai/api/mcp",
-      "headers": {
-        "X-Developer-Key": "ac_live_YOUR_KEY_HERE"
+    "algochains": {
+      "command": "algochains-mcp",
+      "env": {
+        "ALGOCHAINS_TOOL_MODE": "smart",
+        "ALGOCHAINS_BRIDGE_KEY": "ac_live_YOUR_KEY_HERE"
       }
     }
   }
 }
 ```
 
-### Python client (via MCP SDK)
+Put your developer key in `ALGOCHAINS_BRIDGE_KEY` (or `ALGOCHAINS_DEVELOPER_KEY`) in the
+`env` block. Restart the IDE after editing.
+
+### Python / SDK client (HTTP bridge)
+
+For programmatic access outside desktop IDEs, call the hosted bridge directly:
 
 ```python
 import os
@@ -89,7 +107,7 @@ No broker order execution access.
 
 ```
 GET https://mcp.algochains.ai/tools
-X-Developer-Key: ac_live_...
+X-Api-Key: ac_live_...
 ```
 
 Example response:
@@ -101,10 +119,12 @@ Example response:
     "detect_market_regime",
     "discover_tools",
     "get_backtest_results",
+    "get_bot_card_data",
     "get_earnings_catalyst",
     "get_factor_model",
     "get_historical_bars",
     "get_latency_profile",
+    "get_tool_details",
     "get_macro_signals",
     "get_marketplace_listings",
     "get_monte_carlo_result",
@@ -114,6 +134,7 @@ Example response:
     "get_validation_gates",
     "get_vix_term_structure",
     "get_volatility_surface",
+    "list_bot_research_attachments",
     "mcp_tool_manifest",
     "onyx_ask",
     "onyx_search",
@@ -126,6 +147,12 @@ Example response:
   "scopes": ["read:market_data", "read:signals"]
 }
 ```
+
+Source of truth:
+
+- `src/algochains_mcp/http_bridge.py` resolves developer keys before owner keys.
+- `src/algochains_mcp/developer_tools.py` owns the allowlist, blocked tools,
+  and per-tool scope requirements.
 
 ---
 
@@ -163,7 +190,7 @@ For development or air-gapped environments, you can run the MCP server locally.
 
 ```bash
 export AC_DEV_KEY="ac_live_..."
-export ALGOCHAINS_TOOL_MODE=smart     # smart (default) = ~54 safe Tier-1 tools
+export ALGOCHAINS_TOOL_MODE=smart     # smart (default) = documented safe Tier-1 set
 algochains-mcp                        # starts local stdio MCP server
 ```
 
@@ -201,6 +228,17 @@ Additional scopes (`write:backtest`, `publish:listing`, `read:data_warehouse`) m
 be requested via support. Scope requirements per tool are returned in the `/tools`
 endpoint response.
 
+Scope-gated tools:
+
+| Scope | Tools |
+|-------|-------|
+| `read:market_data` | `get_historical_bars`, `get_tick_data_summary`, `get_volatility_surface`, `get_factor_model` |
+| `read:signals` | `run_hmm_regime_detection`, `get_signal_trade_correlation` |
+| `read:backtest` | `get_backtest_results`, `get_monte_carlo_result` |
+| `write:backtest` | `run_builder_backtest` |
+| `publish:listing` | `submit_to_marketplace` |
+| `read:data_warehouse` | `query_data_warehouse` |
+
 ---
 
 ## 9. What developer keys cannot access
@@ -210,3 +248,5 @@ endpoint response.
 - Marketplace autopilot or bulk operations
 - Copy-trade subscriber signals (requires a separate subscriber key)
 - Owner-scoped system tools (`get_system_heartbeat`, `run_onyx_ingest`, etc.)
+- Dynamic escalation through `execute_dynamic_tool`
+- Numerai tournament upload or dry-run submit tools

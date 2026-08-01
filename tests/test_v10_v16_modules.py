@@ -67,8 +67,7 @@ class TestFeatureEngine:
 
     def test_create_feature_set(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.create_feature_set(
+        result = asyncio.run(eng.create_feature_set(
             name="RSI Features",
             features=[{"name": "rsi_14", "type": "indicator", "params": {"period": 14}}],
             target="returns_1d"
@@ -79,27 +78,24 @@ class TestFeatureEngine:
 
     def test_list_feature_sets(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(eng.create_feature_set("Set A", [{"name": "rsi"}]))
-        result = loop.run_until_complete(eng.list_feature_sets())
+        asyncio.run(eng.create_feature_set("Set A", [{"name": "rsi"}]))
+        result = asyncio.run(eng.list_feature_sets())
         assert result["success"] is True
         assert result["count"] >= 1
 
     def test_compute_features(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        fs = loop.run_until_complete(eng.create_feature_set("Compute Test", [{"name": "ema_20"}]))
+        fs = asyncio.run(eng.create_feature_set("Compute Test", [{"name": "ema_20"}]))
         fs_id = fs["feature_set"]["feature_set_id"]
-        result = loop.run_until_complete(eng.compute_features(fs_id, "AAPL", "2024-01-01", "2024-06-30"))
+        result = asyncio.run(eng.compute_features(fs_id, "AAPL", "2024-01-01", "2024-06-30"))
         assert result["success"] is True
         assert result["symbol"] == "AAPL"
 
     def test_get_feature_importance(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        fs = loop.run_until_complete(eng.create_feature_set("Imp Test", [{"name": "vol"}]))
+        fs = asyncio.run(eng.create_feature_set("Imp Test", [{"name": "vol"}]))
         fs_id = fs["feature_set"]["feature_set_id"]
-        result = loop.run_until_complete(eng.get_feature_importance(fs_id))
+        result = asyncio.run(eng.get_feature_importance(fs_id))
         assert result["success"] is True
 
 
@@ -109,8 +105,7 @@ class TestModelTrainer:
 
     def test_train_model(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.train(
+        result = asyncio.run(eng.train(
             feature_set_id="fs_test",
             model_type="xgboost",
             hyperparameters={"max_depth": 6, "n_estimators": 100},
@@ -122,30 +117,27 @@ class TestModelTrainer:
 
     def test_evaluate_model(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        trained = loop.run_until_complete(eng.train("fs_1", "random_forest"))
+        trained = asyncio.run(eng.train("fs_1", "random_forest"))
         model_id = trained["model"]["model_id"]
-        result = loop.run_until_complete(eng.evaluate(model_id))
+        result = asyncio.run(eng.evaluate(model_id))
         assert result["success"] is True
         assert "metrics" in result
 
     def test_predict(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        trained = loop.run_until_complete(eng.train("fs_1", "lstm"))
+        trained = asyncio.run(eng.train("fs_1", "lstm"))
         model_id = trained["model"]["model_id"]
-        result = loop.run_until_complete(eng.predict(model_id, "AAPL", {"rsi": 35, "ema": 150}))
+        result = asyncio.run(eng.predict(model_id, "AAPL", {"rsi": 35, "ema": 150}))
         assert result["success"] is True
         assert "prediction_id" in result
 
     def test_explain_prediction(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        trained = loop.run_until_complete(eng.train("fs_1", "xgboost"))
+        trained = asyncio.run(eng.train("fs_1", "xgboost"))
         model_id = trained["model"]["model_id"]
-        pred = loop.run_until_complete(eng.predict(model_id, "AAPL"))
+        pred = asyncio.run(eng.predict(model_id, "AAPL"))
         pred_id = pred["prediction_id"]
-        result = loop.run_until_complete(eng.explain(model_id, pred_id))
+        result = asyncio.run(eng.explain(model_id, pred_id))
         assert result["success"] is True
 
 
@@ -155,36 +147,32 @@ class TestModelRegistry:
 
     def test_register_and_list(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        reg = loop.run_until_complete(eng.register("m1", "RSI Model", version="1.0.0", metrics={"sharpe": 2.5}))
+        reg = asyncio.run(eng.register("m1", "RSI Model", version="1.0.0", metrics={"sharpe": 2.5}))
         assert reg["success"] is True
-        listing = loop.run_until_complete(eng.list_models())
+        listing = asyncio.run(eng.list_models())
         assert listing["count"] >= 1
 
     def test_promote_model(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        reg = loop.run_until_complete(eng.register("m2", "BB Model"))
+        reg = asyncio.run(eng.register("m2", "BB Model"))
         rid = reg["registered"]["registry_id"]
-        result = loop.run_until_complete(eng.promote(rid, "production"))
+        result = asyncio.run(eng.promote(rid, "production"))
         assert result["success"] is True
         assert result["stage"] == "production"
 
     def test_compare_models(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        r1 = loop.run_until_complete(eng.register("m3", "Model A", metrics={"sharpe": 2.0}))
-        r2 = loop.run_until_complete(eng.register("m4", "Model B", metrics={"sharpe": 3.0}))
-        result = loop.run_until_complete(eng.compare(["m3", "m4"]))
+        r1 = asyncio.run(eng.register("m3", "Model A", metrics={"sharpe": 2.0}))
+        r2 = asyncio.run(eng.register("m4", "Model B", metrics={"sharpe": 3.0}))
+        result = asyncio.run(eng.compare(["m3", "m4"]))
         assert result["success"] is True
         assert len(result["comparison"]) == 2
 
     def test_archive_model(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        reg = loop.run_until_complete(eng.register("m5", "Old Model"))
+        reg = asyncio.run(eng.register("m5", "Old Model"))
         rid = reg["registered"]["registry_id"]
-        result = loop.run_until_complete(eng.archive(rid, reason="outdated"))
+        result = asyncio.run(eng.archive(rid, reason="outdated"))
         assert result["success"] is True
 
 
@@ -194,27 +182,24 @@ class TestRLAgent:
 
     def test_create_and_train(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        agent = loop.run_until_complete(eng.create_agent("Test Agent", "ppo"))
+        agent = asyncio.run(eng.create_agent("Test Agent", "ppo"))
         assert agent["success"] is True
         agent_id = agent["agent"]["agent_id"]
-        trained = loop.run_until_complete(eng.train(agent_id, episodes=100))
+        trained = asyncio.run(eng.train(agent_id, episodes=100))
         assert trained["success"] is True
 
     def test_evaluate_rl(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        agent = loop.run_until_complete(eng.create_agent("Eval Agent", "dqn"))
+        agent = asyncio.run(eng.create_agent("Eval Agent", "dqn"))
         agent_id = agent["agent"]["agent_id"]
-        result = loop.run_until_complete(eng.evaluate(agent_id, episodes=50))
+        result = asyncio.run(eng.evaluate(agent_id, episodes=50))
         assert result["success"] is True
 
     def test_get_state(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        agent = loop.run_until_complete(eng.create_agent("State Agent", "sac"))
+        agent = asyncio.run(eng.create_agent("State Agent", "sac"))
         agent_id = agent["agent"]["agent_id"]
-        result = loop.run_until_complete(eng.get_state(agent_id))
+        result = asyncio.run(eng.get_state(agent_id))
         assert result["success"] is True
 
 
@@ -224,15 +209,13 @@ class TestGPUDispatcher:
 
     def test_dispatch_task(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.dispatch("training", {"model": "xgboost", "data": "100k_rows"}))
+        result = asyncio.run(eng.dispatch("training", {"model": "xgboost", "data": "100k_rows"}))
         assert result["success"] is True
         assert "task_id" in result
 
     def test_gpu_status(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.status())
+        result = asyncio.run(eng.status())
         assert result["success"] is True
         assert "gpus" in result
 
@@ -243,8 +226,7 @@ class TestLLMStrategyGen:
 
     def test_generate_strategy(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.generate(
+        result = asyncio.run(eng.generate(
             "Mean reversion strategy for tech stocks using RSI",
             asset_class="equity",
             risk_tolerance="medium"
@@ -263,26 +245,23 @@ class TestInstitutionalOrderManager:
 
     def test_validate_order(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         order = {"symbol": "AAPL", "qty": 1000, "side": "buy", "price": 200, "type": "limit"}
-        result = loop.run_until_complete(eng.validate_order(order, "acc_001"))
+        result = asyncio.run(eng.validate_order(order, "acc_001"))
         assert result["success"] is True
 
     def test_submit_order(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         order = {"symbol": "MSFT", "qty": 500, "side": "sell", "price": 400}
-        result = loop.run_until_complete(eng.submit_order(order, "acc_001"))
+        result = asyncio.run(eng.submit_order(order, "acc_001"))
         assert result["success"] is True
         assert "order_id" in result
 
     def test_get_order_status(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         order = {"symbol": "AAPL", "qty": 100, "side": "buy", "price": 200}
-        submitted = loop.run_until_complete(eng.submit_order(order))
+        submitted = asyncio.run(eng.submit_order(order))
         oid = submitted["order_id"]
-        result = loop.run_until_complete(eng.get_order_status(oid))
+        result = asyncio.run(eng.get_order_status(oid))
         assert result["success"] is True
 
 
@@ -292,15 +271,13 @@ class TestSmartOrderRouter:
 
     def test_route_order(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         order = {"symbol": "AAPL", "qty": 5000, "side": "buy"}
-        result = loop.run_until_complete(eng.route(order, routing_strategy="best_price"))
+        result = asyncio.run(eng.route(order, routing_strategy="best_price"))
         assert result["success"] is True
 
     def test_venue_analytics(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_venue_analytics())
+        result = asyncio.run(eng.get_venue_analytics())
         assert result["success"] is True
 
 
@@ -310,28 +287,25 @@ class TestAlgoExecutor:
 
     def test_start_twap(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         order = {"symbol": "AAPL", "qty": 10000, "side": "buy"}
-        result = loop.run_until_complete(eng.start("twap", order, {"duration_minutes": 60}))
+        result = asyncio.run(eng.start("twap", order, {"duration_minutes": 60}))
         assert result["success"] is True
         assert "execution_id" in result
 
     def test_stop_algo(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         order = {"symbol": "MSFT", "qty": 5000, "side": "sell"}
-        started = loop.run_until_complete(eng.start("vwap", order))
+        started = asyncio.run(eng.start("vwap", order))
         eid = started["execution_id"]
-        result = loop.run_until_complete(eng.stop(eid))
+        result = asyncio.run(eng.stop(eid))
         assert result["success"] is True
 
     def test_get_status(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         order = {"symbol": "TSLA", "qty": 1000, "side": "buy"}
-        started = loop.run_until_complete(eng.start("iceberg", order))
+        started = asyncio.run(eng.start("iceberg", order))
         eid = started["execution_id"]
-        result = loop.run_until_complete(eng.get_status(eid))
+        result = asyncio.run(eng.get_status(eid))
         assert result["success"] is True
 
 
@@ -341,19 +315,17 @@ class TestFIXGateway:
 
     def test_connect_disconnect(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        conn = loop.run_until_complete(eng.connect("NYSE", "ALGO001", "NYSEFIX"))
+        conn = asyncio.run(eng.connect("NYSE", "ALGO001", "NYSEFIX"))
         assert conn["success"] is True
         sid = conn["session"]["session_id"]
-        disc = loop.run_until_complete(eng.disconnect(sid))
+        disc = asyncio.run(eng.disconnect(sid))
         assert disc["success"] is True
 
     def test_session_status(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        conn = loop.run_until_complete(eng.connect("NASDAQ", "ALGO002", "NASDFIX"))
+        conn = asyncio.run(eng.connect("NASDAQ", "ALGO002", "NASDFIX"))
         sid = conn["session"]["session_id"]
-        result = loop.run_until_complete(eng.get_session_status(sid))
+        result = asyncio.run(eng.get_session_status(sid))
         assert result["success"] is True
 
 
@@ -363,25 +335,22 @@ class TestTCAEngine:
 
     def test_analyze(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         trades = [
             {"symbol": "AAPL", "side": "buy", "qty": 100, "fill_price": 200.05, "arrival_price": 200.00},
             {"symbol": "MSFT", "side": "sell", "qty": 50, "fill_price": 399.80, "arrival_price": 400.00},
         ]
-        result = loop.run_until_complete(eng.analyze(trades))
+        result = asyncio.run(eng.analyze(trades))
         assert result["success"] is True
 
     def test_get_report(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_report("2024-01-01", "2024-06-30"))
+        result = asyncio.run(eng.get_report("2024-01-01", "2024-06-30"))
         assert result["success"] is True
 
     def test_implementation_shortfall(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         orders = [{"symbol": "AAPL", "decision_price": 199, "fill_price": 200.05, "qty": 100}]
-        result = loop.run_until_complete(eng.implementation_shortfall(orders))
+        result = asyncio.run(eng.implementation_shortfall(orders))
         assert result["success"] is True
 
 
@@ -391,18 +360,16 @@ class TestVenueManager:
 
     def test_register_and_list(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        reg = loop.run_until_complete(eng.register("NYSE", "exchange"))
+        reg = asyncio.run(eng.register("NYSE", "exchange"))
         assert reg["success"] is True
-        listing = loop.run_until_complete(eng.list_venues())
+        listing = asyncio.run(eng.list_venues())
         assert listing["count"] >= 1
 
     def test_set_priority(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        reg = loop.run_until_complete(eng.register("BATS", "exchange"))
+        reg = asyncio.run(eng.register("BATS", "exchange"))
         vid = reg["venue"]["venue_id"]
-        result = loop.run_until_complete(eng.set_priority(vid, 1))
+        result = asyncio.run(eng.set_priority(vid, 1))
         assert result["success"] is True
 
 
@@ -416,20 +383,17 @@ class TestPnLStreamer:
 
     def test_start_stream(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.start_stream("acc_001", ["AAPL", "MSFT"]))
+        result = asyncio.run(eng.start_stream("acc_001", ["AAPL", "MSFT"]))
         assert result["success"] is True
 
     def test_get_snapshot(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_snapshot("acc_001"))
+        result = asyncio.run(eng.get_snapshot("acc_001"))
         assert result["success"] is True
 
     def test_get_history(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_history("acc_001", interval="1h", lookback="24h"))
+        result = asyncio.run(eng.get_history("acc_001", interval="1h", lookback="24h"))
         assert result["success"] is True
 
 
@@ -439,20 +403,17 @@ class TestOrderFlowAnalyzer:
 
     def test_analyze(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.analyze("AAPL", lookback_minutes=60))
+        result = asyncio.run(eng.analyze("AAPL", lookback_minutes=60))
         assert result["success"] is True
 
     def test_heatmap(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_heatmap("AAPL"))
+        result = asyncio.run(eng.get_heatmap("AAPL"))
         assert result["success"] is True
 
     def test_volume_profile(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_volume_profile("AAPL"))
+        result = asyncio.run(eng.get_volume_profile("AAPL"))
         assert result["success"] is True
 
 
@@ -462,14 +423,12 @@ class TestMicrostructure:
 
     def test_analyze(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.analyze("AAPL"))
+        result = asyncio.run(eng.analyze("AAPL"))
         assert result["success"] is True
 
     def test_toxicity(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_toxicity("AAPL"))
+        result = asyncio.run(eng.get_toxicity("AAPL"))
         assert result["success"] is True
 
 
@@ -479,21 +438,18 @@ class TestRegimeDetector:
 
     def test_detect(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.detect("AAPL"))
+        result = asyncio.run(eng.detect("AAPL"))
         assert result["success"] is True
         assert "regime" in result
 
     def test_history(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_history("AAPL"))
+        result = asyncio.run(eng.get_history("AAPL"))
         assert result["success"] is True
 
     def test_transition_matrix(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_transition_matrix("AAPL"))
+        result = asyncio.run(eng.get_transition_matrix("AAPL"))
         assert result["success"] is True
 
 
@@ -503,27 +459,24 @@ class TestAlertEngine:
 
     def test_create_and_list(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        created = loop.run_until_complete(eng.create_alert(
+        created = asyncio.run(eng.create_alert(
             "Price Alert", {"type": "price_cross", "symbol": "AAPL", "level": 200},
             actions=["notify"], channels=["slack"]
         ))
         assert created["success"] is True
-        listing = loop.run_until_complete(eng.list_alerts())
+        listing = asyncio.run(eng.list_alerts())
         assert listing["count"] >= 1
 
     def test_delete_alert(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        created = loop.run_until_complete(eng.create_alert("Del Test", {"type": "volume_spike"}))
+        created = asyncio.run(eng.create_alert("Del Test", {"type": "volume_spike"}))
         aid = created["alert"]["alert_id"]
-        result = loop.run_until_complete(eng.delete_alert(aid))
+        result = asyncio.run(eng.delete_alert(aid))
         assert result["success"] is True
 
     def test_alert_history(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_history())
+        result = asyncio.run(eng.get_history())
         assert result["success"] is True
 
 
@@ -537,20 +490,17 @@ class TestSentimentEngine:
 
     def test_analyze(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.analyze("AAPL", source="news"))
+        result = asyncio.run(eng.analyze("AAPL", source="news"))
         assert result["success"] is True
 
     def test_history(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_history("AAPL"))
+        result = asyncio.run(eng.get_history("AAPL"))
         assert result["success"] is True
 
     def test_signal(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_signal("AAPL"))
+        result = asyncio.run(eng.get_signal("AAPL"))
         assert result["success"] is True
 
 
@@ -560,14 +510,12 @@ class TestSatelliteEngine:
 
     def test_analyze(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.analyze("Cushing, OK", "oil_storage", symbol="CL"))
+        result = asyncio.run(eng.analyze("Cushing, OK", "oil_storage", symbol="CL"))
         assert result["success"] is True
 
     def test_timeseries(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_timeseries("loc_001", "fill_rate"))
+        result = asyncio.run(eng.get_timeseries("loc_001", "fill_rate"))
         assert result["success"] is True
 
 
@@ -577,18 +525,16 @@ class TestWebScraper:
 
     def test_scrape_and_list(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        job = loop.run_until_complete(eng.scrape("https://example.com/data", schedule="daily"))
+        job = asyncio.run(eng.scrape("https://example.com/data", schedule="daily"))
         assert job["success"] is True
-        listing = loop.run_until_complete(eng.list_jobs())
+        listing = asyncio.run(eng.list_jobs())
         assert listing["count"] >= 1
 
     def test_get_results(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        job = loop.run_until_complete(eng.scrape("https://example.com"))
+        job = asyncio.run(eng.scrape("https://example.com"))
         jid = job["job"]["job_id"]
-        result = loop.run_until_complete(eng.get_results(jid))
+        result = asyncio.run(eng.get_results(jid))
         assert result["success"] is True
 
 
@@ -598,20 +544,17 @@ class TestSECFilingEngine:
 
     def test_analyze(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.analyze("AAPL", "10-K"))
+        result = asyncio.run(eng.analyze("AAPL", "10-K"))
         assert result["success"] is True
 
     def test_insider_trades(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_insider_trades("AAPL"))
+        result = asyncio.run(eng.get_insider_trades("AAPL"))
         assert result["success"] is True
 
     def test_institutional_holdings(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_institutional_holdings("AAPL"))
+        result = asyncio.run(eng.get_institutional_holdings("AAPL"))
         assert result["success"] is True
 
 
@@ -621,20 +564,17 @@ class TestSocialMediaEngine:
 
     def test_analyze(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.analyze("AAPL", platform="twitter"))
+        result = asyncio.run(eng.analyze("AAPL", platform="twitter"))
         assert result["success"] is True
 
     def test_momentum(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_momentum("AAPL"))
+        result = asyncio.run(eng.get_momentum("AAPL"))
         assert result["success"] is True
 
     def test_feed(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_feed(["AAPL", "TSLA"]))
+        result = asyncio.run(eng.get_feed(["AAPL", "TSLA"]))
         assert result["success"] is True
 
 
@@ -644,22 +584,19 @@ class TestAltDataMarketplace:
 
     def test_browse(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.browse(category="sentiment"))
+        result = asyncio.run(eng.browse(category="sentiment"))
         assert result["success"] is True
 
     def test_subscribe_and_sample(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        sub = loop.run_until_complete(eng.subscribe("ds_001"))
+        sub = asyncio.run(eng.subscribe("ds_001"))
         assert sub["success"] is True
-        sample = loop.run_until_complete(eng.get_sample("ds_001"))
+        sample = asyncio.run(eng.get_sample("ds_001"))
         assert sample["success"] is True
 
     def test_quality(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_quality("ds_001"))
+        result = asyncio.run(eng.get_quality("ds_001"))
         assert result["success"] is True
 
 
@@ -673,34 +610,30 @@ class TestAgentOrchestrator:
 
     def test_spawn_and_list(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        spawned = loop.run_until_complete(eng.spawn("Alpha", "trader", capital_allocation=50000))
+        spawned = asyncio.run(eng.spawn("Alpha", "trader", capital_allocation=50000))
         assert spawned["success"] is True
-        listing = loop.run_until_complete(eng.list_agents())
+        listing = asyncio.run(eng.list_agents())
         assert listing["count"] >= 1
 
     def test_get_detail(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        spawned = loop.run_until_complete(eng.spawn("Beta", "researcher"))
+        spawned = asyncio.run(eng.spawn("Beta", "researcher"))
         aid = spawned["agent"]["agent_id"]
-        result = loop.run_until_complete(eng.get_detail(aid))
+        result = asyncio.run(eng.get_detail(aid))
         assert result["success"] is True
 
     def test_terminate(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        spawned = loop.run_until_complete(eng.spawn("Gamma", "monitor"))
+        spawned = asyncio.run(eng.spawn("Gamma", "monitor"))
         aid = spawned["agent"]["agent_id"]
-        result = loop.run_until_complete(eng.terminate(aid, reason="test cleanup"))
+        result = asyncio.run(eng.terminate(aid, reason="test cleanup"))
         assert result["success"] is True
 
     def test_set_parameters(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        spawned = loop.run_until_complete(eng.spawn("Delta", "trader"))
+        spawned = asyncio.run(eng.spawn("Delta", "trader"))
         aid = spawned["agent"]["agent_id"]
-        result = loop.run_until_complete(eng.set_parameters(aid, {"risk_limit": 0.02}))
+        result = asyncio.run(eng.set_parameters(aid, {"risk_limit": 0.02}))
         assert result["success"] is True
 
 
@@ -710,17 +643,15 @@ class TestTaskPlanner:
 
     def test_create_plan(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.create_plan("Backtest RSI strategy on 5 symbols"))
+        result = asyncio.run(eng.create_plan("Backtest RSI strategy on 5 symbols"))
         assert result["success"] is True
         assert "plan_id" in result
 
     def test_get_plan(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        created = loop.run_until_complete(eng.create_plan("Optimize parameters"))
+        created = asyncio.run(eng.create_plan("Optimize parameters"))
         pid = created["plan_id"]
-        result = loop.run_until_complete(eng.get_plan(pid))
+        result = asyncio.run(eng.get_plan(pid))
         assert result["success"] is True
 
 
@@ -730,17 +661,15 @@ class TestAgentMemory:
 
     def test_store_and_query(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        stored = loop.run_until_complete(eng.store("agent_1", "episodic", "AAPL RSI crossed below 30"))
+        stored = asyncio.run(eng.store("agent_1", "episodic", "AAPL RSI crossed below 30"))
         assert stored["success"] is True
-        queried = loop.run_until_complete(eng.query("RSI AAPL", agent_id="agent_1"))
+        queried = asyncio.run(eng.query("RSI AAPL", agent_id="agent_1"))
         assert queried["success"] is True
 
     def test_stats(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(eng.store("agent_2", "semantic", "Market is bullish"))
-        result = loop.run_until_complete(eng.get_stats(agent_id="agent_2"))
+        asyncio.run(eng.store("agent_2", "semantic", "Market is bullish"))
+        result = asyncio.run(eng.get_stats(agent_id="agent_2"))
         assert result["success"] is True
 
 
@@ -750,14 +679,12 @@ class TestToolRouter:
 
     def test_route(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.route("agent_1", "analyze_sentiment", {"symbol": "AAPL"}))
+        result = asyncio.run(eng.route("agent_1", "analyze_sentiment", {"symbol": "AAPL"}))
         assert result["success"] is True
 
     def test_permissions(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_permissions("agent_1"))
+        result = asyncio.run(eng.get_permissions("agent_1"))
         assert result["success"] is True
 
 
@@ -767,20 +694,18 @@ class TestConsensusEngine:
 
     def test_request_and_get(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        req = loop.run_until_complete(eng.request(
+        req = asyncio.run(eng.request(
             {"action": "buy", "symbol": "AAPL", "confidence": 0.8},
             ["agent_1", "agent_2", "agent_3"]
         ))
         assert req["success"] is True
         cid = req["consensus_id"]
-        result = loop.run_until_complete(eng.get_result(cid))
+        result = asyncio.run(eng.get_result(cid))
         assert result["success"] is True
 
     def test_history(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_history())
+        result = asyncio.run(eng.get_history())
         assert result["success"] is True
 
 
@@ -790,20 +715,17 @@ class TestAgentMonitor:
 
     def test_health(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_health("agent_1"))
+        result = asyncio.run(eng.get_health("agent_1"))
         assert result["success"] is True
 
     def test_dashboard(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_dashboard())
+        result = asyncio.run(eng.get_dashboard())
         assert result["success"] is True
 
     def test_performance(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_performance("agent_1"))
+        result = asyncio.run(eng.get_performance("agent_1"))
         assert result["success"] is True
 
 
@@ -817,23 +739,20 @@ class TestDEXAggregator:
 
     def test_get_quote(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_quote("WETH", "USDC", 1.0, chain="ethereum"))
+        result = asyncio.run(eng.get_quote("WETH", "USDC", 1.0, chain="ethereum"))
         assert result["success"] is True
         assert "quote_id" in result
 
     def test_execute_swap(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        quote = loop.run_until_complete(eng.get_quote("WETH", "USDC", 0.5))
+        quote = asyncio.run(eng.get_quote("WETH", "USDC", 0.5))
         qid = quote["quote_id"]
-        result = loop.run_until_complete(eng.execute_swap(qid))
+        result = asyncio.run(eng.execute_swap(qid))
         assert result["success"] is True
 
     def test_liquidity(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_liquidity("WETH", "USDC"))
+        result = asyncio.run(eng.get_liquidity("WETH", "USDC"))
         assert result["success"] is True
 
 
@@ -843,23 +762,20 @@ class TestYieldOptimizer:
 
     def test_scan(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.scan(min_apy=5.0))
+        result = asyncio.run(eng.scan(min_apy=5.0))
         assert result["success"] is True
 
     def test_deploy_and_withdraw(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        deployed = loop.run_until_complete(eng.deploy("opp_001", 10000))
+        deployed = asyncio.run(eng.deploy("opp_001", 10000))
         assert deployed["success"] is True
         pid = deployed["position"]["position_id"]
-        withdrawn = loop.run_until_complete(eng.withdraw(pid))
+        withdrawn = asyncio.run(eng.withdraw(pid))
         assert withdrawn["success"] is True
 
     def test_get_positions(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_positions())
+        result = asyncio.run(eng.get_positions())
         assert result["success"] is True
 
 
@@ -869,17 +785,15 @@ class TestBridgeEngine:
 
     def test_bridge_and_status(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        bridged = loop.run_until_complete(eng.bridge("USDC", 1000, "ethereum", "arbitrum"))
+        bridged = asyncio.run(eng.bridge("USDC", 1000, "ethereum", "arbitrum"))
         assert bridged["success"] is True
         tid = bridged["transfer"]["transfer_id"]
-        status = loop.run_until_complete(eng.get_status(tid))
+        status = asyncio.run(eng.get_status(tid))
         assert status["success"] is True
 
     def test_list_routes(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.list_routes("USDC", "ethereum", "polygon"))
+        result = asyncio.run(eng.list_routes("USDC", "ethereum", "polygon"))
         assert result["success"] is True
 
 
@@ -889,22 +803,19 @@ class TestMEVProtector:
 
     def test_check_risk(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         tx = {"to": "0xdex", "value": 1000, "data": "swap_call"}
-        result = loop.run_until_complete(eng.check_risk(tx, chain="ethereum"))
+        result = asyncio.run(eng.check_risk(tx, chain="ethereum"))
         assert result["success"] is True
 
     def test_submit_protected(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
         tx = {"to": "0xdex", "value": 500, "data": "swap"}
-        result = loop.run_until_complete(eng.submit_protected(tx))
+        result = asyncio.run(eng.submit_protected(tx))
         assert result["success"] is True
 
     def test_analytics(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_analytics())
+        result = asyncio.run(eng.get_analytics())
         assert result["success"] is True
 
 
@@ -914,20 +825,17 @@ class TestGovernanceEngine:
 
     def test_get_proposals(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_proposals("uniswap"))
+        result = asyncio.run(eng.get_proposals("uniswap"))
         assert result["success"] is True
 
     def test_vote(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.vote("prop_001", "for", reason="beneficial"))
+        result = asyncio.run(eng.vote("prop_001", "for", reason="beneficial"))
         assert result["success"] is True
 
     def test_power(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_power("aave"))
+        result = asyncio.run(eng.get_power("aave"))
         assert result["success"] is True
 
 
@@ -937,26 +845,22 @@ class TestDeFiRiskEngine:
 
     def test_assess(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.assess("aave", chain="ethereum"))
+        result = asyncio.run(eng.assess("aave", chain="ethereum"))
         assert result["success"] is True
 
     def test_portfolio_risk(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_portfolio_risk())
+        result = asyncio.run(eng.get_portfolio_risk())
         assert result["success"] is True
 
     def test_liquidation_monitor(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.monitor_liquidation("pos_001"))
+        result = asyncio.run(eng.monitor_liquidation("pos_001"))
         assert result["success"] is True
 
     def test_insurance(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_insurance("aave", coverage_amount=100000))
+        result = asyncio.run(eng.get_insurance("aave", coverage_amount=100000))
         assert result["success"] is True
 
 
@@ -970,25 +874,22 @@ class TestTenantManager:
 
     def test_create_tenant(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.create_tenant("Acme Corp", "admin@acme.com", plan="starter"))
+        result = asyncio.run(eng.create_tenant("Acme Corp", "admin@acme.com", plan="starter"))
         assert result["success"] is True
         assert result["tenant"]["company_name"] == "Acme Corp"
 
     def test_get_tenant(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        created = loop.run_until_complete(eng.create_tenant("GetCo", "get@co.com"))
+        created = asyncio.run(eng.create_tenant("GetCo", "get@co.com"))
         tid = created["tenant"]["tenant_id"]
-        result = loop.run_until_complete(eng.get_tenant(tid))
+        result = asyncio.run(eng.get_tenant(tid))
         assert result["success"] is True
 
     def test_update_tenant(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        created = loop.run_until_complete(eng.create_tenant("UpdCo", "upd@co.com"))
+        created = asyncio.run(eng.create_tenant("UpdCo", "upd@co.com"))
         tid = created["tenant"]["tenant_id"]
-        result = loop.run_until_complete(eng.update_tenant(tid, {"plan": "professional"}))
+        result = asyncio.run(eng.update_tenant(tid, {"plan": "professional"}))
         assert result["success"] is True
 
 
@@ -998,26 +899,22 @@ class TestBillingEngine:
 
     def test_get_usage(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_usage("tenant_001"))
+        result = asyncio.run(eng.get_usage("tenant_001"))
         assert result["success"] is True
 
     def test_get_invoice(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_invoice("tenant_001"))
+        result = asyncio.run(eng.get_invoice("tenant_001"))
         assert result["success"] is True
 
     def test_list_invoices(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.list_invoices("tenant_001"))
+        result = asyncio.run(eng.list_invoices("tenant_001"))
         assert result["success"] is True
 
     def test_update_payment(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.update_payment("tenant_001", {"type": "card", "last4": "4242"}))
+        result = asyncio.run(eng.update_payment("tenant_001", {"type": "card", "last4": "4242"}))
         assert result["success"] is True
 
 
@@ -1027,8 +924,7 @@ class TestStrategyMarketplace:
 
     def test_publish(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.publish(
+        result = asyncio.run(eng.publish(
             "strat_001", {"type": "monthly", "price": 99},
             description="RSI momentum strategy", tags=["momentum", "equity"]
         ))
@@ -1036,14 +932,12 @@ class TestStrategyMarketplace:
 
     def test_browse(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.browse(category="momentum"))
+        result = asyncio.run(eng.browse(category="momentum"))
         assert result["success"] is True
 
     def test_subscribe(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.subscribe("tenant_001", "strat_001", allocation=25000))
+        result = asyncio.run(eng.subscribe("tenant_001", "strat_001", allocation=25000))
         assert result["success"] is True
 
 
@@ -1053,17 +947,15 @@ class TestWhiteLabelEngine:
 
     def test_configure(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.configure("tenant_001", {
+        result = asyncio.run(eng.configure("tenant_001", {
             "primary_color": "#0066FF", "logo_url": "https://example.com/logo.png", "app_name": "TradePro"
         }))
         assert result["success"] is True
 
     def test_get_config(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(eng.configure("tenant_002", {"primary_color": "#FF0000"}))
-        result = loop.run_until_complete(eng.get_config("tenant_002"))
+        asyncio.run(eng.configure("tenant_002", {"primary_color": "#FF0000"}))
+        result = asyncio.run(eng.get_config("tenant_002"))
         assert result["success"] is True
 
 
@@ -1073,36 +965,31 @@ class TestAPIGateway:
 
     def test_generate_key(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.generate_key("tenant_001", "Production Key", rate_limit=5000))
+        result = asyncio.run(eng.generate_key("tenant_001", "Production Key", rate_limit=5000))
         assert result["success"] is True
         assert "key_id" in result
 
     def test_list_keys(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(eng.generate_key("tenant_002", "Test Key"))
-        result = loop.run_until_complete(eng.list_keys("tenant_002"))
+        asyncio.run(eng.generate_key("tenant_002", "Test Key"))
+        result = asyncio.run(eng.list_keys("tenant_002"))
         assert result["success"] is True
 
     def test_revoke_key(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        generated = loop.run_until_complete(eng.generate_key("tenant_003", "Temp Key"))
+        generated = asyncio.run(eng.generate_key("tenant_003", "Temp Key"))
         kid = generated["key_id"]
-        result = loop.run_until_complete(eng.revoke_key(kid))
+        result = asyncio.run(eng.revoke_key(kid))
         assert result["success"] is True
 
     def test_get_usage(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_usage("tenant_001"))
+        result = asyncio.run(eng.get_usage("tenant_001"))
         assert result["success"] is True
 
     def test_platform_health(self):
         eng = self._engine()
-        loop = asyncio.get_event_loop()
-        result = loop.run_until_complete(eng.get_health())
+        result = asyncio.run(eng.get_health())
         assert result["success"] is True
 
 

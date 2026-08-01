@@ -69,6 +69,7 @@ def _ensure_dirs() -> None:
     _STATE_DIR.mkdir(parents=True, exist_ok=True)
     _CUSTOM_DATA_DIR.mkdir(parents=True, exist_ok=True)
     _CUSTOM_STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
+    (_STATE_DIR / "onyx_ingest").mkdir(parents=True, exist_ok=True)
 
 
 def _load_registry() -> dict:
@@ -315,6 +316,75 @@ def ingest_json_signals(
 # ---------------------------------------------------------------------------
 
 VALID_DOC_TYPES = {"strategy_research", "blueprint", "backtest", "whitepaper", "general"}
+VALID_DOC_EXTENSIONS = {".txt", ".md", ".pdf", ".json"}
+_SENSITIVE_DOC_NAMES = {
+    ".env",
+    ".env.local",
+    ".env.production",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "known_hosts",
+    "oauth_tokens.json",
+    "platform_session.json",
+}
+_SENSITIVE_DOC_SUBSTRINGS = ("credential", "password", "private_key", "secret", "token")
+
+
+def _onyx_ingest_roots() -> list[Path]:
+    """Allowed roots for connect_onyx_docs (fail-closed outside these).
+
+    Configure via ONYX_INGEST_ROOT or ALGOCHAINS_ONYX_INGEST_ROOTS (':'/';'-separated).
+    Defaults to state/onyx_ingest under ALGOCHAINS_STATE_DIR — operators must
+    copy/symlink docs into that jail before ingest. Sensitive-name denylist
+    remains defense-in-depth.
+    """
+    raw = (
+        os.getenv("ALGOCHAINS_ONYX_INGEST_ROOTS")
+        or os.getenv("ONYX_INGEST_ROOT")
+        or ""
+    ).strip()
+    roots: list[Path] = []
+    if raw:
+        for part in raw.replace(";", ":").split(":"):
+            part = part.strip()
+            if part:
+                roots.append(Path(part).expanduser().resolve())
+    else:
+        roots.append((_STATE_DIR / "onyx_ingest").resolve())
+    return roots
+
+
+def _path_under_onyx_roots(path: Path, roots: list[Path] | None = None) -> bool:
+    resolved = path.resolve()
+    for root in roots or _onyx_ingest_roots():
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _onyx_doc_rejection_reason(path: Path) -> str | None:
+    """Return why a path must not be ingested into shared Onyx search."""
+    resolved = path.resolve()
+    parts = [part.lower() for part in resolved.parts]
+    name = resolved.name.lower()
+
+    if not _path_under_onyx_roots(resolved):
+        roots = ", ".join(str(r) for r in _onyx_ingest_roots())
+        return f"path outside allowed Onyx ingest root(s): {roots}"
+    if resolved.suffix.lower() not in VALID_DOC_EXTENSIONS:
+        return f"unsupported extension '{resolved.suffix or '<none>'}'"
+    if any(part.startswith(".") for part in parts):
+        return "hidden paths are not allowed"
+    if name in _SENSITIVE_DOC_NAMES:
+        return "sensitive filename is not allowed"
+    if any(marker in name for marker in _SENSITIVE_DOC_SUBSTRINGS):
+        return "sensitive-looking filename is not allowed"
+    return None
 
 
 def connect_onyx_docs(
@@ -330,7 +400,9 @@ def connect_onyx_docs(
     expanded. Real Onyx API call is attempted; fails loudly if unreachable.
 
     Args:
-        doc_paths: List of absolute file or directory paths.
+        doc_paths: List of absolute file or directory paths under the
+                   configured Onyx ingest root (ONYX_INGEST_ROOT /
+                   ALGOCHAINS_ONYX_INGEST_ROOTS; default state/onyx_ingest).
         doc_type: One of: "strategy_research" | "blueprint" | "backtest" |
                   "whitepaper" | "general".
         onyx_url: Override ONYX_API_URL env var.
@@ -350,9 +422,11 @@ def connect_onyx_docs(
     url = onyx_url or os.getenv("ONYX_API_URL", "http://localhost:8085")
     key = onyx_key or os.getenv("ONYX_API_KEY", "")
 
-    # Expand all paths to individual files
+    # Expand all paths to individual files. Every candidate is filtered before it
+    # is opened so prompt-injected callers cannot use Onyx as a local-file oracle.
     files_to_index: list[Path] = []
     not_found: list[str] = []
+    rejected: list[dict[str, str]] = []
 
     for p in doc_paths:
         path = Path(p)
@@ -360,10 +434,19 @@ def connect_onyx_docs(
             not_found.append(str(p))
             continue
         if path.is_dir():
-            for ext in ("*.txt", "*.md", "*.pdf", "*.json"):
-                files_to_index.extend(path.rglob(ext))
+            for ext in VALID_DOC_EXTENSIONS:
+                for candidate in path.rglob(f"*{ext}"):
+                    reason = _onyx_doc_rejection_reason(candidate)
+                    if reason:
+                        rejected.append({"path": str(candidate), "reason": reason})
+                    else:
+                        files_to_index.append(candidate)
         elif path.is_file():
-            files_to_index.append(path)
+            reason = _onyx_doc_rejection_reason(path)
+            if reason:
+                rejected.append({"path": str(path), "reason": reason})
+            else:
+                files_to_index.append(path)
 
     if not_found:
         return {
@@ -372,7 +455,11 @@ def connect_onyx_docs(
         }
 
     if not files_to_index:
-        return {"success": False, "error": "No indexable files found (.txt/.md/.pdf/.json)"}
+        return {
+            "success": False,
+            "error": "No indexable files found (.txt/.md/.pdf/.json)",
+            "rejected": rejected[:10],
+        }
 
     # Attempt real Onyx API call
     try:

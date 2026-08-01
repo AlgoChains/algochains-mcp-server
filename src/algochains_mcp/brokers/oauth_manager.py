@@ -59,6 +59,28 @@ _OAUTH_TABLE = "algochains_oauth_tokens"
 _TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
 
+def _allowed_redirect_uris(default_uri: str) -> set[str]:
+    configured = {
+        uri.strip()
+        for uri in os.getenv("ALGOCHAINS_OAUTH_ALLOWED_REDIRECTS", "").split(",")
+        if uri.strip()
+    }
+    configured.add(default_uri)
+    return configured
+
+
+def _validate_redirect_uri(uri: str, default_uri: str) -> str | None:
+    if uri not in _allowed_redirect_uris(default_uri):
+        return (
+            "redirect_uri is not allowlisted. Use the configured broker callback "
+            "URI or add it to ALGOCHAINS_OAUTH_ALLOWED_REDIRECTS."
+        )
+    parsed = urllib.parse.urlparse(uri)
+    if parsed.scheme != "https" or not parsed.netloc:
+        return "redirect_uri must be an absolute https URL"
+    return None
+
+
 # ── Broker OAuth config registry ─────────────────────────────────────────────
 
 @dataclass
@@ -214,7 +236,7 @@ async def _sb_get_token(broker: str, user_id: str) -> Optional[dict]:
 
 async def generate_auth_url(
     broker: str,
-    user_id: str,
+    access_token: str,
     redirect_uri: Optional[str] = None,
 ) -> dict[str, Any]:
     """
@@ -223,11 +245,22 @@ async def generate_auth_url(
     The user opens this URL in their browser, logs into their broker,
     and is redirected back to redirect_uri with a ?code= parameter.
 
+    user_id is derived from a live-validated access_token, never accepted
+    as a free-form argument — otherwise any caller could bind a victim's
+    user_id to broker tokens of the caller's choosing (state poisoning).
+
     Returns:
         auth_url: The URL to redirect the user to
         state:    CSRF state token (must be verified on callback)
         expires_at: When this auth URL expires (10 minutes)
     """
+    from ..auth.platform_auth import validate_live_token
+
+    validated = await validate_live_token(access_token)
+    if "error" in validated:
+        return {"success": False, "error": validated["error"]}
+    user_id = validated["user_id"]
+
     cfg = BROKER_OAUTH_CONFIGS.get(broker)
     if not cfg:
         return {
@@ -242,7 +275,11 @@ async def generate_auth_url(
             "error": f"{cfg.client_id_env} not set. Get your app credentials from the {broker} developer portal.",
         }
 
-    uri = redirect_uri or os.getenv(cfg.redirect_uri_env, f"https://algochains.ai/oauth/callback/{broker}")
+    default_uri = os.getenv(cfg.redirect_uri_env, f"https://algochains.ai/oauth/callback/{broker}")
+    uri = redirect_uri or default_uri
+    redirect_error = _validate_redirect_uri(uri, default_uri)
+    if redirect_error:
+        return {"success": False, "error": redirect_error}
 
     verifier, challenge, state = _generate_pkce()
 
@@ -311,9 +348,15 @@ async def exchange_code(
     broker = state_data["broker"]
     user_id = state_data["user_id"]
     verifier = state_data.get("verifier", "")
-    uri = redirect_uri or state_data.get("redirect_uri", "")
-
     cfg = BROKER_OAUTH_CONFIGS[broker]
+    uri = redirect_uri or state_data.get("redirect_uri", "")
+    default_uri = os.getenv(cfg.redirect_uri_env, f"https://algochains.ai/oauth/callback/{broker}")
+    if uri != state_data.get("redirect_uri", ""):
+        return {"success": False, "error": "redirect_uri must match the original OAuth state"}
+    redirect_error = _validate_redirect_uri(uri, default_uri)
+    if redirect_error:
+        return {"success": False, "error": redirect_error}
+
     client_id = os.getenv(cfg.client_id_env, "")
     client_secret = os.getenv(cfg.client_secret_env, "")
 
@@ -490,6 +533,21 @@ async def get_token(broker: str, user_id: str, auto_refresh: bool = True) -> dic
         "expires_in_seconds": remaining,
         "scope": record.get("scope", ""),
     }
+
+
+async def get_oauth_status(
+    broker: str,
+    user_id: str,
+    auto_refresh: bool = True,
+) -> dict[str, Any]:
+    """OAuth connection metadata without exposing the access token."""
+    result = await get_token(broker, user_id, auto_refresh=auto_refresh)
+    if not result.get("success"):
+        return {k: v for k, v in result.items() if k != "access_token"}
+    token = result.pop("access_token", "")
+    if token:
+        result["access_token_masked"] = f"***{token[-4:]}" if len(token) >= 4 else "***"
+    return result
 
 
 async def revoke_token(broker: str, user_id: str) -> dict[str, Any]:

@@ -70,7 +70,9 @@ const TIER_MAP: Record<string, TrustTier> = {
 
 export function getTier(command: string): TrustTier {
   const normalized = command.replace(/_/g, "-").toLowerCase();
-  return TIER_MAP[normalized] ?? "T0";
+  // Direct MCP pass-through can reach newly added tools before this CLI map is
+  // updated. Treat unknown tools as live/destructive until explicitly tiered.
+  return TIER_MAP[normalized] ?? "T3";
 }
 
 // ── Kill switch ────────────────────────────────────────────────────────────────

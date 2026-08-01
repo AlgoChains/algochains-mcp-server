@@ -159,7 +159,7 @@ class DynamicToolsetGateway:
     """
     Central gateway that manages dynamic tool discovery and execution.
 
-    Instead of exposing all 242 tools, the gateway uses BM25 search
+    Instead of exposing all 533 tools, the gateway uses BM25 search
     to return only the most relevant tools per user message.
 
     Usage:

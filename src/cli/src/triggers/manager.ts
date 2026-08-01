@@ -15,6 +15,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { randomUUID } from "crypto";
 import { TRIGGERS_FILE } from "../config.js";
 import { getTier, isKillSwitchActive } from "../trust.js";
+import { enqueueTriggerRetry, isRetryableConnectionError, removeTriggerRetry } from "./retry.js";
 
 export type TriggerType = "cron" | "watch" | "webhook" | "datetime";
 
@@ -123,8 +124,21 @@ export async function executeTrigger(trigger: Trigger): Promise<void> {
       triggers[idx].last_run = new Date().toISOString();
       saveTriggers(triggers);
     }
+    if (isRetryableConnectionError(e)) {
+      enqueueTriggerRetry(trigger.id, trigger.command, e);
+    }
     throw e;
   }
+}
+
+/** Execute a trigger by ID (used by cron retry handler). */
+export async function executeTriggerById(triggerId: string): Promise<void> {
+  const trigger = loadTriggers().find((entry) => entry.id === triggerId);
+  if (!trigger) {
+    throw new Error(`Trigger not found: ${triggerId}`);
+  }
+  await executeTrigger(trigger);
+  removeTriggerRetry(triggerId);
 }
 
 // ── Start all triggers (called by daemon) ─────────────────────────────────────

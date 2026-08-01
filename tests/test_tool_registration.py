@@ -14,6 +14,7 @@ import pytest
 # Update these constants when intentionally changing tool count.
 # v22.2.0 ground truth (2026-05-03):  full=477, smart=150
 # v22.5.0 (2026-05-31): +4 Graphiti tools (full=481), +2 Tier-1 (smart=152)
+# SEC-2026 (2026-06-10): send_waitlist_invite + upsert_bot_performance moved to ORDER_EXEC (smart=150)
 # DOCUMENTED_TOOL_COUNT_MIN: conservative floor; fail if we drop below this.
 # DOCUMENTED_TOOL_COUNT_MAX: safety ceiling; fail if unexpectedly high.
 # SMART_TOOL_COUNT_MIN / MAX: smart (Tier-1) mode floor/ceiling.
@@ -125,7 +126,7 @@ def test_no_duplicate_tool_literals_in_server_source():
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1]
-           / "src" / "algochains_mcp" / "server.py").read_text()
+           / "src" / "algochains_mcp" / "server.py").read_text(encoding="utf-8")
     names = re.findall(r'Tool\(\s*name=["\']([^"\']+)', src)
     seen: dict[str, int] = {}
     for n in names:
@@ -134,6 +135,54 @@ def test_no_duplicate_tool_literals_in_server_source():
     assert not dups, (
         f"Duplicate Tool(name=…) literals in server.py: {dups}. "
         "Each tool must be declared exactly once."
+    )
+
+
+def test_docs_state_exact_tool_count():
+    """Docs/manifest must state the EXACT full-mode tool count (== len(TOOLS)).
+
+    Guards against the 525/503/482 doc drift reconciled in docs/reconcile-tool-count.
+    README.md, AGENTS.md, and server.json all carry a stated full-mode total in
+    prose; nothing previously tied them to the registry, so they silently drifted.
+    This asserts every "<N> tools ... full" style total equals the real count.
+
+    When you intentionally add/remove tools, update the docs and this test's
+    expectation flows automatically because it reads len(TOOLS) at runtime.
+    """
+    import re
+    from pathlib import Path
+
+    try:
+        import algochains_mcp.server as srv
+        expected = len(srv.TOOLS)
+    except Exception as exc:  # optional deps missing in CI — fall back to source scan
+        src = (Path(__file__).resolve().parents[1]
+               / "src" / "algochains_mcp" / "server.py").read_text(encoding="utf-8")
+        # Count Tool(name="…") literals inside the TOOLS = [ … ] block.
+        expected = len(re.findall(r'Tool\(\s*name=["\']', src))
+        assert expected > 0, f"Could not derive tool count from source: {exc}"
+
+    root = Path(__file__).resolve().parents[1]
+    # (file, list of substrings that must contain the exact count, e.g. "533 full", "533 tools")
+    checks = {
+        "README.md": [r"tools-(\d+)%20full", r"(\d+) tools across \d+ domains",
+                      r"any of the (\d+) tools", r"the documented (\d+)-tool surface"],
+        "AGENTS.md": [r"across (\d+) tools in \d+ domains",
+                      r"across all (\d+) tools", r"Set it to `full`\s*\n\s*for (\d+)\."],
+        "server.json": [r"(\d+) tools across \d+ domains", r"full \((\d+) tools\)"],
+    }
+    mismatches: list[str] = []
+    for fname, patterns in checks.items():
+        text = (root / fname).read_text(encoding="utf-8")
+        for pat in patterns:
+            for m in re.finditer(pat, text):
+                got = int(m.group(1))
+                if got != expected:
+                    mismatches.append(f"{fname}: pattern {pat!r} found {got}, expected {expected}")
+    assert not mismatches, (
+        f"Documented full-mode tool count drifted from len(TOOLS)={expected}:\n"
+        + "\n".join(f"  {mm}" for mm in mismatches)
+        + "\nUpdate the stated count in the file(s) above to match the registry."
     )
 
 

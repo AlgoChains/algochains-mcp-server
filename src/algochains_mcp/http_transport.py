@@ -7,12 +7,12 @@ to the MCP server over HTTP instead of stdio.
 
 Usage:
     # Start the HTTP server (in addition to or instead of stdio):
-    algochains-mcp-http --host 0.0.0.0 --port 8080
+    algochains-mcp-http --host 127.0.0.1 --port 8080
 
     # Or programmatically:
     from algochains_mcp.http_transport import create_http_app
     app = create_http_app()
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="127.0.0.1", port=8080)
 
 MCP 2025-11-05 Streamable HTTP spec:
     POST /mcp          — JSON-RPC request (immediate response or SSE stream)
@@ -47,25 +47,94 @@ SESSION_TTL_SECONDS = 3600  # 1 hour idle timeout
 
 
 def _get_transport_secret() -> str | None:
-    return os.environ.get("ALGOCHAINS_HTTP_TRANSPORT_SECRET")
+    return (os.environ.get("ALGOCHAINS_HTTP_TRANSPORT_SECRET") or "").strip() or None
+
+
+def _allow_unauthenticated_dev() -> bool:
+    """Return whether the explicit local-development auth bypass is enabled."""
+    return os.environ.get(
+        "ALGOCHAINS_HTTP_ALLOW_UNAUTHENTICATED_DEV", ""
+    ).strip().lower() in ("1", "true", "yes")
 
 
 def _get_cors_origins() -> list[str]:
-    raw = os.environ.get("ALGOCHAINS_HTTP_CORS_ORIGINS", "*")
+    # ASSP: never default to wildcard CORS — require explicit allowlist or localhost.
+    raw = os.environ.get("ALGOCHAINS_HTTP_CORS_ORIGINS", "").strip()
+    if not raw:
+        return [
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+            "https://algochains.ai",
+            "https://app.algochains.ai",
+        ]
     if raw == "*":
-        return ["*"]
+        # Explicit opt-in only via env; log-risk path for local demos.
+        if os.environ.get("ALGOCHAINS_HTTP_ALLOW_WILDCARD_CORS", "0") == "1":
+            return ["*"]
+        return [
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+        ]
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
-def _verify_bearer_token(authorization: str | None) -> bool:
+def _verify_bearer_token(
+    authorization: str | None,
+    *,
+    allow_unauthenticated_dev: bool = False,
+) -> bool:
     """Verify Authorization: Bearer <token> header."""
     secret = _get_transport_secret()
     if not secret:
-        return True  # No secret configured — open access (dev mode)
+        # Fail closed unless the operator explicitly opted into an insecure
+        # local-development mode. An unset secret must never imply open access.
+        return allow_unauthenticated_dev or _allow_unauthenticated_dev()
     if not authorization or not authorization.startswith("Bearer "):
         return False
     token = authorization[len("Bearer "):]
     return secrets.compare_digest(token, secret)
+
+
+# ─── OAuth 2.1 Protected Resource Metadata (RFC 9728) ─────────────────────────
+# Foundation only: this server is an OAuth *protected resource*, not an
+# authorization server. /authorize, /token, and PKCE are delegated to an
+# external IdP (Supabase Auth / WorkOS). We only expose the resource-metadata
+# discovery document and the WWW-Authenticate challenge header so MCP clients
+# (e.g. Claude.ai) can discover the authorization server. HTTPS is assumed at
+# the proxy.
+
+def _mcp_resource() -> str:
+    return os.environ.get("ALGOCHAINS_MCP_RESOURCE", "https://mcp.algochains.ai")
+
+
+def _oauth_issuer() -> str:
+    return os.environ.get("ALGOCHAINS_OAUTH_ISSUER", "https://auth.algochains.ai")
+
+
+def protected_resource_metadata() -> dict:
+    """RFC 9728 OAuth 2.0 Protected Resource Metadata document."""
+    return {
+        "resource": _mcp_resource(),
+        "authorization_servers": [_oauth_issuer()],
+        "scopes_supported": ["mcp:read", "mcp:tools"],
+        "bearer_methods_supported": ["header"],
+        "resource_name": "AlgoChains MCP Server",
+        "resource_documentation": "https://algochains.ai/docs",
+    }
+
+
+def oauth_challenge_header() -> dict:
+    """WWW-Authenticate challenge pointing at the resource-metadata document.
+
+    Attach to 401 responses on the MCP endpoint so clients can discover the
+    authorization server per RFC 9728 §5.1.
+    """
+    resource = _mcp_resource()
+    return {
+        "WWW-Authenticate": (
+            f'Bearer resource_metadata="{resource}/.well-known/oauth-protected-resource"'
+        )
+    }
 
 
 async def _cleanup_stale_sessions() -> None:
@@ -83,7 +152,11 @@ async def _cleanup_stale_sessions() -> None:
             logger.info("Cleaned up stale session %s", sid)
 
 
-def create_http_app(mcp_server: Any | None = None) -> Any:
+def create_http_app(
+    mcp_server: Any | None = None,
+    *,
+    allow_unauthenticated_dev: bool = False,
+) -> Any:
     """Create a FastAPI app that wraps the MCP server with HTTP/SSE transport.
 
     Args:
@@ -102,6 +175,16 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
             "FastAPI and uvicorn are required for HTTP transport. "
             "Install with: pip install 'algochains-mcp[http]'"
         )
+    # This module uses postponed annotations while FastAPI is an optional
+    # dependency imported inside this factory. Expose the request/response
+    # classes so FastAPI can resolve route annotations instead of treating
+    # ``request`` as a required query parameter (422).
+    globals().update(
+        Request=Request,
+        Response=Response,
+        StreamingResponse=StreamingResponse,
+        JSONResponse=JSONResponse,
+    )
 
     if mcp_server is None:
         from algochains_mcp.server import app as mcp_server  # type: ignore
@@ -139,11 +222,43 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
         logger.info("AlgoChains MCP HTTP transport started")
 
     def _auth(request: Request) -> None:
-        if not _verify_bearer_token(request.headers.get("Authorization")):
-            raise HTTPException(status_code=401, detail="Unauthorized")
+        authz = request.headers.get("Authorization")
 
-    @http_app.get("/health")
-    async def health() -> dict:
+        # Path 1 — OAuth 2.1 access token (MCP spec 2025-06-18). When an external
+        # IdP is configured, validate the JWT (signature/aud/iss/exp/scope) and
+        # bind tenant context for the request. Set once, from the token claim —
+        # never from caller input (OWASP API1:2023 BOLA).
+        if authz and authz.startswith("Bearer "):
+            try:
+                from .auth.oauth_resource import oauth_enabled, validate_oauth_token
+                if oauth_enabled():
+                    principal = validate_oauth_token(authz[len("Bearer "):])
+                    if principal is not None:
+                        try:
+                            from .multi_tenant.isolation import set_tenant
+                            set_tenant(principal.tenant_id)
+                        except Exception:
+                            pass
+                        request.state.oauth_subject = principal.subject
+                        request.state.tenant_id = principal.tenant_id
+                        return
+            except Exception:
+                pass  # fall through to static-secret path
+
+        # Path 2 — static transport secret (existing behavior / dev mode).
+        if not _verify_bearer_token(
+            authz,
+            allow_unauthenticated_dev=allow_unauthenticated_dev,
+        ):
+            # RFC 9728 §5.1: include the resource_metadata discovery pointer so
+            # MCP clients (Claude.ai) can find the authorization server.
+            raise HTTPException(
+                status_code=401,
+                detail="Unauthorized",
+                headers=oauth_challenge_header(),
+            )
+
+    def _health_payload() -> dict:
         return {
             "status": "ok",
             "server": "algochains-mcp",
@@ -151,6 +266,24 @@ def create_http_app(mcp_server: Any | None = None) -> Any:
             "transport": "http+sse",
             "active_sessions": len(_sessions),
         }
+
+    @http_app.get("/.well-known/oauth-protected-resource")
+    async def oauth_protected_resource() -> dict:
+        """RFC 9728 discovery document — unauthenticated.
+
+        Lets MCP clients discover which authorization server protects this
+        resource. The AS itself (/authorize, /token, PKCE) is an external IdP.
+        """
+        return protected_resource_metadata()
+
+    @http_app.get("/health")
+    async def health() -> dict:
+        return _health_payload()
+
+    @http_app.get("/status")
+    async def status() -> dict:
+        """Legacy watchdog-compatible alias for /health."""
+        return _health_payload()
 
     @http_app.post("/mcp")
     async def handle_post(request: Request, _: None = Depends(_auth)) -> Response:
@@ -282,7 +415,6 @@ async def _dispatch_jsonrpc(mcp_server: Any, body: dict, session_id: str) -> dic
             }
         elif method == "tools/list":
             # Delegate to the server's list_tools handler
-            cursor = params.get("cursor")
             tools_list = await mcp_server._mcp_server.list_tools()
             result = {
                 "tools": [
@@ -291,10 +423,10 @@ async def _dispatch_jsonrpc(mcp_server: Any, body: dict, session_id: str) -> dic
                 ]
             }
         elif method == "tools/call":
-            from algochains_mcp.server import _dispatch_tool
+            from algochains_mcp.server import call_tool
             tool_name = params.get("name", "")
             tool_args = params.get("arguments", {})
-            content = await _dispatch_tool(tool_name, tool_args)
+            content = await call_tool(tool_name, tool_args)
             result = {
                 "content": [
                     c.model_dump() if hasattr(c, "model_dump") else vars(c)
@@ -326,8 +458,35 @@ async def _dispatch_jsonrpc(mcp_server: Any, body: dict, session_id: str) -> dic
         }
 
 
-def run_http_server(host: str = "0.0.0.0", port: int = 8080) -> None:
+def run_http_server(
+    host: str | None = None,
+    port: int | None = None,
+    allow_unauthenticated_dev: bool | None = None,
+) -> None:
     """Entry point for algochains-mcp-http CLI command."""
+    if host is None and port is None and allow_unauthenticated_dev is None:
+        import argparse
+
+        parser = argparse.ArgumentParser(description="AlgoChains MCP HTTP Server")
+        parser.add_argument("--host", default="127.0.0.1")
+        parser.add_argument("--port", type=int, default=8080)
+        parser.add_argument(
+            "--allow-unauthenticated-dev",
+            action="store_true",
+            help=(
+                "Explicitly allow unauthenticated MCP requests for local development. "
+                "Never use on a public or shared interface."
+            ),
+        )
+        args = parser.parse_args()
+        host = args.host
+        port = args.port
+        allow_unauthenticated_dev = args.allow_unauthenticated_dev
+    else:
+        host = host or "127.0.0.1"
+        port = port or 8080
+
+    allow_dev = bool(allow_unauthenticated_dev) or _allow_unauthenticated_dev()
     try:
         import uvicorn
     except ImportError:
@@ -336,14 +495,19 @@ def run_http_server(host: str = "0.0.0.0", port: int = 8080) -> None:
             "Install with: pip install 'algochains-mcp[http]'"
         )
 
-    http_app = create_http_app()
+    http_app = create_http_app(allow_unauthenticated_dev=allow_dev)
     secret = _get_transport_secret()
     if secret:
         logger.info("HTTP transport: Bearer token authentication ENABLED")
-    else:
+    elif allow_dev:
         logger.warning(
+            "HTTP transport: unauthenticated DEVELOPMENT mode explicitly enabled. "
+            "Bind only to 127.0.0.1."
+        )
+    else:
+        logger.error(
             "HTTP transport: No ALGOCHAINS_HTTP_TRANSPORT_SECRET set — "
-            "open access (set this in production!)"
+            "MCP requests will be rejected (fail-closed)."
         )
     logger.info("Starting AlgoChains MCP HTTP server on http://%s:%d", host, port)
     logger.info("MCP endpoint: http://%s:%d/mcp", host, port)
@@ -352,10 +516,4 @@ def run_http_server(host: str = "0.0.0.0", port: int = 8080) -> None:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="AlgoChains MCP HTTP Server")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8080)
-    args = parser.parse_args()
-    run_http_server(host=args.host, port=args.port)
+    run_http_server()

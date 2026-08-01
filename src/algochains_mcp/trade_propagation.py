@@ -82,6 +82,44 @@ def _resolve_secret() -> bytes:
     return raw.encode("utf-8")
 
 
+def _service_client():
+    try:
+        from .marketplace.supabase_tools import _get_sb_client
+    except Exception as exc:  # pragma: no cover
+        logger.warning("supabase_tools unavailable: %s", exc)
+        return None
+    return _get_sb_client(use_service_role=True)
+
+
+def _rows(resp: Any) -> list[dict[str, Any]]:
+    return list(getattr(resp, "data", None) or [])
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _age_seconds(now: datetime, value: Any) -> float | None:
+    dt = _parse_timestamp(value)
+    if dt is None:
+        return None
+    return round(max(0.0, (now - dt).total_seconds()), 2)
+
+
 async def propagate_signal(
     strategy_name: str,
     symbol: str,
@@ -181,7 +219,102 @@ async def propagate_signal(
         return {"success": False, "error": f"HTTP request failed: {exc}"}
 
 
-async def check_propagation_health() -> dict[str, Any]:
+def get_copy_trade_fanout_health(max_lag_seconds: float = 30.0) -> dict[str, Any]:
+    """Return copy-trade fanout health without treating idle time as lag.
+
+    The Command Center alert should page on active, unexpired signal backlog.
+    Age since the last historical signal is useful telemetry, but it is not a
+    stall when there are no active signals waiting to be fanned out.
+    """
+    sb = _service_client()
+    if sb is None:
+        return {
+            "status": "unknown",
+            "reason": "supabase_unavailable",
+            "detail": "SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are required for fanout health",
+        }
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    try:
+        active_signals = _rows(
+            sb.table("copy_trade_signals")
+            .select("id,bot,symbol,side,emitted_at,expires_at")
+            .gt("expires_at", now_iso)
+            .order("emitted_at", desc=False)
+            .limit(100)
+            .execute()
+        )
+        latest_signal = _rows(
+            sb.table("copy_trade_signals")
+            .select("emitted_at,expires_at")
+            .order("emitted_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        latest_audit = _rows(
+            sb.table("copy_trade_signal_audit")
+            .select("occurred_at")
+            .order("occurred_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        latest_paper_fill = _rows(
+            sb.table("subscriber_fills")
+            .select("filled_at")
+            .eq("is_paper", True)
+            .order("filled_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        paper_accounts = _rows(
+            sb.table("subscriber_paper_accounts")
+            .select("subscriber_id,updated_at")
+            .order("updated_at", desc=True)
+            .limit(1000)
+            .execute()
+        )
+    except Exception as exc:
+        return {"status": "unknown", "reason": "query_failed", "detail": str(exc)}
+
+    active_lag_seconds = 0.0
+    if active_signals:
+        active_lag_seconds = _age_seconds(now, active_signals[0].get("emitted_at")) or 0.0
+
+    if active_signals and active_lag_seconds > max_lag_seconds:
+        status = "degraded"
+        reason = "active_signal_lag_high"
+    elif active_signals:
+        status = "healthy"
+        reason = "active_signals_within_slo"
+    else:
+        status = "healthy"
+        reason = "idle_no_active_signals"
+
+    latest_signal_row = latest_signal[0] if latest_signal else {}
+    latest_audit_row = latest_audit[0] if latest_audit else {}
+    latest_fill_row = latest_paper_fill[0] if latest_paper_fill else {}
+    latest_account_row = paper_accounts[0] if paper_accounts else {}
+
+    return {
+        "status": status,
+        "reason": reason,
+        "max_lag_seconds": float(max_lag_seconds),
+        "active_signal_count": len(active_signals),
+        "active_lag_seconds": active_lag_seconds,
+        "idle_since_last_signal_seconds": _age_seconds(now, latest_signal_row.get("emitted_at")),
+        "latest_audit_age_seconds": _age_seconds(now, latest_audit_row.get("occurred_at")),
+        "latest_paper_fill_age_seconds": _age_seconds(now, latest_fill_row.get("filled_at")),
+        "latest_paper_account_update_age_seconds": _age_seconds(now, latest_account_row.get("updated_at")),
+        "paper_account_count": len(paper_accounts),
+        "note": (
+            "active_lag_seconds is the paging signal. "
+            "idle_since_last_signal_seconds is informational and may grow overnight."
+        ),
+    }
+
+
+async def check_propagation_health(max_lag_seconds: float = 30.0) -> dict[str, Any]:
     """Check whether the Django signal propagation service is reachable.
 
     Returns endpoint URL, reachability status, and configuration guidance.
@@ -208,15 +341,12 @@ async def check_propagation_health() -> dict[str, Any]:
         "using_roo_defaults": using_defaults,
         "setup": {
             "SIGNAL_URL": url,
-            "SIGNAL_SECRET": "*** (set)" if not using_defaults else "1234 (Roo default)",
+            "SIGNAL_SECRET": "*** (set)",
         },
         "register_bot_at": "https://algochains.ai → Bots → Register New Bot",
         "paper_trading_only": True,
-        "note": (
-            "Using Roo's default endpoint + secret. Override with SIGNAL_URL + SIGNAL_SECRET env vars."
-            if using_defaults
-            else "Custom endpoint configured."
-        ),
+        "copy_trade_fanout": get_copy_trade_fanout_health(max_lag_seconds=max_lag_seconds),
+        "note": "Custom endpoint configured.",
     }
 
 

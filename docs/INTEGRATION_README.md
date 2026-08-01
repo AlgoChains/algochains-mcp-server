@@ -328,7 +328,7 @@ METRICS_INGEST_API_KEY=<generate-a-secure-key>
 
 # These go in the MCP server .env
 ALGOCHAINS_DJANGO_URL=https://algochains.ai
-# For dev: ALGOCHAINS_DJANGO_URL=http://172.238.57.39:8000
+# For dev: ALGOCHAINS_DJANGO_URL=http://<ALGOCHAINS_DJANGO_HOST>:8000
 ALGOCHAINS_CREATOR_USERNAME=tyler
 ```
 
@@ -350,7 +350,7 @@ pip install -e ".[dev]"
 
 # 3. Copy env
 cp .env.example .env
-# Edit .env → set ALGOCHAINS_DJANGO_URL=http://172.238.57.39:8000
+# Edit .env → set ALGOCHAINS_DJANGO_URL=http://<ALGOCHAINS_DJANGO_HOST>:8000
 
 # 4. Run tests
 pytest tests/ -v  # Should see 40/40 passing
@@ -385,7 +385,7 @@ asyncio.run(test())
 - [ ] Create REST endpoints: `/api/v1/listings/`, `/api/v1/metrics/ingest/`, `/api/v1/subscribe/`
 - [ ] Add API key authentication for metrics ingestion
 - [ ] Wire up to dev Docker: `docker compose -f docker-compose_dev.yml up -d --build`
-- [ ] Test: `curl http://172.238.57.39:8000/api/v1/listings/`
+- [ ] Test: `curl http://<ALGOCHAINS_DJANGO_HOST>:8000/api/v1/listings/`
 
 ### RJ (Frontend)
 - [ ] Create marketplace page at `/marketplace/`
@@ -411,7 +411,7 @@ asyncio.run(test())
 ## Questions for the Team
 
 1. **RJ:** Are the Supabase tables accessible via Django ORM, or do we need a separate Django model layer? (I assumed Django models above)
-2. **Roo:** Is the dev API at `172.238.57.39:8000` accepting POST requests, or do we need CORS/auth setup first?
+2. **Roo:** Is the dev API at `<ALGOCHAINS_DJANGO_HOST>:8000` accepting POST requests, or do we need CORS/auth setup first?
 3. **Roo:** Should metrics ingestion use Supabase directly or go through Django REST?
 4. **RJ:** For the subscribe button — Stripe integration ready, or do we need to set that up?
 

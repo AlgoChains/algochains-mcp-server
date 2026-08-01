@@ -37,6 +37,25 @@ import { createMcpClient } from "../mcp_client.js";
 
 const LAUNCHD_PLIST_PATH = join(homedir(), "Library", "LaunchAgents", "com.algochains.cli-daemon.plist");
 
+export function isAuthorizedDaemonRequest(
+  authorizationHeader: string | undefined,
+  developerKeyHeader: string | undefined,
+  daemonToken: string,
+  bridgeKey = process.env.ALGOCHAINS_BRIDGE_KEY,
+): boolean {
+  const candidates = new Set<string>();
+  const auth = authorizationHeader?.trim();
+  if (auth) {
+    candidates.add(auth);
+    const bearer = auth.match(/^Bearer\s+(.+)$/i);
+    if (bearer) candidates.add(bearer[1].trim());
+  }
+  if (developerKeyHeader?.trim()) candidates.add(developerKeyHeader.trim());
+
+  if (daemonToken && candidates.has(daemonToken)) return true;
+  return Boolean(bridgeKey && candidates.has(bridgeKey));
+}
+
 function randomToken(bytes = 32): string {
   const arr = new Uint8Array(bytes);
   crypto.getRandomValues(arr);
@@ -117,7 +136,8 @@ export async function startDaemonServer(): Promise<void> {
   // Tool proxy (authenticated)
   app.post("/tool", async c => {
     const auth = c.req.header("Authorization") ?? "";
-    if (!auth.includes(token) && !process.env.ALGOCHAINS_BRIDGE_KEY) {
+    const developerKey = c.req.header("X-Developer-Key") ?? "";
+    if (!isAuthorizedDaemonRequest(auth, developerKey, token)) {
       c.status(401); return c.text("Unauthorized");
     }
     const { tool, arguments: args } = await c.req.json<{ tool: string; arguments: Record<string, unknown> }>();

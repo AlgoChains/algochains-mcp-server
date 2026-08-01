@@ -26,7 +26,7 @@ algochains place-order --broker alpaca --symbol AAPL --side buy --qty 10  # Requ
 
 ### MCPorter Direct
 ```bash
-npx mcporter list algochains              # 242 tools
+npx mcporter list algochains              # 533 tools
 npx mcporter list algochains --schema     # Full tool docs
 npx mcporter call algochains.discover_tools query="sentiment"
 npx mcporter call algochains.detect_market_regime
@@ -35,7 +35,7 @@ npx mcporter call algochains.detect_market_regime
 ### TypeScript SDK
 ```typescript
 import type { AlgoChainsClient } from "@algochains/sdk";
-// Types at: packages/sdk/src/types.d.ts (1,404 lines, 242 tools)
+// Types at: packages/sdk/src/types.d.ts (1,404 lines, 533 tools)
 ```
 
 ## Multi-MCP Composition Pattern
@@ -106,7 +106,7 @@ await rt.close();
 |---------|----|-----|
 | #quant-lab | `C09F415GZ6W` | Research, marketplace, strategy |
 | #openclaw | `C0AFS7BDMSM` | System health, skill execution |
-| #tradovate-futures-bot-changelog | `C09TGL20N4V` | P&L, bot status |
+| #tradovate-futures-bot-changelog | `$SLACK_CHANNEL_BOT_CHANGELOG` | P&L, bot status |
 | #incident-response | `C0AFT0GH54Z` | P0/P1 only |
 
 ## Regeneration

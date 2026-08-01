@@ -3,14 +3,22 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 
 
 class AltDataMarketplace:
     """Browse, subscribe, and publish alternative data datasets."""
 
     def __init__(self) -> None:
-        self._datasets: dict[str, dict] = {}
+        self._datasets: dict[str, dict] = {
+            "ds_001": {
+                "id": "ds_001",
+                "dataset_id": "ds_001",
+                "name": "Sample sentiment feed",
+                "category": "sentiment",
+                "data_type": "news",
+                "quality": 0.95,
+            }
+        }
         self._subscriptions: dict[str, dict] = {}
 
     async def browse(self, category: str | None = None, data_type: str | None = None, min_quality: float | None = None) -> dict:
@@ -45,5 +53,27 @@ class AltDataMarketplace:
                 "categories": list({d.get("category", "unknown") for d in self._datasets.values()}),
                 "as_of": datetime.now(timezone.utc).isoformat(),
             }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_sample(self, dataset_id: str) -> dict:
+        try:
+            ds = self._datasets.get(dataset_id)
+            if not ds:
+                return {"status": "error", "error": f"Dataset {dataset_id} not found"}
+            return {
+                "status": "ok",
+                "dataset_id": dataset_id,
+                "sample": {"symbol": "AAPL", "score": 0.0, "source": ds["name"]},
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    async def get_quality(self, dataset_id: str) -> dict:
+        try:
+            ds = self._datasets.get(dataset_id)
+            if not ds:
+                return {"status": "error", "error": f"Dataset {dataset_id} not found"}
+            return {"status": "ok", "dataset_id": dataset_id, "quality": ds.get("quality", 0.0)}
         except Exception as e:
             return {"status": "error", "error": str(e)}

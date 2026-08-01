@@ -46,7 +46,7 @@ BEGIN
     );
 
     PERFORM net.http_post(
-        url := 'https://trkpzsnwjtmvgppuzlwu.supabase.co/functions/v1/waitlist-slack-notify',
+        url := current_setting('app.supabase_functions_url', true) || '/waitlist-slack-notify',
         body := payload,
         params := '{}'::jsonb,
         headers := jsonb_build_object(

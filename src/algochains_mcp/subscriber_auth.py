@@ -3,7 +3,8 @@ subscriber_auth.py — Subscriber API key resolution for the MCP HTTP bridge.
 
 Looks up an incoming `X-Api-Key: sub_live_…` against `subscriber_api_keys`
 in Supabase via the `resolve_subscriber_api_key()` SECURITY DEFINER function
-(see migration 20260420_subscriber_copytrade.sql). Caches resolved keys for
+(see migration 20260523_subscriber_copytrade.sql, extended by
+20260614000400_subscriber_api_keys.sql). Caches resolved keys for
 60 seconds to avoid hammering the database on each tool call.
 
 Usage from the bridge:
@@ -46,7 +47,7 @@ DEFAULT_SUBSCRIBER_SCOPES = (
 
 # Cache: key_hash -> (resolved_at, ResolvedSubscriber)
 _CACHE: dict[str, tuple[float, "ResolvedSubscriber"]] = {}
-_CACHE_TTL_SEC = 60.0
+_CACHE_TTL_SEC = 15.0
 _CACHE_LOCK = threading.Lock()
 _NEGATIVE_TTL_SEC = 5.0  # don't re-query a bad key for 5s
 

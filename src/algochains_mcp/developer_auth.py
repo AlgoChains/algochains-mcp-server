@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -113,6 +114,31 @@ def resolve_developer_key(raw_key: str | None) -> ResolvedDeveloper | None:
         log.warning("developer_auth: resolve_developer_api_key RPC failed — %s", exc)
         return None
 
+    if not rows and os.environ.get("ALGOCHAINS_CORE_HASH_LOOKUP_FALLBACK", "").lower() in {
+        "1", "true", "yes"
+    }:
+        # Temporary hash-only compatibility for consumers being moved off the
+        # historical plaintext algochains-core allow-list. Never query api_key.
+        try:
+            resp = (
+                sb.table("algochains-core")
+                .select("user_name,key_hash,key_prefix,is_active,revoked_at")
+                .eq("key_hash", key_hash)
+                .eq("is_active", True)
+                .is_("revoked_at", "null")
+                .limit(1)
+                .execute()
+            )
+            mirror_rows = getattr(resp, "data", None) or []
+            if mirror_rows:
+                rows = [{
+                    "clerk_user_id": mirror_rows[0].get("user_name"),
+                    "scopes": list(DEFAULT_DEVELOPER_SCOPES),
+                    "env": "test" if raw_key.startswith("ac_test_") else "live",
+                }]
+        except Exception as exc:
+            log.warning("developer_auth: hashed mirror fallback failed — %s", type(exc).__name__)
+
     if not rows:
         with _CACHE_LOCK:
             _CACHE[key_hash] = (now, ResolvedDeveloper(clerk_user_id="", scopes=(), env="live"))
@@ -122,9 +148,11 @@ def resolve_developer_key(raw_key: str | None) -> ResolvedDeveloper | None:
     raw_scopes = row.get("scopes") or []
     scopes = tuple(s for s in raw_scopes if isinstance(s, str)) or DEFAULT_DEVELOPER_SCOPES
 
-    clerk_user_id = row.get("clerk_user_id")
+    # RPC returns "user_id" (Supabase auth.users UUID).
+    # Legacy pre-migration rows used "clerk_user_id"; accept both for compatibility.
+    clerk_user_id = row.get("clerk_user_id") or row.get("user_id") or ""
     if not clerk_user_id:
-        log.warning("developer_auth: row returned null clerk_user_id — failing closed")
+        log.warning("developer_auth: row returned null user_id — failing closed")
         with _CACHE_LOCK:
             _CACHE[key_hash] = (now, ResolvedDeveloper(clerk_user_id="", scopes=(), env="live"))
         return None

@@ -1,7 +1,7 @@
 {
   "name": "@algochains/sdk",
   "version": "22.4.1",
-  "description": "Auto-generated TypeScript SDK for AlgoChains MCP Server — 242 tools across trading, ML, analytics, DeFi, and intent-based execution.",
+  "description": "Auto-generated TypeScript SDK for AlgoChains MCP Server — 533 tools across trading, ML, analytics, DeFi, and intent-based execution.",
   "main": "src/index.js",
   "types": "src/types.d.ts",
   "files": [

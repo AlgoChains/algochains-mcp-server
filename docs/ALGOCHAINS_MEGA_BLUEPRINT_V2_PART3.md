@@ -434,7 +434,7 @@ class MassiveResearchPipeline:
 ```python
 GPU_CONFIG = {
     "mac":     {"device": "mps", "workers": 1, "data_root": "/Users/treycsa/..."},
-    "desktop": {"device": "cuda", "host": "100.99.127.119",
+    "desktop": {"device": "cuda", "host": "<TAILSCALE_GPU_HOST>",
                 "workers": 5, "data_root": "/home/trrey/tick_data"},
 }
 # ALWAYS use rsync for data transfer. NEVER use SSHFS/NFS over Tailscale.
@@ -734,7 +734,7 @@ Market Data: Massive.com enterprise white-label (stocks, options, futures,
   forex, crypto, indices, SEC filings) — BM25 endpoint discovery, server-side
   Greeks/Sharpe/SMA, in-memory SQL DataFrames
 ML: PyTorch (GPU), scikit-learn, Rust backtester
-GPU: Mac (mps) + Desktop RTX 5080 (cuda @ 100.99.127.119 via Tailscale)
+GPU: Mac (mps) + Desktop RTX 5080 (cuda @ <TAILSCALE_GPU_HOST> via Tailscale)
 Database: PostgreSQL + Redis + SQLite (per-bot)
 Deployment: Docker + Kubernetes (V16), multi-node failover
 

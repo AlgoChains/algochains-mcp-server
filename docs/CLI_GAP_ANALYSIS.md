@@ -52,7 +52,7 @@ subcommands add argument validation, sane defaults, and human-readable output.
 | 5 | `algochains bots [--bot MNQ]` | `get_bot_health`, `get_all_bot_ops_status` | One-command fleet health (today requires tool pass-through name knowledge) | Planned |
 | 6 | `algochains backtest <run\|results>` | `run_builder_backtest`, `get_backtest_results` | Validation loop for strategy builders | Planned |
 | 7 | `algochains validate <metrics.json>` | `validate_strategy_metrics` | Pre-submission gate check with file input | Planned |
-| 8 | `algochains keys <request\|test>` | `--request-access`, bridge `/health` auth probe | Key lifecycle from the terminal; `test` verifies an `ac_live_`/`sub_live_` key against the hosted bridge | Planned |
+| 8 | `algochains keys <request\|test>` | `--request-access`, bridge `/health` auth probe | Key lifecycle from the terminal; `test` verifies a developer or subscriber key against the hosted bridge | Planned |
 | 9 | `algochains regime` | `detect_market_regime` | Most common single read; deserves a top-level alias | Planned |
 | 10 | `algochains quickstart` | `scripts/quickstart.py` | Single binary entry for the wizard (today requires the Python script path) | Planned |
 

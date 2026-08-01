@@ -12,7 +12,7 @@ Stops all running bots. Posts full incident report to Slack.
 ## Owner Verification
 
 Skill REFUSES to execute unless:
-1. Caller Slack user ID matches `U09B9M94C3F` (Tyler)
+1. Caller Slack user ID matches `OWNER_SLACK_USER_ID` (set in `.env`)
 2. Explicit confirm string = `"FLATTEN_ALL"` passed in args
 3. Rate limit: max 1 execution per hour
 

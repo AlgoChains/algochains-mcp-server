@@ -68,7 +68,9 @@ logger = logging.getLogger("algochains_mcp.sse_server")
 
 ALLOWED_ORIGINS: list[str] = [
     "https://algochains.ai",
+    "https://www.algochains.ai",
     "https://app.algochains.ai",
+    "https://cc.algochains.io",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:8080",
@@ -291,10 +293,23 @@ def _validate_origin(request: Request) -> bool:
 
 def _validate_api_key(request: Request) -> bool:
     if not SSE_API_KEY:
-        return True  # No key configured = open (dev mode)
+        # ASSP P0: fail closed unless explicit local-dev opt-in.
+        # ALGOCHAINS_SSE_ALLOW_UNAUTH=1 AND bind to localhost only.
+        host = (SSE_HOST or "").strip().lower()
+        localhost = host in ("127.0.0.1", "localhost", "::1", "")
+        allow_unauth = os.environ.get("ALGOCHAINS_SSE_ALLOW_UNAUTH", "0") == "1"
+        if allow_unauth and localhost:
+            return True
+        return False
     provided = (
         request.headers.get("x-api-key")
-        or request.query_params.get("api_key")
+        # Reject query-param keys in production: they appear in access logs / Referer.
+        # Allow in dev mode only.
+        or (
+            request.query_params.get("api_key")
+            if os.environ.get("ALGOCHAINS_SSE_ALLOW_KEY_IN_QUERY", "0") == "1"
+            else ""
+        )
         or ""
     )
     return provided == SSE_API_KEY
@@ -554,6 +569,21 @@ def run_sse_server(mcp_server: Optional[Server] = None) -> None:
         ALGOCHAINS_SSE_KEY   API key for auth (empty = no auth in dev)
     """
     app = build_app(mcp_server)
+
+    # Warn-only security guard: alert operators when running in an open/exposed config.
+    # Enforcement (ALGOCHAINS_SSE_REQUIRE_KEY=1) is opt-in to avoid breaking existing deployments.
+    if not SSE_API_KEY:
+        logger.warning(
+            "⚠️  ALGOCHAINS_SSE_KEY is not set — SSE server is running without API key auth. "
+            "This is safe when bound to 127.0.0.1 (default). "
+            "Set ALGOCHAINS_SSE_KEY in production if exposing on a non-localhost interface."
+        )
+    if SSE_HOST not in ("127.0.0.1", "localhost", "::1") and not SSE_API_KEY:
+        raise RuntimeError(
+            f"Refusing to start SSE on {SSE_HOST} without ALGOCHAINS_SSE_KEY. "
+            "Fail closed: set ALGOCHAINS_SSE_KEY, or bind 127.0.0.1 for local dev."
+        )
+
     uvicorn.run(
         app,
         host=SSE_HOST,

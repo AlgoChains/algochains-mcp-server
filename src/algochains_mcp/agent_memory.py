@@ -177,7 +177,7 @@ def get_openclaw_memory(key_prefix: Optional[str] = None, limit: int = 50) -> di
             truncated[k] = v[:497] + "..."
         elif isinstance(v, (dict, list)):
             s = json.dumps(v)
-            truncated[k] = json.loads(s[:2000]) if len(s) > 2000 else v
+            truncated[k] = s[:1997] + "..." if len(s) > 2000 else v
         else:
             truncated[k] = v
 
@@ -213,7 +213,7 @@ def get_bot_heartbeat() -> dict:
         return {
             "error": "No bot heartbeat found",
             "path": str(_OPENCLAW_ROOT / "bot_heartbeat.json"),
-            "hint": "Heartbeat is written by autonomous_watchdog.py every 5 minutes",
+            "hint": "MNQ fill-triggered only (FUTURES_SCALPER_UPGRADED._track_openclaw_feedback). Not written by autonomous_watchdog. For fleet liveness use get_bot_health.",
         }
     # Annotate with staleness where data is a dict with last_seen
     now = time.time()

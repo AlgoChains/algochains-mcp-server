@@ -1,6 +1,8 @@
 """Tests for the marketplace bridge HTTP client."""
+import asyncio
 import pytest
 import httpx
+from unittest.mock import AsyncMock
 
 from algochains_mcp.config import MarketplaceConfig
 from algochains_mcp.errors import (
@@ -11,6 +13,7 @@ from algochains_mcp.errors import (
     SubscriptionError,
 )
 from algochains_mcp.marketplace.bridge import MarketplaceBridge
+from algochains_mcp.marketplace.contracts import LISTING_CREATE_PATH, listing_update_path
 
 
 def _mock_config() -> MarketplaceConfig:
@@ -104,3 +107,55 @@ async def test_ingest_fails_fast_without_ingest_key(monkeypatch):
     )
     with pytest.raises(MarketplaceNotConfiguredError, match="METRICS_INGEST_API_KEY"):
         await bridge.ingest_metrics("slug", {})
+
+
+@pytest.mark.asyncio
+async def test_publish_uses_canonical_create_route():
+    bridge = MarketplaceBridge(_mock_config())
+    client = AsyncMock()
+    client.post.return_value = httpx.Response(
+        status_code=201,
+        json={"id": 42, "slug": "mnq"},
+        request=httpx.Request("POST", f"https://test.algochains.ai{LISTING_CREATE_PATH}"),
+    )
+    bridge._client = client
+
+    await bridge.publish_listing({"name": "MNQ"})
+
+    client.post.assert_awaited_once_with(LISTING_CREATE_PATH, json={"name": "MNQ"})
+
+
+@pytest.mark.asyncio
+async def test_update_uses_canonical_update_route():
+    bridge = MarketplaceBridge(_mock_config())
+    client = AsyncMock()
+    client.patch.return_value = httpx.Response(
+        status_code=200,
+        json={"slug": "mnq"},
+        request=httpx.Request("PATCH", "https://test.algochains.ai/api/v1/listings/mnq/update/"),
+    )
+    bridge._client = client
+
+    await bridge.update_listing("mnq", {"description": "updated"})
+
+    client.patch.assert_awaited_once_with(
+        listing_update_path("mnq"), json={"description": "updated"}
+    )
+
+
+def test_paper_subscribe_does_not_require_broker(monkeypatch):
+    monkeypatch.setenv("ALGOCHAINS_SKIP_MARKETPLACE_KEY_CHECK", "1")
+    bridge = MarketplaceBridge(_mock_config())
+    client = AsyncMock()
+    client.post.return_value = httpx.Response(
+        status_code=200,
+        json={"ok": True},
+        request=httpx.Request("POST", "https://test.algochains.ai/api/v1/listings/mnq/subscribe/"),
+    )
+    bridge._client = client
+
+    out = asyncio.run(bridge.subscribe("mnq", mode="paper"))
+
+    assert out == {"ok": True}
+    client.post.assert_awaited_once()
+    assert client.post.await_args.kwargs["json"] == {"mode": "paper"}

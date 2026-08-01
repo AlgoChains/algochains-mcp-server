@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 # Thresholds (local, not CI broker-gated)
 IMPORT_BUDGET_MS = 2000   # server.py should import within 2s on any dev machine
-BM25_BUDGET_MS   = 500    # BM25 index build for 476 tools
+BM25_BUDGET_MS   = 500    # BM25 index build for 533 tools
 DISCOVER_BUDGET_MS = 50   # warm discover call (BM25 query)
 MANIFEST_BUDGET_MS = 1000 # tool manifest build
 
@@ -42,7 +42,7 @@ def test_server_import_time():
 
 
 def test_bm25_index_build_time():
-    """BM25 index build for 476 tools must be under budget."""
+    """BM25 index build for 533 tools must be under budget."""
     import algochains_mcp.server as srv
     # Reset gateway to measure cold build
     import algochains_mcp.server

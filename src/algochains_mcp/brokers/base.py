@@ -123,10 +123,14 @@ class AccountInfo:
     raw: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
+        # Keep equity as the canonical field while exposing common balance aliases
+        # for health probes and clients that use broker-style terminology.
         return {
             "broker": self.broker,
             "account_id": self.account_id,
             "equity": self.equity,
+            "balance": self.equity,
+            "account_balance": self.equity,
             "cash": self.cash,
             "buying_power": self.buying_power,
             "currency": self.currency,

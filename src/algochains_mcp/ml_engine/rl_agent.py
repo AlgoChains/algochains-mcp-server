@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 
 
 class RLAgentEngine:
@@ -14,8 +13,8 @@ class RLAgentEngine:
 
     async def create_agent(self, name: str, algorithm: str, environment: dict | None = None, reward_config: dict | None = None) -> dict:
         try:
-            if algorithm not in ("ppo", "sac"):
-                return {"status": "error", "error": f"Invalid algorithm: {algorithm}. Must be 'ppo' or 'sac'"}
+            if algorithm not in ("ppo", "sac", "dqn"):
+                return {"status": "error", "error": f"Invalid algorithm: {algorithm}. Must be 'ppo', 'sac', or 'dqn'"}
             agent_id = uuid.uuid4().hex[:12]
             agent = {
                 "id": agent_id,

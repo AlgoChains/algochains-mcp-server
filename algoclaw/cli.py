@@ -677,10 +677,19 @@ def _run_signal_propagate(params: dict) -> dict:
 
 def _run_propagation_health(params: dict) -> dict:
     """Check if algochains.ai signal propagation service is reachable."""
+    import os
     import socket
-    url = "http://172.232.170.168/signals/signal/"
-    host = "172.232.170.168"
-    port = 80
+    from urllib.parse import urlparse
+
+    _LEGACY_SIGNAL_URL = "http://172.232.170.168/signals/signal/"
+    url = (
+        os.getenv("ALGOCHAINS_SIGNAL_URL", "").strip()
+        or os.getenv("SIGNAL_URL", "").strip()
+        or _LEGACY_SIGNAL_URL
+    )
+    parsed = urlparse(url)
+    host = parsed.hostname or "172.232.170.168"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
         sock = socket.create_connection((host, port), timeout=3)
         sock.close()

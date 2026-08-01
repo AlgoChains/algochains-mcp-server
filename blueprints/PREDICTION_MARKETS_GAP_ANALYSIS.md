@@ -10,7 +10,7 @@ NOTE: Kalshi CLOB gaps are tracked as P4-17 in docs/MCP_SERVER_ENHANCEMENT_ROADM
 
 | Area | Best-in-class pattern |
 |------|------------------------|
-| Polymarket discovery | Gamma API: `order=volume_24hr`, `ascending=false`, filter `active=true`, `closed=false`. Use outcome prices only when present — never invent 50/50. ([Polymarket docs](https://docs.polymarket.com/)) |
+| Polymarket discovery | Gamma endpoint with `order=volume_24hr`, `ascending=false`, filter `active=true`, `closed=false`. Use outcome prices only when present — never invent 50/50. ([Polymarket docs](https://docs.polymarket.com/)) |
 | Polymarket execution | `py-clob-client`; limit price from **live** book/midpoint computed by caller, not hardcoded |
 | Kalshi reads/trading | RSA-PSS-SHA256; headers `KALSHI-ACCESS-KEY`, `KALSHI-ACCESS-TIMESTAMP`, `KALSHI-ACCESS-SIGNATURE`; message `timestamp + METHOD + path_without_query` ([Kalshi quick start](https://docs.kalshi.com/getting_started/quick_start_authenticated_requests)) |
 | Django propagation | HMAC body signature; secrets only via env (`ALGOCHAINS_SIGNAL_*` / `SIGNAL_*`) |

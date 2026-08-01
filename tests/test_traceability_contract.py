@@ -12,10 +12,16 @@ from __future__ import annotations
 import json
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+
+def _decode_tool_json(result):
+    text = result[0].text if hasattr(result[0], "text") else str(result[0])
+    return json.loads(text)
 
 
 def test_place_order_schema_has_client_trace_id():
@@ -56,7 +62,7 @@ def test_traceability_contract_doc_exists():
         "docs/MCP_TRACEABILITY_CONTRACT.md not found. "
         "This document defines the client_trace_id / signal_id join-key protocol."
     )
-    content = doc.read_text()
+    content = doc.read_text(encoding="utf-8")
     assert "client_trace_id" in content, "Contract doc missing client_trace_id section"
     assert "signal_id" in content, "Contract doc missing signal_id section"
     assert "trade_log" in content, "Contract doc must reference trade_log for join semantics"
@@ -68,7 +74,7 @@ def test_x_request_id_middleware_present():
     bridge_src = (
         Path(__file__).resolve().parents[1]
         / "src" / "algochains_mcp" / "http_bridge.py"
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "X-Request-Id" in bridge_src, (
         "http_bridge.py is missing X-Request-Id header handling. "
         "This is required for request traceability."
@@ -114,3 +120,63 @@ def test_place_order_echoes_client_trace_id(monkeypatch):
     assert data.get("blocked") is True or "blocked" in text.lower() or "authorization" in text.lower(), (
         f"Expected danger-tier block, got: {text[:200]}"
     )
+
+
+def test_signal_trade_correlation_retries_transient_supabase_reset(monkeypatch, tmp_path):
+    """The traceability wrapper retries Supabase/PostgREST connection resets."""
+    import asyncio
+    import subprocess
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# test placeholder\n")
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="signals_trace:ConnectError:[Errno 54] Connection reset by peer",
+            )
+        return SimpleNamespace(returncode=0, stdout='{"status":"ok","retried":true}', stderr="")
+
+    monkeypatch.setattr(srv, "_default_control_tower", lambda: str(tmp_path))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(srv.time, "sleep", lambda _seconds: None)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+
+    assert _decode_tool_json(result) == {"status": "ok", "retried": True}
+    assert len(calls) == 2
+
+
+def test_signal_trade_correlation_does_not_retry_permanent_failure(monkeypatch, tmp_path):
+    """Permanent audit failures should surface immediately instead of being hidden."""
+    import asyncio
+    import subprocess
+    import algochains_mcp.server as srv
+
+    script = tmp_path / "scripts" / "signal_trade_correlation_audit.py"
+    script.parent.mkdir()
+    script.write_text("# test placeholder\n")
+
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=2, stdout="", stderr="missing required column")
+
+    monkeypatch.setattr(srv, "_default_control_tower", lambda: str(tmp_path))
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = asyncio.run(srv.call_tool("get_signal_trade_correlation", {}))
+    data = _decode_tool_json(result)
+
+    assert data["error"] == "correlation audit failed"
+    assert data["returncode"] == 2
+    assert data["stderr"] == "missing required column"
+    assert len(calls) == 1
