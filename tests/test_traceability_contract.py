@@ -26,7 +26,7 @@ def test_place_order_schema_has_client_trace_id():
         (t for t in srv.TOOLS if t.name == "place_order"), None
     )
     assert place_order_tool is not None, "place_order tool not found"
-    schema_props = place_order_tool.inputSchema.get("properties", {})
+    schema_props = srv._tool_input_schema(place_order_tool).get("properties", {})
     assert "client_trace_id" in schema_props, (
         "place_order inputSchema missing 'client_trace_id' field. "
         "This field enables MCP call correlation to control-tower trade_log rows."
@@ -42,7 +42,7 @@ def test_cancel_order_schema_has_client_trace_id():
     )
     if cancel_tool is None:
         pytest.skip("cancel_order tool not found")
-    schema_props = cancel_tool.inputSchema.get("properties", {})
+    schema_props = srv._tool_input_schema(cancel_tool).get("properties", {})
     assert "client_trace_id" in schema_props, (
         "cancel_order inputSchema missing 'client_trace_id' field."
     )

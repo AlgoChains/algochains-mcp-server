@@ -1131,7 +1131,18 @@ def _get_dynamic_gateway():
         if cls:
             _dynamic_gateway = cls()
             _dynamic_gateway.register_tools_from_list(
-                [t.model_dump() if hasattr(t, 'model_dump') else {"name": t.name, "description": t.description, "inputSchema": t.inputSchema} for t in TOOLS],
+                [
+                    (
+                        {**t.model_dump(by_alias=True), "inputSchema": _tool_input_schema(t)}
+                        if hasattr(t, "model_dump")
+                        else {
+                            "name": t.name,
+                            "description": t.description,
+                            "inputSchema": _tool_input_schema(t),
+                        }
+                    )
+                    for t in TOOLS
+                ],
                 category="core",
                 version=f"v{_server_version}",
             )
@@ -4724,6 +4735,26 @@ TIER1_TOOL_NAMES = {
 }
 
 
+def _tool_input_schema(tool: Any) -> dict:
+    """Read Tool schema across mcp SDK versions (inputSchema vs input_schema).
+
+    mcp>=2 may expose the Python attribute as snake_case while constructors /
+    wire format still use camelCase. Pydantic raises AttributeError on the
+    missing name, so getattr(..., default) is not enough.
+    """
+    for attr in ("inputSchema", "input_schema"):
+        try:
+            schema = getattr(tool, attr)
+        except AttributeError:
+            continue
+        if schema is not None:
+            return schema
+    if hasattr(tool, "model_dump"):
+        dumped = tool.model_dump(by_alias=True)
+        return dumped.get("inputSchema") or dumped.get("input_schema") or {}
+    return {}
+
+
 def _annotate_tools(tools: list[Tool]) -> list[Tool]:
     """Apply MCP 2025-06-18 Tool Behavior Annotations to all tools."""
     annotated = []
@@ -4733,30 +4764,16 @@ def _annotate_tools(tools: list[Tool]) -> list[Tool]:
         _tier_for_annotation = None
         _annot_order_exec = 2
     for t in tools:
+        # Prefer model_copy so we never re-read/re-write inputSchema under either SDK naming.
         if _tier_for_annotation is not None and _tier_for_annotation(t.name) >= _annot_order_exec:
-            annotated.append(Tool(
-                name=t.name,
-                description=t.description,
-                inputSchema=t.inputSchema,
-                annotations=ANNOT_TRADE_EXEC,
-            ))
+            annotated.append(t.model_copy(update={"annotations": ANNOT_TRADE_EXEC}))
             continue
         if t.annotations is not None:
             annotated.append(t)
         elif t.name in _TOOL_ANNOTATION_MAP:
-            annotated.append(Tool(
-                name=t.name,
-                description=t.description,
-                inputSchema=t.inputSchema,
-                annotations=_TOOL_ANNOTATION_MAP[t.name],
-            ))
+            annotated.append(t.model_copy(update={"annotations": _TOOL_ANNOTATION_MAP[t.name]}))
         else:
-            annotated.append(Tool(
-                name=t.name,
-                description=t.description,
-                inputSchema=t.inputSchema,
-                annotations=ANNOT_READ_ONLY,
-            ))
+            annotated.append(t.model_copy(update={"annotations": ANNOT_READ_ONLY}))
     return annotated
 
 

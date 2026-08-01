@@ -196,7 +196,11 @@ class DynamicToolsetGateway:
         for tool_def in tools:
             name = tool_def.get("name", "")
             desc = tool_def.get("description", "")
-            schema = tool_def.get("inputSchema", {})
+            schema = (
+                tool_def.get("inputSchema")
+                or tool_def.get("input_schema")
+                or {}
+            )
             props = schema.get("properties", {})
 
             tags = [category]

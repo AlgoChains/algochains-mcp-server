@@ -80,11 +80,11 @@ jobs:
           import sys
           sys.path.insert(0, 'src')
           from algochains_mcp.dynamic_toolsets.gateway import DynamicToolsetGateway
-          from algochains_mcp.server import TOOLS
+          from algochains_mcp.server import TOOLS, _tool_input_schema
 
           gw = DynamicToolsetGateway()
           gw.register_tools_from_list(
-              [{"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+              [{"name": t.name, "description": t.description, "inputSchema": _tool_input_schema(t)}
                for t in TOOLS],
               category="core", version="v20"
           )
