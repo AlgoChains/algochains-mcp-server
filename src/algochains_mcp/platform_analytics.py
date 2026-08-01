@@ -228,15 +228,43 @@ async def get_analytics_summary(
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
+    # `event_type` reaches here from an MCP caller and used to be concatenated
+    # straight into the PostgREST query string:
+    #
+    #     params = f"tracked_at=gte.{cutoff}"
+    #     params += f"&event_type=eq.{event_type}"
+    #     ...f"?{params}&select=event_type,session_id,user_id,page,tracked_at"
+    #
+    # An `&` inside the value therefore became a NEW query parameter. A caller
+    # passing `x&select=*,properties&limit=5000` widened the projection to every
+    # column — including `properties`, which carries arbitrary event payload —
+    # and raised the row cap. `&user_id=eq.<someone-else>` reads another user's
+    # rows. All of it under SUPABASE_SERVICE_KEY, which bypasses RLS.
+    #
+    # Two fixes, both needed. httpx `params=` percent-encodes values, so an `&`
+    # can no longer terminate one. And the value is validated against the known
+    # vocabulary first, because encoding a garbage filter still runs a query on
+    # the service key's authority.
+    if event_type is not None and event_type not in FUNNEL_EVENTS:
+        return {
+            "error": "unknown event_type",
+            "event_type": event_type,
+            "known_event_types": sorted(FUNNEL_EVENTS),
+        }
+
     if _sb_available():
         try:
-            params = f"tracked_at=gte.{cutoff}"
+            query = {
+                "tracked_at": f"gte.{cutoff}",
+                "select": "event_type,session_id,user_id,page,tracked_at",
+                "limit": "5000",
+            }
             if event_type:
-                params += f"&event_type=eq.{event_type}"
+                query["event_type"] = f"eq.{event_type}"
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
                 resp = await client.get(
-                    f"{SUPABASE_URL.rstrip('/')}/rest/v1/{_TABLE}"
-                    f"?{params}&select=event_type,session_id,user_id,page,tracked_at",
+                    f"{SUPABASE_URL.rstrip('/')}/rest/v1/{_TABLE}",
+                    params=query,
                     headers=_sb_headers(),
                 )
                 if resp.status_code == 200:
