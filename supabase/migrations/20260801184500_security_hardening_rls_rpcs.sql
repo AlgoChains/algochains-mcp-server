@@ -83,12 +83,13 @@ BEGIN
   END IF;
 
   DROP POLICY IF EXISTS sba_owner_update_pause ON public.subscriber_bot_assignments;
+  -- Cast both sides: local CI schemas may store subscriber_id as text while auth.uid() is uuid.
   CREATE POLICY sba_owner_update_pause
     ON public.subscriber_bot_assignments
     FOR UPDATE
     TO authenticated
-    USING (auth.uid() = subscriber_id)
-    WITH CHECK (auth.uid() = subscriber_id);
+    USING (auth.uid()::text = subscriber_id::text)
+    WITH CHECK (auth.uid()::text = subscriber_id::text);
 
   REVOKE UPDATE ON public.subscriber_bot_assignments FROM anon, authenticated, PUBLIC;
   GRANT UPDATE (paused) ON public.subscriber_bot_assignments TO authenticated;
@@ -104,12 +105,13 @@ BEGIN
   END IF;
 
   DROP POLICY IF EXISTS spo_update_own ON public.subscriber_paper_orders;
+  -- Cast both sides for uuid/text schema drift between environments.
   CREATE POLICY spo_update_own
     ON public.subscriber_paper_orders
     FOR UPDATE
     TO authenticated
-    USING (auth.uid() = subscriber_id)
-    WITH CHECK (auth.uid() = subscriber_id);
+    USING (auth.uid()::text = subscriber_id::text)
+    WITH CHECK (auth.uid()::text = subscriber_id::text);
 
   REVOKE UPDATE ON public.subscriber_paper_orders FROM anon, authenticated, PUBLIC;
   GRANT UPDATE (status, error_msg, updated_at) ON public.subscriber_paper_orders TO authenticated;
