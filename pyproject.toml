@@ -29,7 +29,7 @@ dependencies = [
     # were removed, and Tool.inputSchema was renamed to Tool.input_schema (559
     # references here, 537 in server.py alone). Migrating is real work and gets its
     # own change — raise this bound deliberately, not via a resolver mid-merge.
-    "mcp>=1.0.0,<2",
+    "mcp>=1.0.0,<3",
     "httpx>=0.27.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
