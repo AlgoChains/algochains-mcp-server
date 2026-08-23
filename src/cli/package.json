@@ -21,7 +21,7 @@
     "commander": "^15.0.0",
     "enquirer": "^2.4.1",
     "eventsource": "^4.1.0",
-    "hono": "^4.12.26",
+    "hono": "^4.12.30",
     "ink": "^7.0.6",
     "ink-spinner": "^5.0.0",
     "keytar": "^7.9.0",
