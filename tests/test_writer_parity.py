@@ -216,10 +216,12 @@ class TestScopesForTier:
         assert scopes_for_tier("unknown_tier") == DEFAULT_SCOPES
 
     def test_override_filtered_by_tier(self):
-        # developer_pro cannot get publish:listing (enterprise only)
-        scopes = scopes_for_tier("developer_pro", override=["read:market_data", "publish:listing"])
+        # publish:listing is developer-tier (owner-approved 2026-09-01);
+        # agent:host remains enterprise-only and must be filtered out.
+        scopes = scopes_for_tier("developer_pro", override=["read:market_data", "publish:listing", "agent:host"])
         assert "read:market_data" in scopes
-        assert "publish:listing" not in scopes
+        assert "publish:listing" in scopes
+        assert "agent:host" not in scopes
 
     def test_empty_override_returns_default(self):
         assert scopes_for_tier("developer_pro", override=[]) == DEFAULT_SCOPES

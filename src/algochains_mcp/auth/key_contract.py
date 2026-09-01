@@ -48,6 +48,10 @@ TIER_SCOPES: dict[str, list[str]] = {
         "write:backtest",
         "agent:sandbox",
         "spend:llm_budget",
+        # Owner-approved 2026-09-01: the Open List track is self-serve by design
+        # (paper-only, UNVERIFIED, creator bound server-side; live/verified still
+        # requires staff), so submit_to_marketplace is developer-tier, not enterprise.
+        "publish:listing",
     ],
     "enterprise": [
         "read:market_data",

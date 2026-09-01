@@ -224,8 +224,11 @@ Cursor local config for local stdio:
 ## 8. Scopes
 
 Keys are issued with default scopes `read:market_data` and `read:signals`.
-Additional scopes (`write:backtest`, `publish:listing`, `read:data_warehouse`) may
-be requested via support. Scope requirements per tool are returned in the `/tools`
+Developer-tier keys additionally carry `read:backtest`, `write:backtest`, and
+`publish:listing` (developer-tier since 2026-09-01 — the Open List track is
+self-serve; live/verified publication still requires staff review).
+`read:data_warehouse` and `agent:host` remain enterprise-only and may be
+requested via support. Scope requirements per tool are returned in the `/tools`
 endpoint response.
 
 Scope-gated tools:
