@@ -30,6 +30,14 @@ pip install "algochains-mcp-server[ml]"
 
 Keys use the prefix `ac_live_` (production) or `ac_test_` (sandbox).
 
+One key works on both hosted surfaces: the MCP bridge (`mcp.algochains.ai`)
+and the Data API (`api.algochains.ai`) validate the same `ac_live_`/`ac_test_`
+credential against the same key store. (Data API support shipped 2026-09-01 —
+FAST-API-credentials PR #5; earlier deployments rejected platform keys there
+with 401.) The 4-char-signature "Algochains-core" research keys minted by
+control-tower scripts are a separate legacy family: they work on the Data API
+only, never on the MCP bridge.
+
 ---
 
 ## 3. Configure your MCP client
