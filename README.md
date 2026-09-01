@@ -2,7 +2,7 @@
 
 [![MCP](https://img.shields.io/badge/MCP-2025--11--25-blue?style=flat-square)](https://modelcontextprotocol.io)
 [![Tools](https://img.shields.io/badge/tools-535%20full%20%7C%20181%20smart-green?style=flat-square)](#tool-domains)
-[![Version](https://img.shields.io/badge/version-22.7.2-blueviolet?style=flat-square)](#whats-new)
+[![Version](https://img.shields.io/badge/version-22.7.3-blueviolet?style=flat-square)](#whats-new)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-purple?style=flat-square)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-GOTCHAS__AND__BUGS.md-red?style=flat-square)](docs/GOTCHAS_AND_BUGS.md)
@@ -408,6 +408,12 @@ OWNER_API_TOKEN=your-owner-token-here
 ---
 
 ## What's New in v22.x
+
+### v22.7.3 (2026-09-01) — VirusTotal hash gate on marketplace staging
+
+- `submit_to_marketplace` now asks Django `POST /api/v1/security/scan-hash/` after artifact verify. Unknown or unclean hashes fail closed (`scan_blocked`). Quota is 5 scans per person per UTC day, owned by Django.
+- `register_strategy` spec paths are jailed to `state/custom_strategies` plus configured artifact roots.
+- Synced package/registry version metadata to **22.7.3**.
 
 ### v22.7.2 (2026-07-13) — Live-ops tool routing for agents
 
