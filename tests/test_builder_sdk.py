@@ -166,7 +166,11 @@ class TestSubmissionPipeline:
             result.feedback.append("Listing staged on marketplace")
             return True
 
+        async def fake_vt(_sha, _subject):
+            return True, ""
+
         monkeypatch.setattr(pipeline, "_stage_listing", fake_stage)
+        monkeypatch.setattr(pipeline, "_virustotal_hash", fake_vt)
         sub = StrategySubmission(
             symbol="AAPL", strategy_type="trend", timeframe="hour",
             oos_sharpe=2.8, oos_trades=200, max_drawdown_pct=8.0,

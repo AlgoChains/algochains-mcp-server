@@ -356,6 +356,32 @@ def _onyx_ingest_roots() -> list[Path]:
     return roots
 
 
+def _strategy_spec_roots() -> list[Path]:
+    """Allowed roots for register_strategy spec_path (fail-closed outside these)."""
+    roots = [(_CUSTOM_STRATEGIES_DIR).resolve()]
+    raw = (
+        os.getenv("ALGOCHAINS_STRATEGY_SPEC_ROOTS")
+        or os.getenv("ALGOCHAINS_VERIFIED_ARTIFACT_DIR")
+        or ""
+    ).strip()
+    for part in raw.replace(";", ":").split(":"):
+        part = part.strip()
+        if part:
+            roots.append(Path(part).expanduser().resolve())
+    return roots
+
+
+def _path_under_strategy_spec_roots(path: Path) -> bool:
+    resolved = path.resolve()
+    for root in _strategy_spec_roots():
+        try:
+            resolved.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def _path_under_onyx_roots(path: Path, roots: list[Path] | None = None) -> bool:
     resolved = path.resolve()
     for root in roots or _onyx_ingest_roots():
@@ -567,11 +593,20 @@ def register_strategy(
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
-    spec = Path(spec_path)
+    spec = Path(spec_path).expanduser()
     if not spec.exists():
         return {"success": False, "error": f"spec_path not found: {spec_path}"}
     if not spec.suffix.lower() == ".json":
         return {"success": False, "error": "spec_path must be a .json file"}
+    if not _path_under_strategy_spec_roots(spec):
+        return {
+            "success": False,
+            "error": (
+                "spec_path is outside the allowed strategy-spec jail "
+                "(state/custom_strategies, ALGOCHAINS_STRATEGY_SPEC_ROOTS, "
+                "or ALGOCHAINS_VERIFIED_ARTIFACT_DIR)."
+            ),
+        }
 
     try:
         spec_data = json.loads(spec.read_text(encoding="utf-8"))
