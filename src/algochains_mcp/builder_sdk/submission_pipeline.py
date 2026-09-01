@@ -94,6 +94,11 @@ class StrategySubmission:
                 "artifact_id": self.verification_artifact.get("artifact_id", ""),
                 "sha256": self.verification_artifact.get("sha256", ""),
             },
+            "verification_artifact": {
+                "sha256": self.verification_artifact.get("sha256", ""),
+            },
+            "submitter_id": self.submitter_id,
+            "scan_subject": self.submitter_id,
         }
 
 
@@ -182,18 +187,31 @@ class SubmissionPipeline:
                         "Provide a validation artifact under "
                         "ALGOCHAINS_VERIFIED_ARTIFACT_DIR with its exact SHA-256."
                     )
-                elif await self._stage_listing(submission, result):
-                    result.status = "staged"
-                    result.dry_run = False
-                    result.staged = True
                 else:
-                    result.passed = False
-                    result.status = "staging_failed"
-                    result.dry_run = False
-                    result.staged = False
-                    result.next_steps = (
-                        "Resolve the listing API error, then resubmit the verified artifact."
-                    )
+                    sha = str(submission.verification_artifact.get("sha256") or "").strip().lower()
+                    vt_ok, vt_error = await self._virustotal_hash(sha, submission.submitter_id)
+                    if not vt_ok:
+                        result.passed = False
+                        result.status = "scan_blocked"
+                        result.dry_run = True
+                        result.staged = False
+                        result.feedback.append(vt_error)
+                        result.next_steps = (
+                            "VirusTotal must return a clean hash before staging. "
+                            "Quota is 5 scans per person per day."
+                        )
+                    elif await self._stage_listing(submission, result):
+                        result.status = "staged"
+                        result.dry_run = False
+                        result.staged = True
+                    else:
+                        result.passed = False
+                        result.status = "staging_failed"
+                        result.dry_run = False
+                        result.staged = False
+                        result.next_steps = (
+                            "Resolve the listing API error, then resubmit the verified artifact."
+                        )
 
         return result
 
@@ -232,6 +250,49 @@ class SubmissionPipeline:
             return False, "Artifact SHA-256 does not match the local file."
 
         return True, ""
+
+    async def _virustotal_hash(self, sha256: str, subject: str) -> tuple[bool, str]:
+        """Ask Django to look up the artifact hash on VirusTotal.
+
+        Hash-only: unknown hashes fail closed (upload the file on the SaaS
+        submit form). Quota is 5 scans per person per day, owned by Django.
+        """
+        if len(sha256) != 64:
+            return False, "Artifact SHA-256 is required before VirusTotal lookup."
+        subject = (subject or "").strip() or "mcp-anonymous"
+        try:
+            import httpx
+            from algochains_mcp.marketplace.contracts import LISTING_CREATE_PATH
+        except Exception:
+            return False, "Listing client is unavailable; VirusTotal lookup fails closed."
+
+        scan_path = "/api/v1/security/scan-hash/"
+        # Keep the scan on the same host as listing create.
+        base = self.django_url.rstrip("/")
+        if LISTING_CREATE_PATH.startswith("/"):
+            pass
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    f"{base}{scan_path}",
+                    json={"sha256": sha256, "subject": subject},
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                )
+        except Exception as exc:
+            logger.warning("VirusTotal hash lookup failed: %s", exc)
+            return False, "VirusTotal lookup unavailable; staging fails closed."
+
+        if resp.status_code in (200, 201):
+            return True, ""
+        try:
+            payload = resp.json()
+            reason = str(payload.get("reason") or payload.get("error") or resp.text)
+        except Exception:
+            reason = resp.text or f"scan-hash returned {resp.status_code}"
+        return False, reason
 
     def _validate_gates(self, sub: StrategySubmission) -> SubmissionResult:
         """Run through 7 validation gates."""

@@ -8313,6 +8313,9 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
             asset_class=arguments.get("asset_class", "stock"),
             price_monthly=arguments.get("price_monthly", 29.99),
             verification_artifact=arguments.get("verification_artifact") or {},
+            submitter_id=str(
+                arguments.get("_clerk_user_id") or arguments.get("submitter_id") or ""
+            ),
         )
         result = await pipeline.submit(sub)
         return _text(result.to_dict())
