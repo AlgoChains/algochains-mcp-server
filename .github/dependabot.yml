@@ -7,6 +7,11 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    ignore:
+      # mcp 2.x removed Server.list_tools/call_tool and renamed Tool.inputSchema;
+      # migrating is deliberate work (see pyproject.toml) — never a resolver bump.
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
     groups:
       python-dev-dependencies:
         patterns:

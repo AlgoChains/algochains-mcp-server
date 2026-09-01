@@ -190,6 +190,31 @@ OWNER_TOOLS = {
 }
 
 
+def _import_server_module():
+    """Import the tool server, separating deployment breakage from tool errors.
+
+    When ``algochains_mcp.server`` fails to import (mcp SDK drift, broken
+    deploy), every tool call would otherwise surface the raw import-time
+    exception (e.g. ``'Tool' object has no attribute 'inputSchema'``) as if
+    the tool itself failed. Return the module plus an operator-facing error
+    payload instead so callers see a clear, actionable diagnosis.
+    """
+    try:
+        from algochains_mcp import server as _server
+        return _server, None
+    except Exception as e:  # noqa: BLE001 — any import-time failure is a broken deploy
+        log.critical("MCP bridge cannot import algochains_mcp.server: %s", e)
+        return None, {
+            "error": "MCP bridge deployment is broken: the tool server failed to import",
+            "error_type": "ServerImportError",
+            "detail": str(e),
+            "action": (
+                "Operator action required: check GET /health (server_import_ok=false) "
+                "and redeploy the bridge with a compatible mcp SDK version."
+            ),
+        }
+
+
 async def handle_mcp_request(
     tool_name: str,
     arguments: dict,
@@ -246,8 +271,10 @@ async def handle_mcp_request(
         # Developer keys execute via the standard server.call_tool path — the
         # tool allowlist already guarantees tier 0/1 only. Tracing is preserved.
         # Inject scopes/identity for sandbox + budget tools (stripped before audit hash).
+        _server, import_error = _import_server_module()
+        if import_error is not None:
+            return {**import_error, "tool": tool_name}
         try:
-            from algochains_mcp import server as _server
             call_args = attach_trusted_developer_context(
                 dict(arguments or {}),
                 scopes=tuple(developer.scopes or ()),
@@ -296,9 +323,11 @@ async def handle_mcp_request(
             payload["caller_scope"] = caller_scope
         return payload
 
-    try:
-        from algochains_mcp import server as _server
+    _server, import_error = _import_server_module()
+    if import_error is not None:
+        return {**import_error, "tool": tool_name}
 
+    try:
         with trace_span(
             "mcp.tool.call",
             {
