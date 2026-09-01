@@ -6,6 +6,19 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [22.7.3] — 2026-09-01
+
+### Added — VirusTotal hash gate on marketplace staging
+
+- After a verified local artifact, `submit_to_marketplace` calls Django
+  `POST /api/v1/security/scan-hash/` (MCP does not hold the VirusTotal key).
+  Unclean or unknown hashes fail closed with `scan_blocked`.
+- `register_strategy` spec paths are jailed under `state/custom_strategies`
+  and optional `ALGOCHAINS_STRATEGY_SPEC_ROOTS` / `ALGOCHAINS_VERIFIED_ARTIFACT_DIR`.
+- Package / registry / server manifest version → **22.7.3**.
+
+---
+
 ## [22.7.2] — 2026-07-13
 
 ### Added — Live-ops tool routing for public agents

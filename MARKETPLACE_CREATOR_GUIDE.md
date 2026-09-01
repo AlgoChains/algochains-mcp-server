@@ -132,6 +132,13 @@ result = submit_to_marketplace(
 
 This creates a listing in **STAGING** status. It will appear on algochains.ai/marketplace with a "Pending Review" badge.
 
+Staging with a local artifact requires the file SHA-256 to be VirusTotal-clean.
+AlgoChains looks the hash up via `POST /api/v1/security/scan-hash/` (5 scans per
+person per UTC day; cached clean hashes do not consume quota). Unknown hashes
+must be uploaded on the [Submit Strategy](https://algochains.ai/submit-strategy/)
+form so VirusTotal can analyze the bytes. Metadata-only Open List registration
+is not scanned.
+
 **What happens next:**
 - The listing is stored in `state/marketplace_listings.json`
 - A Slack notification goes to `#quant-lab`
