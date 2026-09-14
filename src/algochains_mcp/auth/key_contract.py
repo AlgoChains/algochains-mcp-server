@@ -11,7 +11,7 @@ is the prerequisite for writer-parity tests and correct bridge resolution.
 
 Canonical product tiers are Free, Trader, Developer and Enterprise, with
 Employee reserved for internal access. Only Developer, Enterprise and Employee
-may mint developer-key scopes. Unknown/legacy tier names fail closed.
+may mint developer-key scopes. Unknown tiers fail closed.
 
 Key design:
   - Plaintext NEVER stored. Generated once, shown once, SHA-256 hashed for storage.
@@ -67,6 +67,21 @@ TIER_SCOPES: dict[str, list[str]] = {
 # Unknown tiers fail closed. Free/Trader customers must never gain market-data
 # scopes just because a stale writer passed an unrecognized tier token.
 DEFAULT_SCOPES: list[str] = []
+
+# One narrow migration shim remains because platform_auth in the already-shipped
+# MCP package still passes developer_pro when its optional tier argument is
+# omitted. Normalize it *before persistence* so no newly minted key can recreate
+# legacy tier metadata. Remove this shim once that packaged callsite is updated.
+_LEGACY_WRITER_TIER_ALIASES = {
+    "developer_pro": "developer",
+}
+
+
+def canonical_key_tier(tier: str) -> str:
+    """Return a canonical key-owning tier or an empty fail-closed token."""
+    normalized = str(tier or "").strip().lower().replace("-", "_")
+    normalized = _LEGACY_WRITER_TIER_ALIASES.get(normalized, normalized)
+    return normalized if normalized in TIER_SCOPES else ""
 
 
 # ── Key generation ─────────────────────────────────────────────────────────────
@@ -125,10 +140,11 @@ def scopes_for_tier(
     If override is provided, each scope is validated against the tier maximum.
     Unknown tiers return no scopes instead of inheriting market-data access.
     """
-    allowed = set(TIER_SCOPES.get(tier, DEFAULT_SCOPES))
+    canonical = canonical_key_tier(tier)
+    allowed = set(TIER_SCOPES.get(canonical, DEFAULT_SCOPES))
     if override is not None:
         return [scope for scope in override if scope in allowed]
-    return TIER_SCOPES.get(tier, DEFAULT_SCOPES).copy()
+    return TIER_SCOPES.get(canonical, DEFAULT_SCOPES).copy()
 
 
 # ── Validation helpers ─────────────────────────────────────────────────────────
@@ -152,9 +168,11 @@ def build_insert_payload(
     Build the canonical INSERT payload dict for public.developer_api_keys.
 
     ALL writers must produce this exact column set. Using this function ensures
-    writer-parity and prevents schema drift.
+    writer-parity and prevents schema drift. A stale legacy writer token is
+    normalized before both scopes and tier_at_creation are persisted.
     """
     env = "test" if raw_key.startswith(TEST_PREFIX) else "live"
+    canonical_tier = canonical_key_tier(tier)
     return {
         "clerk_user_id": clerk_user_id,
         "key_hash": hash_platform_key(raw_key),
@@ -163,8 +181,8 @@ def build_insert_payload(
         "key_hint": key_hint(raw_key),
         "label": label[:60] if label else "Default",
         "name": label[:60] if label else "Default",
-        "scopes": scopes_for_tier(tier, override_scopes),
-        "tier_at_creation": tier,
+        "scopes": scopes_for_tier(canonical_tier, override_scopes),
+        "tier_at_creation": canonical_tier,
         "env": env,
         "is_active": True,
         **({"billing_account_id": billing_account_id} if billing_account_id else {}),
