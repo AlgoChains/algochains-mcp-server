@@ -226,8 +226,8 @@ class TestScopesForTier:
     def test_empty_override_returns_default(self):
         assert scopes_for_tier("developer_pro", override=[]) == DEFAULT_SCOPES
 
-    def test_default_scopes_not_empty(self):
-        assert len(DEFAULT_SCOPES) > 0
+    def test_default_scopes_fail_closed(self):
+        assert DEFAULT_SCOPES == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
