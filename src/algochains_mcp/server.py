@@ -10761,6 +10761,8 @@ async def _dispatch_tool(name: str, arguments: dict, registry: BrokerRegistry) -
     elif name == "create_developer_key":
         try:
             from .auth.platform_auth import create_developer_key as _create_key
+            # SECURITY: never forward a caller-supplied tier. Without an
+            # authoritative server-side tier, create_developer_key fails closed.
             return _text(await _create_key(
                 access_token=arguments.get("access_token", ""),
                 name=arguments.get("name", "default"),

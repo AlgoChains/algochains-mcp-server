@@ -113,15 +113,14 @@ class TestResolveDeveloperKey:
         assert mock_client.return_value.rpc.call_count == 1
 
     @patch("algochains_mcp.developer_auth._service_client")
-    def test_empty_scopes_uses_defaults(self, mock_client):
+    def test_empty_scopes_denied(self, mock_client):
         mock_client.return_value = self._mock_sb([{
             "clerk_user_id": "clerk_noscopes",
             "scopes": [],
             "env": "live",
         }])
         result = resolve_developer_key("ac_live_noscopes")
-        assert result is not None
-        assert len(result.scopes) > 0  # defaults applied
+        assert result is None  # fail closed: never upgraded to default scopes
 
     @patch("algochains_mcp.developer_auth._service_client")
     def test_invalid_env_normalised_to_live(self, mock_client):
@@ -156,9 +155,8 @@ class TestResolveDeveloperKey:
 
         result = resolve_developer_key(raw)
 
-        assert result is not None
-        assert result.clerk_user_id == "legacy@example.com"
-        assert result.env == "test"
+        # The hashed mirror has no scopes, so it must not authorize (fail closed).
+        assert result is None
         query.select.assert_called_once_with(
             "user_name,key_hash,key_prefix,is_active,revoked_at"
         )

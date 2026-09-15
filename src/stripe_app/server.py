@@ -91,6 +91,19 @@ async def _verify_request(request: Request) -> bytes:
 async def app_info():
     return JSONResponse(APP_INFO)
 
+# Known Stripe APP product id -> canonical AlgoChains key tier. Products not
+# listed here (paper-tier, live-tier, typos, new SKUs) grant NO developer key.
+STRIPE_PRODUCT_TIERS: dict[str, str] = {
+    "developer-tier": "developer",
+    "enterprise-tier": "enterprise",
+}
+
+
+def tier_for_stripe_product(product_id: str) -> str | None:
+    """Return the canonical tier for a known Stripe product, else None."""
+    return STRIPE_PRODUCT_TIERS.get(str(product_id or "").strip())
+
+
 # ── Provision endpoint ─────────────────────────────────────────────────────────
 @app.post("/app/provision")
 async def provision(request: Request):
@@ -108,13 +121,22 @@ async def provision(request: Request):
     body = await _verify_request(request)
     data: dict[str, Any] = json.loads(body)
 
-    product_id = data.get("product_id", "developer-tier")
+    product_id = data.get("product_id", "")
     stripe_customer_id = data.get("customer_id", "")
     stripe_account_id  = data.get("account_id", "")
     email = data.get("email", "")
 
     # Map Stripe product → canonical AlgoChains tier.
-    tier = "enterprise" if product_id == "enterprise-tier" else "developer"
+    tier = tier_for_stripe_product(product_id)
+    if tier is None:
+        log.warning(
+            "Stripe APP: product %r has no developer-key entitlement; no key provisioned",
+            product_id,
+        )
+        return JSONResponse(
+            {"error": "product_not_entitled", "product_id": product_id},
+            status_code=403,
+        )
 
     # Use email as clerk_user_id until Stripe webhook can supply a Clerk ID.
     # This is acceptable — bridge resolution needs clerk_user_id NOT NULL.

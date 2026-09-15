@@ -135,7 +135,9 @@ class TestCreateDeveloperKeyExploitClosed:
             return _mock_response(201, [{"id": "key-row-1"}])
 
         with patch("httpx.AsyncClient", _fake_async_client(post=_post)):
-            result = await platform_auth.create_developer_key(access_token="valid-token")
+            result = await platform_auth.create_developer_key(
+                access_token="valid-token", tier="developer"
+            )
 
         assert result["status"] == "ok"
         assert captured["user_id"] == AAL2_USER_ID
@@ -152,7 +154,7 @@ class TestLegitimatePathStillWorks:
 
         with patch("httpx.AsyncClient", _fake_async_client(post=_post)):
             result = await platform_auth.create_developer_key(
-                access_token="valid-token", name="my-key", env="test"
+                access_token="valid-token", name="my-key", env="test", tier="developer"
             )
 
         assert result["status"] == "ok"

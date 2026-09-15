@@ -68,19 +68,25 @@ TIER_SCOPES: dict[str, list[str]] = {
 # scopes just because a stale writer passed an unrecognized tier token.
 DEFAULT_SCOPES: list[str] = []
 
-# One narrow migration shim remains because platform_auth in the already-shipped
-# MCP package still passes developer_pro when its optional tier argument is
-# omitted. Normalize it *before persistence* so no newly minted key can recreate
-# legacy tier metadata. Remove this shim once that packaged callsite is updated.
-_LEGACY_WRITER_TIER_ALIASES = {
-    "developer_pro": "developer",
-}
+# Legacy tier tokens. Aligned with Django_Algochains
+# home/services/developer_entitlements.py (_canonical_tier, #930): legacy names
+# such as developer_pro / pro are NOT accepted at the entitlement boundary and
+# resolve to "free", which owns no developer-key scopes. Listed for docs/tests
+# only; they intentionally do NOT alias to "developer".
+LEGACY_FREE_TIER_TOKENS = frozenset({"developer_pro", "pro", "starter"})
+
+
+class UnknownKeyTierError(ValueError):
+    """Raised when a writer tries to mint a key for a tier with no key scopes."""
 
 
 def canonical_key_tier(tier: str) -> str:
-    """Return a canonical key-owning tier or an empty fail-closed token."""
-    normalized = str(tier or "").strip().lower().replace("-", "_")
-    normalized = _LEGACY_WRITER_TIER_ALIASES.get(normalized, normalized)
+    """Return a canonical key-owning tier or an empty fail-closed token.
+
+    Free, Trader, legacy (developer_pro/pro/starter) and unknown tiers all
+    return "" and callers must refuse to mint.
+    """
+    normalized = "_".join(str(tier or "").strip().lower().replace("-", "_").split())
     return normalized if normalized in TIER_SCOPES else ""
 
 
@@ -157,7 +163,7 @@ def is_developer_key(key: str | None) -> bool:
 def build_insert_payload(
     raw_key: str,
     clerk_user_id: str,
-    tier: str = "developer",
+    tier: str,
     label: str = "Default",
     override_scopes: Optional[list[str]] = None,
     billing_account_id: Optional[str] = None,
@@ -168,11 +174,23 @@ def build_insert_payload(
     Build the canonical INSERT payload dict for public.developer_api_keys.
 
     ALL writers must produce this exact column set. Using this function ensures
-    writer-parity and prevents schema drift. A stale legacy writer token is
-    normalized before both scopes and tier_at_creation are persisted.
+    writer-parity and prevents schema drift.
+
+    Fails closed: raises UnknownKeyTierError (so nothing is persisted) when the
+    tier is unknown/empty/legacy or the resulting scope set is empty. A row with
+    ``scopes=[]`` or ``tier_at_creation=""`` must never be written.
     """
     env = "test" if raw_key.startswith(TEST_PREFIX) else "live"
     canonical_tier = canonical_key_tier(tier)
+    if not canonical_tier:
+        raise UnknownKeyTierError(
+            f"refusing to mint developer key: tier {tier!r} has no developer-key entitlement"
+        )
+    scopes = scopes_for_tier(canonical_tier, override_scopes)
+    if not scopes:
+        raise UnknownKeyTierError(
+            "refusing to mint developer key: requested scopes are empty or outside the tier maximum"
+        )
     return {
         "clerk_user_id": clerk_user_id,
         "key_hash": hash_platform_key(raw_key),
@@ -181,7 +199,7 @@ def build_insert_payload(
         "key_hint": key_hint(raw_key),
         "label": label[:60] if label else "Default",
         "name": label[:60] if label else "Default",
-        "scopes": scopes_for_tier(canonical_tier, override_scopes),
+        "scopes": scopes,
         "tier_at_creation": canonical_tier,
         "env": env,
         "is_active": True,
