@@ -658,7 +658,7 @@ async def create_developer_key(
     name: str = "default",
     scopes: list[str] | None = None,
     env: str = "live",
-    tier: str = "developer_pro",
+    tier: str | None = None,
 ) -> dict[str, Any]:
     """
     Mint a new ac_live_* / ac_test_* developer API key.
@@ -668,8 +668,19 @@ async def create_developer_key(
     key for whoever's session happens to be cached.
     The plaintext key is returned ONCE ONLY — store it immediately.
     Uses key_contract.build_insert_payload() to ensure writer parity.
+
+    ``tier`` is a TRUSTED server-side value only (e.g. the persisted
+    ``tier_at_creation`` of a key being rotated). It must never come from MCP
+    tool arguments. This repo has no server-side paid-tier entitlement lookup
+    yet, so without an authoritative tier this fails closed and mints nothing.
+    Follow-up: resolve the tier from Django developer entitlements.
     """
-    from algochains_mcp.auth.key_contract import generate_platform_key, build_insert_payload
+    from algochains_mcp.auth.key_contract import (
+        UnknownKeyTierError,
+        build_insert_payload,
+        canonical_key_tier,
+        generate_platform_key,
+    )
 
     err = _need_supabase()
     if err:
@@ -698,6 +709,17 @@ async def create_developer_key(
     if env not in ("live", "test"):
         return {"error": "env must be 'live' or 'test'"}
 
+    canonical_tier = canonical_key_tier(tier or "")
+    if not canonical_tier:
+        return {
+            "error": "developer_tier_unresolved",
+            "message": (
+                "No authoritative Developer/Enterprise entitlement could be resolved "
+                "for this account, so no key was created. Create keys from the "
+                "AlgoChains dashboard (Developer settings)."
+            ),
+        }
+
     # Resolve clerk_user_id: prefer Clerk ID from user metadata, fall back to email
     user_meta = validated.get("user_meta", {}) or {}
     clerk_user_id = (
@@ -708,13 +730,16 @@ async def create_developer_key(
     )
 
     plaintext = generate_platform_key(env)
-    payload = build_insert_payload(
-        raw_key=plaintext,
-        clerk_user_id=clerk_user_id,
-        tier=tier,
-        label=name,
-        override_scopes=scopes,  # validated against tier max inside build_insert_payload
-    )
+    try:
+        payload = build_insert_payload(
+            raw_key=plaintext,
+            clerk_user_id=clerk_user_id,
+            tier=canonical_tier,
+            label=name,
+            override_scopes=scopes,  # validated against tier max inside build_insert_payload
+        )
+    except UnknownKeyTierError as exc:
+        return {"error": "developer_tier_unresolved", "message": str(exc)}
     # Also store Supabase Auth user_id as secondary link
     supabase_uid = validated.get("user_id", "")
     if supabase_uid:
@@ -748,7 +773,7 @@ async def create_developer_key(
                 "key_hint": payload["key_hint"],
                 "name": name,
                 "scopes": payload["scopes"],
-                "tier": tier,
+                "tier": canonical_tier,
                 "env": env,
                 "clerk_user_id": clerk_user_id,
                 "warning": "⚠️  Save this key immediately — it will NOT be shown again.",
@@ -848,7 +873,25 @@ async def rotate_developer_key(
             return {"error": f"Key {key_id} not found or access denied."}
         old_key = rows[0]
         env = old_key.get("env", "live")
-        scopes = old_key.get("scopes", ["read:market_data"])
+        # Preserve the existing key's scopes and tier exactly; never default.
+        from algochains_mcp.auth.key_contract import canonical_key_tier, scopes_for_tier
+
+        raw_scopes = old_key.get("scopes")
+        scopes = (
+            [s for s in raw_scopes if isinstance(s, str) and s]
+            if isinstance(raw_scopes, list)
+            else []
+        )
+        tier = canonical_key_tier(old_key.get("tier_at_creation") or "")
+        if not scopes or not tier or not scopes_for_tier(tier, scopes):
+            # Checked BEFORE revoking so a denied rotation leaves the old key intact.
+            return {
+                "error": "rotation_denied",
+                "message": (
+                    "Existing key has no scopes or no Developer/Enterprise tier on "
+                    "record; refusing to rotate into a key with default scopes."
+                ),
+            }
         new_name = name or old_key.get("name", "default")
 
         # 2. Revoke old key FIRST (fail-safe: if mint fails, old key still valid)
@@ -865,7 +908,7 @@ async def rotate_developer_key(
 
         # 3. Mint new key (after revoke — caller must save; if this fails, key was already revoked)
         new_result = await create_developer_key(
-            access_token=access_token, name=new_name, scopes=scopes, env=env
+            access_token=access_token, name=new_name, scopes=scopes, env=env, tier=tier
         )
         if new_result.get("status") != "ok":
             return {

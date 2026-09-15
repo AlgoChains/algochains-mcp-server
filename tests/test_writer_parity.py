@@ -181,7 +181,7 @@ class TestKeyContractHelpers:
 
 class TestScopesForTier:
     def test_developer_pro_scopes(self):
-        scopes = scopes_for_tier("developer_pro")
+        scopes = scopes_for_tier("developer")
         assert "read:market_data" in scopes
         assert "read:signals" in scopes
         assert "read:backtest" in scopes
@@ -198,19 +198,19 @@ class TestScopesForTier:
 
     def test_developer_pro_cannot_override_agent_host(self):
         scopes = scopes_for_tier(
-            "developer_pro",
+            "developer",
             override=["read:market_data", "agent:host", "agent:sandbox"],
         )
         assert "agent:sandbox" in scopes
         assert "agent:host" not in scopes
 
     def test_enterprise_is_superset_of_developer_pro(self):
-        pro = set(scopes_for_tier("developer_pro"))
+        pro = set(scopes_for_tier("developer"))
         ent = set(scopes_for_tier("enterprise"))
         assert pro.issubset(ent)
 
     def test_enterprise_has_extra_scopes(self):
-        assert set(scopes_for_tier("enterprise")) > set(scopes_for_tier("developer_pro"))
+        assert set(scopes_for_tier("enterprise")) > set(scopes_for_tier("developer"))
 
     def test_unknown_tier_returns_default(self):
         assert scopes_for_tier("unknown_tier") == DEFAULT_SCOPES
@@ -218,13 +218,13 @@ class TestScopesForTier:
     def test_override_filtered_by_tier(self):
         # publish:listing is developer-tier (owner-approved 2026-09-01);
         # agent:host remains enterprise-only and must be filtered out.
-        scopes = scopes_for_tier("developer_pro", override=["read:market_data", "publish:listing", "agent:host"])
+        scopes = scopes_for_tier("developer", override=["read:market_data", "publish:listing", "agent:host"])
         assert "read:market_data" in scopes
         assert "publish:listing" in scopes
         assert "agent:host" not in scopes
 
     def test_empty_override_returns_default(self):
-        assert scopes_for_tier("developer_pro", override=[]) == DEFAULT_SCOPES
+        assert scopes_for_tier("developer", override=[]) == DEFAULT_SCOPES
 
     def test_default_scopes_fail_closed(self):
         assert DEFAULT_SCOPES == []
@@ -240,7 +240,7 @@ class TestBuildInsertPayload:
     Every writer must use this function (or produce an identical shape).
     """
 
-    def _make_payload(self, env="live", tier="developer_pro", label="Test key", **kw):
+    def _make_payload(self, env="live", tier="developer", label="Test key", **kw):
         raw = generate_platform_key(env)
         return raw, build_insert_payload(raw, clerk_user_id="user_test_abc", tier=tier, label=label, **kw)
 
@@ -284,22 +284,22 @@ class TestBuildInsertPayload:
         assert len(payload["label"]) <= 60
 
     def test_scopes_match_tier(self):
-        _, payload = self._make_payload(tier="developer_pro")
+        _, payload = self._make_payload(tier="developer")
         assert "write:backtest" in payload["scopes"]
 
     def test_prefix_correct_for_live(self):
         raw = generate_platform_key("live")
-        payload = build_insert_payload(raw, clerk_user_id="user_x")
+        payload = build_insert_payload(raw, clerk_user_id="user_x", tier="developer")
         assert payload["prefix"] == "ac_live_"
 
     def test_prefix_correct_for_test(self):
         raw = generate_platform_key("test")
-        payload = build_insert_payload(raw, clerk_user_id="user_x")
+        payload = build_insert_payload(raw, clerk_user_id="user_x", tier="developer")
         assert payload["prefix"] == "ac_test_"
 
     def test_key_prefix_is_first_12_chars(self):
         raw = generate_platform_key("live")
-        payload = build_insert_payload(raw, clerk_user_id="user_x")
+        payload = build_insert_payload(raw, clerk_user_id="user_x", tier="developer")
         assert payload["key_prefix"] == raw[:12]
 
 
@@ -337,8 +337,8 @@ class TestWriterParityIdenticalShape:
 
     def test_same_key_same_hash_across_writers(self):
         raw = generate_platform_key("live")
-        payload_a = build_insert_payload(raw, clerk_user_id="user_django_writer_a", label="Django key")
-        payload_b = build_insert_payload(raw, clerk_user_id="user_mcp_writer_b", label="MCP key")
+        payload_a = build_insert_payload(raw, clerk_user_id="user_django_writer_a", tier="developer", label="Django key")
+        payload_b = build_insert_payload(raw, clerk_user_id="user_mcp_writer_b", tier="developer", label="MCP key")
 
         assert payload_a["key_hash"] == payload_b["key_hash"], \
             "key_hash must be identical — resolve_developer_api_key looks up by hash"
@@ -357,7 +357,7 @@ class TestWriterParityIdenticalShape:
         payload = build_insert_payload(
             raw,
             clerk_user_id="customer@example.com",  # email fallback
-            tier="developer_pro",
+            tier="developer",
             label="Stripe-provisioned",
         )
         assert payload["clerk_user_id"] == "customer@example.com"
@@ -380,7 +380,7 @@ class TestDjangoKeyResolvesViaDeveloperAuth:
     def setup_method(self):
         invalidate_cache()
 
-    def _mock_sb_with_payload(self, raw_key: str, clerk_user_id: str, tier: str = "developer_pro"):
+    def _mock_sb_with_payload(self, raw_key: str, clerk_user_id: str, tier: str = "developer"):
         """Build a mock Supabase RPC response that mirrors what the DB would return."""
         payload = build_insert_payload(raw_key, clerk_user_id=clerk_user_id, tier=tier)
         sb = MagicMock()
@@ -400,7 +400,7 @@ class TestDjangoKeyResolvesViaDeveloperAuth:
         raw = generate_platform_key("live")
         clerk_id = "user_django_123"
 
-        mock_client.return_value = self._mock_sb_with_payload(raw, clerk_id, "developer_pro")
+        mock_client.return_value = self._mock_sb_with_payload(raw, clerk_id, "developer")
 
         result = resolve_developer_key(raw)
 
@@ -473,7 +473,7 @@ class TestDjangoKeyResolvesViaDeveloperAuth:
         sb = MagicMock()
         sb.rpc.return_value.execute.return_value = MagicMock(data=[{
             "clerk_user_id": "user_test_tier",
-            "scopes": DEFAULT_SCOPES,
+            "scopes": TIER_SCOPES["developer"],
             "env": "test",
         }])
         mock_client.return_value = sb

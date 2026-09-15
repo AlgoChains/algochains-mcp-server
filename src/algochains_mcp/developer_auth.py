@@ -36,7 +36,8 @@ log = logging.getLogger(__name__)
 DEVELOPER_KEY_PREFIXES = ("ac_live_", "ac_test_")
 
 # Default scope set when the DB row has no scopes (safe minimum).
-DEFAULT_DEVELOPER_SCOPES = ("read:market_data", "read:signals")
+# NOTE: there are intentionally NO default developer scopes. A key row with
+# empty/missing scopes is denied (fail closed), never upgraded to defaults.
 
 # Cache: key_hash → (resolved_at_monotonic, ResolvedDeveloper)
 _CACHE: dict[str, tuple[float, "ResolvedDeveloper"]] = {}
@@ -133,7 +134,9 @@ def resolve_developer_key(raw_key: str | None) -> ResolvedDeveloper | None:
             if mirror_rows:
                 rows = [{
                     "clerk_user_id": mirror_rows[0].get("user_name"),
-                    "scopes": list(DEFAULT_DEVELOPER_SCOPES),
+                    # The hashed mirror carries no scopes, so it cannot
+                    # authorize on its own: empty scopes are denied below.
+                    "scopes": [],
                     "env": "test" if raw_key.startswith("ac_test_") else "live",
                 }]
         except Exception as exc:
@@ -146,7 +149,14 @@ def resolve_developer_key(raw_key: str | None) -> ResolvedDeveloper | None:
 
     row = rows[0]
     raw_scopes = row.get("scopes") or []
-    scopes = tuple(s for s in raw_scopes if isinstance(s, str)) or DEFAULT_DEVELOPER_SCOPES
+    if not isinstance(raw_scopes, (list, tuple)):
+        raw_scopes = []
+    scopes = tuple(s for s in raw_scopes if isinstance(s, str) and s)
+    if not scopes:
+        log.warning("developer_auth: key row has no scopes; failing closed")
+        with _CACHE_LOCK:
+            _CACHE[key_hash] = (now, ResolvedDeveloper(clerk_user_id="", scopes=(), env="live"))
+        return None
 
     # RPC returns "user_id" (Supabase auth.users UUID).
     # Legacy pre-migration rows used "clerk_user_id"; accept both for compatibility.
