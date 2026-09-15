@@ -113,8 +113,8 @@ async def provision(request: Request):
     stripe_account_id  = data.get("account_id", "")
     email = data.get("email", "")
 
-    # Map Stripe product → AlgoChains tier
-    tier = "enterprise" if product_id == "enterprise-tier" else "developer_pro"
+    # Map Stripe product → canonical AlgoChains tier.
+    tier = "enterprise" if product_id == "enterprise-tier" else "developer"
 
     # Use email as clerk_user_id until Stripe webhook can supply a Clerk ID.
     # This is acceptable — bridge resolution needs clerk_user_id NOT NULL.
